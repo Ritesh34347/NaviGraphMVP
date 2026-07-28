@@ -1,0 +1,310 @@
+version: "3.9"
+
+# Local-first NaviGraph stack. This is the everyday inner dev loop; Azure
+# (see ../terraform) is the eventual cloud target and is never provisioned
+# from this file. Copy .env.example to .env before running:
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#
+# See docs/runbooks/local-dev-smoke-test.md for the full walkthrough.
+
+networks:
+  navigraph-net:
+    name: navigraph-net
+    driver: bridge
+
+volumes:
+  postgres-data:
+  neo4j-data:
+  grafana-data:
+
+services:
+  # ---------------------------------------------------------------------
+  # Data stores
+  # ---------------------------------------------------------------------
+
+  postgres:
+    image: postgres:16
+    container_name: navigraph-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - navigraph-net
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: navigraph-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+      - ./neo4j/conf/neo4j.conf.local:/conf/neo4j.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - navigraph-net
+
+  redis:
+    image: redis:7
+    container_name: navigraph-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - navigraph-net
+
+  # ---------------------------------------------------------------------
+  # Observability
+  # ---------------------------------------------------------------------
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: navigraph-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:13133/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - navigraph-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: navigraph-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - navigraph-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: navigraph-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - navigraph-net
+
+  # ---------------------------------------------------------------------
+  # Policy
+  # ---------------------------------------------------------------------
+
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: navigraph-opa
+    restart: unless-stopped
+    command:
+      - "run"
+      - "--server"
+      - "--config-file=/conf/config.yaml"
+      - "--addr=0.0.0.0:8181"
+      - "/policies"
+    volumes:
+      - ./opa/policies:/policies:ro
+      - ./opa/conf/config.yaml:/conf/config.yaml:ro
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8181/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - navigraph-net
+
+  # ---------------------------------------------------------------------
+  # Query federation
+  # ---------------------------------------------------------------------
+
+  trino-coordinator:
+    image: trinodb/trino:latest
+    container_name: navigraph-trino-coordinator
+    restart: unless-stopped
+    volumes:
+      - ./trino/coordinator:/etc/trino:ro
+      - ./trino/catalog:/etc/trino/catalog:ro
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/v1/info || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - navigraph-net
+
+  trino-worker:
+    image: trinodb/trino:latest
+    container_name: navigraph-trino-worker
+    restart: unless-stopped
+    volumes:
+      - ./trino/worker:/etc/trino:ro
+      - ./trino/catalog:/etc/trino/catalog:ro
+    # No external port mapping — the worker is only reachable from the
+    # coordinator/other workers on navigraph-net.
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/v1/info || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      trino-coordinator:
+        condition: service_healthy
+    networks:
+      - navigraph-net
+
+  # ---------------------------------------------------------------------
+  # Application services (built by a parallel workstream; referenced here
+  # by build context/Dockerfile path so this compose file is ready the
+  # moment those Dockerfiles exist)
+  # ---------------------------------------------------------------------
+
+  agent-runtime:
+    build:
+      # Build context is the shared `packages/` directory, not
+      # `packages/agent_runtime/`, because packages/agent_runtime/Dockerfile
+      # also COPYs the sibling `shared` package into the image.
+      context: ../packages
+      dockerfile: agent_runtime/Dockerfile
+    container_name: navigraph-agent-runtime
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8001/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      otel-collector:
+        condition: service_healthy
+    networks:
+      - navigraph-net
+
+  gateway:
+    build:
+      # Build context is the shared `packages/` directory, not
+      # `packages/gateway/`, because packages/gateway/Dockerfile also COPYs
+      # the sibling `shared` package into the image.
+      context: ../packages
+      dockerfile: gateway/Dockerfile
+    container_name: navigraph-gateway
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AGENT_RUNTIME_URL: http://agent-runtime:8001
+      REDIS_URL: redis://redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      agent-runtime:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - navigraph-net
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    container_name: navigraph-web
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_GATEWAY_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - navigraph-net

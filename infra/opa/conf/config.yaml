@@ -1,0 +1,12 @@
+# Local OPA server configuration: bundle-less mode. Policies are loaded
+# directly from the mounted /policies directory (passed as a CLI argument to
+# `opa run`, see infra/docker-compose.yml) rather than from a remote bundle
+# service — there is no bundle registry in local dev.
+
+decision_logs:
+  console: true
+
+# No `bundles:` or `services:` block — intentionally bundle-less locally.
+# A real deployment would configure a `services` entry pointing at a bundle
+# registry and a `bundles` entry referencing it, so policy updates can be
+# pushed without redeploying OPA.

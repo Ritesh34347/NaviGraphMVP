@@ -1,0 +1,38 @@
+# Example personal override for local development.
+#
+# Copy this file to `docker-compose.override.yml` (gitignored — see
+# ../.gitignore) in this same directory. Docker Compose automatically merges
+# any `docker-compose.override.yml` sitting next to the compose file you
+# invoke, so you don't need to pass extra flags:
+#
+#   cp infra/docker-compose.override.yml.example infra/docker-compose.override.yml
+#   docker compose -f infra/docker-compose.yml up -d
+#
+# Use this for personal tweaks that shouldn't be committed: mounting local
+# source for hot-reload, exposing extra debug ports, tweaking resource
+# limits for your machine, etc. Two common examples below — uncomment and
+# adjust as needed.
+
+services:
+  agent-runtime:
+    # Mount local source over the built image so code changes are picked up
+    # without rebuilding the image (assumes the Dockerfile runs with a
+    # dev/reload-friendly entrypoint, e.g. `uvicorn --reload`).
+    volumes:
+      - ../packages/agent_runtime:/app
+    environment:
+      LOG_LEVEL: debug
+
+  gateway:
+    # Expose an extra debug port (e.g. for a Python debugger) beyond the
+    # normal 8000 API port.
+    ports:
+      - "5678:5678"
+
+  trino-coordinator:
+    # Example: give Trino more memory locally if your machine can afford it.
+    # (This is illustrative — Trino's JVM heap is actually set via
+    # trino/coordinator/jvm.config, not an env var; this block is a
+    # placeholder showing the override mechanism.)
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx4g"

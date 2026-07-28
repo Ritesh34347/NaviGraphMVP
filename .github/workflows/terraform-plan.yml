@@ -1,0 +1,78 @@
+# IMPORTANT: this workflow must never run `terraform apply`. Its only job is to
+# prove the skeleton is syntactically valid (`fmt`, `validate`) and, when Azure
+# credentials happen to be configured as repo secrets, to produce a read-only
+# `plan` for review. Applying infrastructure changes is a manual, human-approved
+# action performed outside of CI — see terraform/README.md.
+name: Terraform Plan
+
+on:
+  pull_request:
+    paths:
+      - "terraform/**"
+
+concurrency:
+  group: terraform-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt-and-validate:
+    name: terraform fmt + validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform fmt check (whole tree)
+        run: terraform fmt -check -recursive terraform/
+
+      - name: Terraform validate — environments
+        run: |
+          set -e
+          for dir in terraform/environments/*/; do
+            echo "== Validating $dir =="
+            terraform -chdir="$dir" init -backend=false
+            terraform -chdir="$dir" validate
+          done
+
+      - name: Terraform validate — modules
+        run: |
+          set -e
+          for dir in terraform/modules/*/; do
+            echo "== Validating $dir =="
+            terraform -chdir="$dir" init -backend=false
+            terraform -chdir="$dir" validate
+          done
+
+  plan:
+    name: terraform plan (dev) — only if Azure credentials are configured
+    needs: fmt-and-validate
+    runs-on: ubuntu-latest
+    if: ${{ secrets.AZURE_CLIENT_ID != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init (dev)
+        working-directory: terraform/environments/dev
+        run: terraform init
+
+      - name: Terraform plan (dev) — read-only, never applied in CI
+        working-directory: terraform/environments/dev
+        run: terraform plan -input=false -lock=false

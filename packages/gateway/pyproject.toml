@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-gateway"
+version = "0.1.0"
+description = "NaviGraph public-facing gateway: FastAPI app that accepts user questions and routes them to the agent-runtime."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    # Local workspace dependency. This is a bare, unpinned PEP 508 name --
+    # it is intentionally NOT a file:// path reference (those require
+    # absolute paths and behave inconsistently across pip versions for
+    # local monorepos). Instead, install order matters: run
+    #   pip install -e packages/shared
+    # BEFORE
+    #   pip install -e packages/gateway
+    # so that `navigraph-shared` is already satisfied in the environment
+    # when pip resolves this package's dependencies. See packages/pyproject.toml.
+    "navigraph-shared",
+    "prometheus-fastapi-instrumentator",
+    # Not in the original spec's minimal dep list, but required for the
+    # "OTel FastAPI auto-instrumentation" requirement on this service.
+    "opentelemetry-instrumentation-fastapi",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["navigraph_gateway*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

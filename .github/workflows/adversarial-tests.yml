@@ -1,0 +1,37 @@
+# Required check — cannot be skipped. If tests/security/ is empty this passes
+# vacuously, which is expected until Phase 5/6 introduce real security-relevant
+# components (real RBAC/ABAC OPA policies, tenant-isolation enforcement, etc.).
+# A vacuous pass here is a known, accepted state — do NOT remove or make this
+# check optional just because it currently has little to test.
+name: Adversarial Security Tests
+
+on:
+  pull_request:
+
+concurrency:
+  group: adversarial-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  adversarial-tests:
+    name: Run adversarial security test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          if [ -f tests/security/requirements.txt ]; then
+            pip install -r tests/security/requirements.txt
+          fi
+
+      - name: Run tests/security/
+        run: pytest tests/security/ -v --tb=short

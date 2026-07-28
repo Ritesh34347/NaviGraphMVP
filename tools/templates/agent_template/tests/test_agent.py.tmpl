@@ -1,0 +1,67 @@
+"""Real unit tests for the {{AgentName}} agent.
+
+Generated from tools/templates/agent_template/tests/test_agent.py.tmpl by
+tools/scripts/new-agent.py. Uses `FakeLLMClient` exclusively -- no network
+access, no API key required. Follows the exact same pattern as
+navigraph_agents/understanding/intent_understanding/tests/test_agent.py.
+"""
+
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from navigraph_shared.contracts import RequestContext
+from navigraph_shared.llm import FakeLLMClient
+
+from navigraph_agents.{{domain}}.{{name}}.agent import {{AgentName}}Agent
+from navigraph_agents.{{domain}}.{{name}}.contracts import (
+    {{AgentName}}Input,
+    {{AgentName}}Payload,
+)
+
+
+def _make_input(text: str = "hello world") -> {{AgentName}}Input:
+    return {{AgentName}}Input(
+        request_context=RequestContext(
+            tenant_id="tenant-acme",
+            user_id="user-1",
+            trace_id="trace-1",
+            roles=["analyst"],
+        ),
+        payload={{AgentName}}Payload(text=text),
+    )
+
+
+async def test_agent_parses_valid_json_response() -> None:
+    fake_llm = FakeLLMClient(response='{"summary": "ok", "details": ["a", "b"]}')
+    agent = {{AgentName}}Agent(llm_client=fake_llm)
+
+    output = await agent.run(_make_input())
+
+    assert output.result.summary == "ok"
+    assert output.result.details == ["a", "b"]
+    assert output.confidence == 1.0
+    assert output.errors == []
+    assert len(output.lineage_events) == 1
+
+
+async def test_agent_handles_malformed_json_gracefully() -> None:
+    fake_llm = FakeLLMClient(response="not json")
+    agent = {{AgentName}}Agent(llm_client=fake_llm)
+
+    # Must not raise.
+    output = await agent.run(_make_input())
+
+    assert output.result.summary == "unknown"
+    assert output.confidence == 0.0
+    assert len(output.errors) == 1
+    assert output.errors[0].recoverable is True
+
+
+def test_request_context_without_tenant_id_fails_at_construction() -> None:
+    with pytest.raises(ValidationError):
+        {{AgentName}}Input(
+            request_context=RequestContext(user_id="user-1", trace_id="trace-1"),  # type: ignore[call-arg]
+            payload={{AgentName}}Payload(text="test"),
+        )

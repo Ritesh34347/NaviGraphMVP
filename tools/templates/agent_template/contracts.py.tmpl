@@ -1,0 +1,48 @@
+"""Contracts for the {{AgentName}} agent.
+
+Generated from tools/templates/agent_template/contracts.py.tmpl by
+tools/scripts/new-agent.py. Follows the exact same real pattern as
+navigraph_agents/understanding/intent_understanding/contracts.py -- edit the
+payload/result fields below to match this agent's actual job.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from navigraph_shared.contracts import AgentInput, AgentOutput
+
+
+class {{AgentName}}Payload(BaseModel):
+    """TODO: replace with this agent's real input fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Example placeholder field -- replace with real payload fields.
+    text: str
+
+
+class {{AgentName}}Input(AgentInput):
+    """Input contract for the {{AgentName}} agent.
+
+    Inherits the mandatory, non-optional `request_context: RequestContext`
+    field from `AgentInput` -- do not make it optional.
+    """
+
+    payload: {{AgentName}}Payload
+
+
+class {{AgentName}}Result(BaseModel):
+    """TODO: replace with this agent's real result fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Example placeholder field -- replace with real result fields.
+    summary: str
+    details: list[str] = Field(default_factory=list)
+
+
+class {{AgentName}}Output(AgentOutput):
+    """Output contract for the {{AgentName}} agent."""
+
+    result: {{AgentName}}Result

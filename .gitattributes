@@ -1,0 +1,32 @@
+# Normalize all text files to LF in the repo, checked out as LF as well.
+* text=auto eol=lf
+
+# Explicit text types (kept for clarity even though `* text=auto` already covers them)
+*.md      text eol=lf
+*.py      text eol=lf
+*.ts      text eol=lf
+*.tsx     text eol=lf
+*.js      text eol=lf
+*.jsx     text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.tf      text eol=lf
+*.rego    text eol=lf
+*.sql     text eol=lf
+*.sh      text eol=lf
+Dockerfile text eol=lf
+
+# Binary files — do not diff, do not normalize line endings
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.eot   binary
+*.pdf  binary

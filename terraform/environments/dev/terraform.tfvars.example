@@ -1,0 +1,24 @@
+# Example values. The subscription/tenant IDs below are placeholder GUIDs —
+# they are NOT real and do not correspond to any real Azure subscription or
+# tenant. Copy this file to terraform.tfvars (gitignored, see .gitignore is
+# NOT currently ignoring *.tfvars — add it locally if you populate real
+# values) and fill in real values only if you intend to actually run
+# `terraform plan` against a real subscription; never run `terraform apply`
+# without explicit human sign-off (see terraform/README.md).
+
+subscription_id = "00000000-0000-0000-0000-000000000000" # placeholder GUID
+tenant_id       = "11111111-1111-1111-1111-111111111111" # placeholder GUID
+region          = "eastus"
+
+resource_group_name = "navigraph-dev-rg"
+environment          = "dev"
+
+tags = {
+  project     = "navigraph"
+  environment = "dev"
+  managed_by  = "terraform"
+}
+
+# postgres_administrator_password intentionally omitted here — supply it via
+# TF_VAR_postgres_administrator_password or an untracked *.auto.tfvars file,
+# never committed in plaintext.

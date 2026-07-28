@@ -1,0 +1,39 @@
+# CODEOWNERS
+#
+# NOTE: the team handles below (@navigraph/platform-team, @navigraph/security-team,
+# @navigraph/data-team) are placeholders. They must be created as real GitHub teams
+# with real membership before branch protection can enforce these reviews.
+#
+# Ownership is deliberately broad by directory rather than by file, to keep this
+# maintainable as the repo grows. More specific paths win over less specific ones,
+# per standard CODEOWNERS matching rules — most-specific entries are listed last.
+
+# Default owners for anything not matched below
+*                                   @navigraph/platform-team
+
+# Infra and deployment
+/infra/                             @navigraph/platform-team
+/infra/opa/                         @navigraph/security-team
+/terraform/                         @navigraph/platform-team
+
+# CI/CD and process
+/.github/                           @navigraph/platform-team
+/.github/workflows/security-scan.yml    @navigraph/security-team
+/.github/workflows/adversarial-tests.yml @navigraph/security-team
+/CODEOWNERS                         @navigraph/platform-team
+/SECURITY.md                        @navigraph/security-team
+
+# Application services (owned by the parallel application workstream, but
+# reviewed jointly with platform for cross-cutting concerns)
+/packages/gateway/                  @navigraph/platform-team
+/packages/agent_runtime/            @navigraph/platform-team @navigraph/data-team
+/web/                               @navigraph/platform-team
+
+# Data, schema, and query-federation concerns
+/infra/trino/                       @navigraph/data-team
+/infra/postgres/                    @navigraph/data-team
+/infra/neo4j/                       @navigraph/data-team
+
+# Documentation
+/docs/                              @navigraph/platform-team
+/docs/architecture/                 @navigraph/platform-team @navigraph/data-team

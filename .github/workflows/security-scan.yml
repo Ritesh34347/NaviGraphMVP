@@ -1,0 +1,70 @@
+# Required check. Branch protection on `main` must require this workflow to pass
+# before merge — it is part of the SOC 2 change-management control set, not an
+# optional convenience check.
+name: Security Scan
+
+on:
+  pull_request:
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-dependency-audit:
+    name: pip-audit (Python dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install workspace packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e packages/shared -e packages/gateway -e packages/agent_runtime
+          pip install pip-audit
+
+      - name: Run pip-audit
+        run: pip-audit
+
+  node-dependency-audit:
+    name: npm audit (Node dependencies)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit (high severity and above)
+        run: npm audit --audit-level=high
+
+  semgrep:
+    name: Semgrep static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets

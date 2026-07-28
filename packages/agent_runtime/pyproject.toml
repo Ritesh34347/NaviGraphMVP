@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-agent-runtime"
+version = "0.1.0"
+description = "NaviGraph agent-runtime service: hosts and serves the agent registry (currently: understanding.intent_understanding) over HTTP."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    # See packages/gateway/pyproject.toml for why this is an unpinned local
+    # workspace dependency instead of a file:// path reference, and why
+    # install order (shared, then this package) matters for a bare pip
+    # toolchain.
+    "navigraph-shared",
+    "prometheus-fastapi-instrumentator",
+    "opentelemetry-instrumentation-fastapi",
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["navigraph_agents*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests", "navigraph_agents"]
+markers = [
+    "llm_integration: tests that call the real Anthropic API (excluded by default; run with `pytest -m llm_integration`, requires ANTHROPIC_API_KEY)",
+]

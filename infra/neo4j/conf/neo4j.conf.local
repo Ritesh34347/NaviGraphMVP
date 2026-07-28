@@ -1,0 +1,19 @@
+# Local single-instance Neo4j configuration for the docker-compose dev stack.
+#
+# NOTE: this is NOT the HA / production configuration. It is deliberately
+# sized for a developer laptop, not a clustered or cloud deployment. See
+# LIMITATIONS.md item 2 — HA/Aura Enterprise is deferred to the cloud
+# deployment phase.
+
+# Network
+server.default_listen_address=0.0.0.0
+server.bolt.listen_address=0.0.0.0:7687
+server.http.listen_address=0.0.0.0:7474
+
+# Memory settings sized for a dev laptop, not production. In a production
+# deployment these would be sized against actual available RAM and workload
+# (typically dbms.memory.heap.max_size around 50% of available RAM and
+# pagecache sized to fit the working set of the graph).
+dbms.memory.heap.initial_size=512m
+dbms.memory.heap.max_size=512m
+dbms.memory.pagecache.size=256m
