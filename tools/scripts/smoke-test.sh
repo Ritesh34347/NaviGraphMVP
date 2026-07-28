@@ -13,9 +13,10 @@ FAILURES=0
 CHECKS=(
   "gateway|http://localhost:8000/healthz"
   "agent-runtime|http://localhost:8001/healthz"
-  "grafana|http://localhost:3001"
+  "grafana|http://localhost:3001/api/health"
   "prometheus|http://localhost:9090/-/healthy"
   "opa|http://localhost:8181/health"
+  "otel-collector|http://localhost:13133/"
   "trino-coordinator|http://localhost:8080/v1/info"
 )
 

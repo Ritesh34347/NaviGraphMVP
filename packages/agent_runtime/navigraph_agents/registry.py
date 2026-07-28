@@ -14,7 +14,8 @@ extending as more agents are added in later phases.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 AgentRunCallable = Callable[[Any], Awaitable[Any]]
 

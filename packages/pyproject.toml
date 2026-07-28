@@ -25,3 +25,21 @@
 #   - packages/shared        -> navigraph-shared
 #   - packages/gateway       -> navigraph-gateway
 #   - packages/agent_runtime -> navigraph-agent-runtime
+
+# This IS a real, active pytest config, not documentation: it's the nearest
+# pyproject.toml above all three packages, so `pytest packages/` (what CI
+# runs) uses it as the rootdir config. `--import-mode=importlib` is required
+# here because `gateway/tests/test_healthz.py` and
+# `agent_runtime/tests/test_healthz.py` share a basename with no common
+# parent package -- pytest's default "prepend" import mode resolves modules
+# by basename and collides across the two; importlib mode keys each test
+# file by its actual file path instead, so duplicate basenames across
+# sibling packages are fine. Markers used by any package's tests are
+# registered here too, since per-package pyproject.toml marker registration
+# isn't read when pytest's rootdir is this file.
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+asyncio_mode = "auto"
+markers = [
+    "llm_integration: tests that call the real Anthropic API (excluded by default; run with `pytest -m llm_integration`, requires ANTHROPIC_API_KEY)",
+]

@@ -41,10 +41,11 @@ read-replica routing, and failover testing.
 stack forms a working cluster. Real catalog wiring depends on Snowflake credentials
 and network access that belong to a later phase.
 
-**What full version requires**: A real `snowflake.properties` catalog file (see
-`infra/trino/catalog/placeholder.properties.example` for the intended shape),
-Snowflake network policy/firewall coordination, and a validation pass confirming
-federated queries return correct results end-to-end.
+**What full version requires**: A real `snowflake.properties` catalog file in
+both `infra/trino/coordinator/catalog/` and `infra/trino/worker/catalog/` (see
+`infra/trino/coordinator/catalog/snowflake.properties.example` for the intended
+shape), Snowflake network policy/firewall coordination, and a validation pass
+confirming federated queries return correct results end-to-end.
 
 ### 4. OPA runs an allow-all placeholder policy
 
@@ -101,20 +102,21 @@ formal contract in `docs/architecture/agent-contract.md`, with its own unit test
 and, where relevant, `@pytest.mark.llm_integration` tests. See
 `docs/architecture/overview.md` for the full named list and current status.
 
-### 8. Local tooling installation is not fully tracked
+### 8. Local tooling versions are not pinned
 
-**What's deferred**: A precise record of every tool version installed on the
-scaffolding machine.
+**What's deferred**: A reproducible, pinned record of exact tool versions for
+new-machine setup.
 
 **Why**: This machine had no Docker, Node.js, Terraform, or WSL installed at the
-time scaffolding began. Tooling was installed via `winget` mid-session to unblock
-work, but this agent does not have visibility into the exact commands or versions
-used beyond that fact.
+time scaffolding began; they were installed via `winget` during this session
+(Node.js v24.18.0, Terraform v1.15.8, Docker Desktop 29.6.2 / Compose v5.3.1 —
+see `BUILD_LOG.md`'s 2026-07-28 verification entry). That gets one machine
+working but isn't yet a reproducible, version-pinned setup process.
 
-**What full version requires**: See `BUILD_LOG.md` for whatever tooling install
-details were captured; going forward, tool versions should be pinned (e.g. via a
-`.tool-versions` file or documented `winget`/`brew` manifest) so environment setup
-is reproducible across machines.
+**What full version requires**: A documented, version-pinned bootstrap (e.g. a
+`.tool-versions` file, a checked-in `winget` manifest, or devcontainer config)
+so a new engineer's machine ends up on the same tool versions without trial and
+error.
 
 ### 9. LICENSE terms are a placeholder pending legal sign-off
 

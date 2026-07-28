@@ -16,9 +16,16 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    # Only needed for the cast() type annotation below; importing under
+    # TYPE_CHECKING keeps `anthropic` an optional runtime dependency for
+    # code paths that only ever use FakeLLMClient (e.g. most unit tests).
+    from anthropic.types import MessageParam
 
 
 class LLMResponse(BaseModel):
@@ -96,7 +103,11 @@ class AnthropicLLMClient(LLMClient):
             model=self._model,
             max_tokens=max_tokens,
             system=system,
-            messages=messages,
+            # Our provider-agnostic `list[dict[str, Any]]` shape is
+            # structurally the same `{"role": ..., "content": ...}` shape
+            # Anthropic's SDK expects; cast rather than widen the abstract
+            # LLMClient.complete() signature to a provider-specific type.
+            messages=cast("list[MessageParam]", messages),
         )
 
         text_parts = [block.text for block in response.content if block.type == "text"]

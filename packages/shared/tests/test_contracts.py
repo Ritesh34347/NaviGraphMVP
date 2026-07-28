@@ -23,12 +23,12 @@ from navigraph_shared.contracts import (
 
 
 def _make_request_context(**overrides) -> RequestContext:
-    defaults = dict(
-        tenant_id="tenant-acme",
-        user_id="user-123",
-        trace_id="trace-abc",
-        roles=["analyst"],
-    )
+    defaults = {
+        "tenant_id": "tenant-acme",
+        "user_id": "user-123",
+        "trace_id": "trace-abc",
+        "roles": ["analyst"],
+    }
     defaults.update(overrides)
     return RequestContext(**defaults)
 

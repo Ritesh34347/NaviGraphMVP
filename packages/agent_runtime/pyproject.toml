@@ -31,6 +31,14 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["navigraph_agents*"]
 
+# Without this, non-.py files (like each agent's prompts/*.md) are silently
+# dropped from a real (non-editable) install -- `pip install -e` masked
+# this in local dev since it references the source tree directly rather
+# than copying files, but the Docker image's real `pip install .` exposed
+# it as a genuine FileNotFoundError at container startup.
+[tool.setuptools.package-data]
+navigraph_agents = ["**/prompts/*.md"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests", "navigraph_agents"]

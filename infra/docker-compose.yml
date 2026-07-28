@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Local-first NaviGraph stack. This is the everyday inner dev loop; Azure
 # (see ../terraform) is the eventual cloud target and is never provisioned
 # from this file. Copy .env.example to .env before running:
@@ -96,12 +94,18 @@ services:
       - "4317:4317"
       - "4318:4318"
       - "8889:8889"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:13133/ || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+      - "13133:13133" # health_check extension, published so it can be checked from the host
+    # No Docker-level healthcheck: otel/opentelemetry-collector-contrib is a
+    # scratch image with no /bin/sh, wget, or curl (confirmed via `docker
+    # exec navigraph-otel-collector wget` -> "executable file not found"),
+    # so an exec-based healthcheck can't run inside this container. The
+    # health_check extension (port 13133, enabled in
+    # infra/otel/otel-collector-config.yaml) is checked from the host by
+    # tools/scripts/smoke-test.sh instead. Every agent codes its OTel
+    # exporter to degrade gracefully if this collector is unreachable (spans
+    # are dropped, never crash the app -- see
+    # packages/shared/navigraph_shared/telemetry/tracing.py), so downstream
+    # services only need this container *started*, not proven healthy.
     networks:
       - navigraph-net
 
@@ -165,12 +169,14 @@ services:
       - ./opa/conf/config.yaml:/conf/config.yaml:ro
     ports:
       - "8181:8181"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8181/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    # No Docker-level healthcheck: the official openpolicyagent/opa image is
+    # a minimal static binary with no /bin/sh, wget, or curl (confirmed via
+    # `docker exec navigraph-opa wget` -> "executable file not found"), so an
+    # exec-based HTTP healthcheck can't run inside this container at all.
+    # Nothing else in this stack depends on OPA's health condition (see
+    # LIMITATIONS.md item 4 -- it's an allow-all placeholder anyway); real
+    # liveness is checked from the host by tools/scripts/smoke-test.sh,
+    # which does have curl/wget.
     networks:
       - navigraph-net
 
@@ -182,13 +188,18 @@ services:
     image: trinodb/trino:latest
     container_name: navigraph-trino-coordinator
     restart: unless-stopped
+    # `catalog/` lives as a real subdirectory of ./trino/coordinator itself
+    # (currently empty -- zero real catalogs registered, see LIMITATIONS.md
+    # item 3) rather than as a second, separately-mounted bind mount nested
+    # inside this one: nesting a second :ro mount inside an already-:ro
+    # parent mount fails at container start ("read-only file system" trying
+    # to create the inner mountpoint). One mount, one directory tree.
     volumes:
       - ./trino/coordinator:/etc/trino:ro
-      - ./trino/catalog:/etc/trino/catalog:ro
     ports:
       - "8080:8080"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/v1/info || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -200,15 +211,16 @@ services:
     image: trinodb/trino:latest
     container_name: navigraph-trino-worker
     restart: unless-stopped
+    # See the coordinator's comment above -- catalog/ is a real subdirectory
+    # of ./trino/worker, not a second nested bind mount.
     volumes:
       - ./trino/worker:/etc/trino:ro
-      - ./trino/catalog:/etc/trino/catalog:ro
     # No external port mapping — the worker is only reachable from the
     # coordinator/other workers on navigraph-net.
     expose:
       - "8080"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/v1/info || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/v1/info || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -241,7 +253,9 @@ services:
     ports:
       - "8001:8001"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8001/healthz || exit 1"]
+      # python:slim has no wget/curl; the interpreter itself is guaranteed
+      # present, so use it directly rather than adding a package just for this.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -252,7 +266,11 @@ services:
       neo4j:
         condition: service_healthy
       otel-collector:
-        condition: service_healthy
+        # service_started, not service_healthy: otel-collector has no
+        # Docker-level healthcheck (see its service definition above), and
+        # this app's OTel exporter degrades gracefully if the collector
+        # isn't reachable yet anyway.
+        condition: service_started
     networks:
       - navigraph-net
 
@@ -274,7 +292,9 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:8000/healthz || exit 1"]
+      # python:slim has no wget/curl; the interpreter itself is guaranteed
+      # present, so use it directly rather than adding a package just for this.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -294,11 +314,24 @@ services:
     container_name: navigraph-web
     restart: unless-stopped
     environment:
+      # GATEWAY_URL is read server-side (page.tsx's server component runs
+      # inside this container, so it must use Docker's internal service
+      # DNS name -- "localhost" here would mean the web container itself).
+      # NEXT_PUBLIC_GATEWAY_URL is for browser-side code, which runs on the
+      # host machine where gateway's port is actually published to
+      # localhost, so it correctly differs from GATEWAY_URL.
+      GATEWAY_URL: http://gateway:8000
       NEXT_PUBLIC_GATEWAY_URL: http://localhost:8000
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/ || exit 1"]
+      # 127.0.0.1, not localhost: this container's /etc/hosts resolves
+      # localhost to ::1 first, but the Next.js standalone server only
+      # binds IPv4 0.0.0.0, so `wget http://localhost:3000` gets refused
+      # over IPv6 even though the app is up and serving fine over IPv4
+      # (confirmed manually: `wget http://127.0.0.1:3000/` returns the
+      # real rendered page).
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

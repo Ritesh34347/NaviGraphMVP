@@ -50,3 +50,90 @@ workflows and docs above but are not created by this pass.
 at the start of this session. Local tooling was installed via `winget` mid-session
 to support later verification steps. The exact packages/versions installed via
 that process are not visible to this log entry — see `LIMITATIONS.md` item 8.
+
+## 2026-07-29 — Phase 1 end-to-end verification, and real bugs found and fixed
+
+Installed Node.js v24.18.0, Terraform v1.15.8, and Docker Desktop 29.6.2
+(Compose v5.3.1, WSL2 backend with Ubuntu) via `winget`, then ran `git init`
+and the initial commit, and verified every Phase 1 deliverable for real
+rather than assuming the scaffold was correct. This surfaced and fixed
+several genuine bugs — logged here rather than silently corrected, per the
+project's working method:
+
+- **Python CI (`pytest packages/`)**: the shared rootdir config
+  (`packages/pyproject.toml`) didn't set `asyncio_mode`, so pytest-asyncio
+  silently defaulted to STRICT mode when the three packages' tests ran
+  together, breaking every async test. Also added
+  `--import-mode=importlib` to resolve a module-name collision between
+  `gateway/tests/test_healthz.py` and `agent_runtime/tests/test_healthz.py`
+  (identical basenames, no shared parent package). Fixed by adding
+  `asyncio_mode = "auto"` and `addopts = "--import-mode=importlib"` to
+  `packages/pyproject.toml`. Final state: `ruff check` clean, `mypy` clean
+  (after two real type-narrowing fixes in `llm/client.py` and
+  `intent_understanding/agent.py`), `pytest packages/` → 24 passed, 1
+  correctly skipped (`llm_integration`, no API key present).
+- **`npm audit`**: 16 high-severity vulnerabilities, all transitive
+  (`brace-expansion` via the pinned ESLint 8.57 chain; `postcss`/`sharp`
+  bundled inside Next.js 15.5.22 itself). Fixed via `package.json`
+  `overrides` pinning patched versions (`postcss@8.5.24`,
+  `sharp@0.35.3`, `brace-expansion@5.0.8`) without bumping Next or ESLint's
+  major versions. Final state: `npm audit` → 0 vulnerabilities; lint,
+  typecheck, and `next build` all clean.
+- **`web/Dockerfile` build failure**: `COPY --from=builder /app/public
+  ./public` failed because `web/public/` didn't exist in the scaffold.
+  Fixed by adding `web/public/robots.txt` (a real, correct choice for an
+  internal authenticated app — disallow all crawling).
+- **`infra/trino/{coordinator,worker}/node.properties`**: `node.environment`
+  was set to `navigraph-dev`, which fails Trino's
+  `[a-z0-9][_a-z0-9]*` validation (hyphens aren't allowed, only
+  underscores) — the coordinator crash-looped on every start. Fixed to
+  `navigraph_dev`.
+- **Nested read-only bind mount**: the coordinator/worker mounted
+  `/etc/trino:ro` and then `/etc/trino/catalog:ro` as a second, separate
+  mount nested inside the first — Docker can't create a mountpoint inside
+  an already-read-only parent mount ("read-only file system" at container
+  start). Restructured so `catalog/` is a real (currently empty)
+  subdirectory of each node's own `infra/trino/{coordinator,worker}/`
+  config tree instead of a second bind mount; moved the documentation
+  example file to `infra/trino/coordinator/catalog/snowflake.properties.example`
+  accordingly.
+- **Broken Docker healthchecks, four separate causes**: `opa` and
+  `otel-collector` are minimal/scratch images with no `/bin/sh` at all
+  (exec healthchecks are structurally impossible there — removed them,
+  documented why, and rely on `tools/scripts/smoke-test.sh` checking them
+  from the host instead); `trino-coordinator`/`trino-worker` and the
+  Python-based `gateway`/`agent-runtime` images have a shell but no
+  `wget`/`curl` in the Trino case (switched to `curl`, confirmed present)
+  and no `wget`/`curl` at all in the Python case (switched to a
+  dependency-free `python3 -c "import urllib.request; ..."` check); `web`
+  (Alpine, has `wget`) failed because this container's `/etc/hosts`
+  resolves `localhost` to `::1` first but the Next.js standalone server
+  only binds IPv4 `0.0.0.0`, so the healthcheck hit "connection refused"
+  over IPv6 even though the app was serving fine over IPv4 — fixed by
+  pointing the healthcheck at `127.0.0.1` explicitly. Also removed the
+  now-unnecessary `otel-collector: condition: service_healthy` dependency
+  from `agent-runtime` (changed to `service_started`, since this app's own
+  OTel exporter is already designed to degrade gracefully if the collector
+  is unreachable) and published port `13133` so the collector's
+  `health_check` extension is reachable from the host.
+- **Web page showed "gateway unreachable" even with everything healthy**:
+  `page.tsx`'s server component correctly reads a server-side `GATEWAY_URL`
+  env var, but `docker-compose.yml` only ever set the browser-facing
+  `NEXT_PUBLIC_GATEWAY_URL` for the `web` service — the server-side code
+  fell back to its `localhost:8000` default, which inside the `web`
+  container refers to itself, not the `gateway` container. Fixed by adding
+  `GATEWAY_URL: http://gateway:8000` (Docker-internal service DNS name) to
+  `web`'s environment, alongside the existing browser-facing
+  `NEXT_PUBLIC_GATEWAY_URL: http://localhost:8000`.
+
+**Final verified state**: all 12 `docker compose` services report
+healthy/running; `tools/scripts/smoke-test.sh` passes 7/7 (after fixing its
+Grafana check to hit `/api/health` instead of `/`, since Grafana's root
+path is a 302 redirect by design, not a failure); a real `POST /ask`
+through the gateway reaches the real Intent Understanding agent and
+returns a populated `lineage_events` array with correct `tenant_id`/
+`trace_id`; the web UI's server-rendered page confirms "gateway reachable
+at http://gateway:8000"; `terraform validate` passes for the `dev`
+environment (`terraform plan` correctly stops asking for
+`subscription_id`/`tenant_id` rather than touching a real Azure account,
+since none were supplied).

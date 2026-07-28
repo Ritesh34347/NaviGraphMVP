@@ -1,0 +1,4 @@
+# NaviGraph is an internal, authenticated business-intelligence application,
+# not a public site — it has nothing that should be indexed by search engines.
+User-agent: *
+Disallow: /

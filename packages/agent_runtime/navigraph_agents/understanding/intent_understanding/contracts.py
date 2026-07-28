@@ -11,9 +11,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from navigraph_shared.contracts import AgentInput, AgentOutput
+from pydantic import BaseModel, ConfigDict, Field
 
 # Controlled vocabulary for classified intents. "unknown" is the required
 # safe fallback when the LLM's classification is missing, malformed, or

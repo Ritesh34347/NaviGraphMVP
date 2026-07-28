@@ -12,13 +12,13 @@ module "resource_group" {
 module "networking" {
   source = "../../modules/networking"
 
-  name                     = "navigraph-${var.environment}-vnet"
-  location                 = var.region
-  resource_group_name      = module.resource_group.name
-  address_space            = ["10.20.0.0/16"]
-  subnet_name              = "navigraph-${var.environment}-subnet"
-  subnet_address_prefixes  = ["10.20.1.0/24"]
-  tags                     = var.tags
+  name                    = "navigraph-${var.environment}-vnet"
+  location                = var.region
+  resource_group_name     = module.resource_group.name
+  address_space           = ["10.20.0.0/16"]
+  subnet_name             = "navigraph-${var.environment}-subnet"
+  subnet_address_prefixes = ["10.20.1.0/24"]
+  tags                    = var.tags
 }
 
 module "acr" {

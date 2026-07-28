@@ -16,11 +16,12 @@ from __future__ import annotations
 import os
 
 import pytest
-
 from navigraph_shared.contracts import RequestContext
 from navigraph_shared.llm import AnthropicLLMClient
 
-from navigraph_agents.understanding.intent_understanding.agent import IntentUnderstandingAgent
+from navigraph_agents.understanding.intent_understanding.agent import (
+    IntentUnderstandingAgent,
+)
 from navigraph_agents.understanding.intent_understanding.contracts import (
     IntentUnderstandingInput,
     IntentUnderstandingPayload,

@@ -9,12 +9,13 @@ these `async def test_...` functions run without an explicit
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from navigraph_shared.contracts import RequestContext
 from navigraph_shared.llm import FakeLLMClient
+from pydantic import ValidationError
 
-from navigraph_agents.understanding.intent_understanding.agent import IntentUnderstandingAgent
+from navigraph_agents.understanding.intent_understanding.agent import (
+    IntentUnderstandingAgent,
+)
 from navigraph_agents.understanding.intent_understanding.contracts import (
     IntentUnderstandingInput,
     IntentUnderstandingPayload,

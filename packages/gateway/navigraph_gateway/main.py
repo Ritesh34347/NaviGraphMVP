@@ -24,12 +24,16 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from prometheus_fastapi_instrumentator import Instrumentator
-
-from navigraph_gateway.settings import GatewaySettings, get_gateway_settings
 from navigraph_shared.contracts import RequestContext
-from navigraph_shared.telemetry import bind_request_context, configure_logging, get_tracer
+from navigraph_shared.telemetry import (
+    bind_request_context,
+    configure_logging,
+    get_tracer,
+)
+from prometheus_fastapi_instrumentator import Instrumentator
+from pydantic import BaseModel
+
+from navigraph_gateway.settings import get_gateway_settings
 
 logger = configure_logging("navigraph-gateway")
 tracer = get_tracer("navigraph-gateway")
@@ -58,7 +62,7 @@ try:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
     FastAPIInstrumentor.instrument_app(app)
-except Exception:  # noqa: BLE001 - instrumentation must never block startup
+except Exception:
     logger.warning("FastAPI OTel auto-instrumentation could not be enabled", exc_info=True)
 
 

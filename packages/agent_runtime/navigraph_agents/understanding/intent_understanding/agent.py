@@ -12,14 +12,19 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-
-from opentelemetry.trace import Tracer
+from typing import cast
 
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
 from navigraph_shared.llm import LLMClient, LLMResponse
-from navigraph_shared.telemetry import get_tracer, record_agent_error, record_agent_invocation
+from navigraph_shared.telemetry import (
+    get_tracer,
+    record_agent_error,
+    record_agent_invocation,
+)
+from opentelemetry.trace import Tracer
 
 from navigraph_agents.understanding.intent_understanding.contracts import (
+    IntentLabel,
     IntentUnderstandingInput,
     IntentUnderstandingOutput,
     IntentUnderstandingResult,
@@ -125,7 +130,7 @@ class IntentUnderstandingAgent:
     def _parse_llm_response(
         llm_response: LLMResponse | None,
         errors: list[AgentError],
-    ) -> tuple[str, list[str]]:
+    ) -> tuple[IntentLabel, list[str]]:
         """Parse the LLM's JSON response into (intent, entities).
 
         Handles every way the response can be malformed -- not valid JSON,
@@ -182,6 +187,6 @@ class IntentUnderstandingAgent:
                 )
             )
             # The intent itself was valid, so keep it -- only entities were bad.
-            return intent, []
+            return cast(IntentLabel, intent), []
 
-        return intent, entities
+        return cast(IntentLabel, intent), entities

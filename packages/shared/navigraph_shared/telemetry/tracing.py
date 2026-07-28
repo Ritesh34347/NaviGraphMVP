@@ -48,7 +48,7 @@ def _build_provider(service_name: str) -> TracerProvider:
 
         exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
         provider.add_span_processor(BatchSpanProcessor(exporter))
-    except Exception:  # noqa: BLE001 - tracing setup must never crash the app
+    except Exception:
         logger.warning(
             "Failed to configure OTLP span exporter for endpoint %s; "
             "spans will be created but not exported.",

@@ -18,16 +18,21 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
-from pydantic import ValidationError
-from prometheus_fastapi_instrumentator import Instrumentator
-
 from navigraph_shared.config import get_settings
 from navigraph_shared.llm import AnthropicLLMClient, FakeLLMClient, LLMClient
-from navigraph_shared.telemetry import bind_request_context, configure_logging, get_tracer
+from navigraph_shared.telemetry import (
+    bind_request_context,
+    configure_logging,
+    get_tracer,
+)
+from prometheus_fastapi_instrumentator import Instrumentator
+from pydantic import ValidationError
 
 from navigraph_agents.registry import AGENT_REGISTRY, get_agent, register
 from navigraph_agents.understanding.intent_understanding.agent import (
     AGENT_NAME as INTENT_UNDERSTANDING_AGENT_NAME,
+)
+from navigraph_agents.understanding.intent_understanding.agent import (
     IntentUnderstandingAgent,
 )
 from navigraph_agents.understanding.intent_understanding.contracts import (
@@ -74,7 +79,7 @@ try:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
     FastAPIInstrumentor.instrument_app(app)
-except Exception:  # noqa: BLE001 - instrumentation must never block startup
+except Exception:
     logger.warning("FastAPI OTel auto-instrumentation could not be enabled", exc_info=True)
 
 
