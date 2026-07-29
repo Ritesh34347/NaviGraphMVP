@@ -48,6 +48,11 @@ override.tf.json
 # `.example` template variants are meant to be committed.
 infra/trino/*/catalog/*.properties
 
+# --- Eval harness ---
+# Real run reports from `eval/run_harness.py` -- dated JSON, not meant to
+# be committed; keep the directory itself via .gitkeep.
+eval/results/*.json
+
 # --- IDE ---
 .vscode/
 .idea/

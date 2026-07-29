@@ -1,0 +1,12 @@
+question_id: gq_009
+question: "How has the customer base's risk profile changed over time?"
+expected_intent: trend_analysis
+expected_entities:
+  - "risk level"
+  - "customer"
+  - "trend"
+expected_tables:
+  - STAGING_CUSTOMER_INFORMATION
+expected_columns:
+  - RISKLEVEL
+notes: "A trend question over STAGING_CUSTOMER_INFORMATION."

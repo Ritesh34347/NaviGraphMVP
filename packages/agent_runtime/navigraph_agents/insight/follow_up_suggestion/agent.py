@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
-from navigraph_shared.llm import LLMClient, LLMResponse
+from navigraph_shared.llm import LLMClient, LLMResponse, strip_json_code_fence
 from navigraph_shared.telemetry import (
     get_tracer,
     record_agent_error,
@@ -205,7 +205,7 @@ class FollowUpSuggestionAgent:
             return []
 
         try:
-            data = json.loads(llm_response.text)
+            data = json.loads(strip_json_code_fence(llm_response.text))
         except json.JSONDecodeError as exc:
             errors.append(
                 AgentError(

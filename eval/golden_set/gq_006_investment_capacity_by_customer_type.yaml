@@ -1,0 +1,15 @@
+question_id: gq_006
+question: "Compare investment capacity across customer types."
+expected_intent: comparison
+expected_entities:
+  - "investment capacity"
+  - "customer type"
+expected_tables:
+  - STAGING_CUSTOMER_INFORMATION
+expected_columns:
+  - INVESTMENTCAPACITY
+  - CUSTOMERTYPE
+notes: >
+  A comparison question over STAGING_CUSTOMER_INFORMATION -- see
+  LIMITATIONS.md item 14 for why real resolution anchors to the
+  STAGING_-prefixed table, not the bare CUSTOMER_INFORMATION table.

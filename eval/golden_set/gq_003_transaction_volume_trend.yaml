@@ -1,0 +1,11 @@
+question_id: gq_003
+question: "Show me the trend of transaction volume over time."
+expected_intent: trend_analysis
+expected_entities:
+  - "transaction volume"
+  - "trend"
+expected_tables:
+  - STAGING_TRANSACTIONS
+expected_columns:
+  - UNITS
+notes: "A time-series trend question."

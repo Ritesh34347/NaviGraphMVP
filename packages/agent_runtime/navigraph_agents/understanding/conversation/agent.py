@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
-from navigraph_shared.llm import LLMClient, LLMResponse
+from navigraph_shared.llm import LLMClient, LLMResponse, strip_json_code_fence
 from navigraph_shared.telemetry import (
     get_tracer,
     record_agent_error,
@@ -192,7 +192,7 @@ class ConversationAgent:
             return False, None, question
 
         try:
-            data = json.loads(llm_response.text)
+            data = json.loads(strip_json_code_fence(llm_response.text))
         except json.JSONDecodeError as exc:
             errors.append(
                 AgentError(

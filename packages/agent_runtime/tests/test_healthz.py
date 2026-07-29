@@ -42,6 +42,8 @@ def test_readyz_returns_ok_and_lists_registered_agents() -> None:
         "insight.anomaly_outlier_highlighter",
         "insight.grounded_narrative_generation",
         "insight.follow_up_suggestion",
+        "ops.lineage_recorder",
+        "ops.evaluation_judge",
     }
     assert expected_agents.issubset(set(body["registered_agents"]))
 

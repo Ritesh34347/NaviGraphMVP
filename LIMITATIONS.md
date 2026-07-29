@@ -600,3 +600,143 @@ phase whose only job is updating `docs/architecture/overview.md`'s and
 `data-flow.md`'s domain tables/narrative and the two stale module
 docstrings to reflect the real, current agent roster — not addressed
 here, per the recommendation in DECISIONS.md.
+
+### 33. Golden set is 10 questions, not the README's "50+" target
+
+**What's deferred**: Growing `eval/golden_set/` from 10 real,
+schema-grounded questions to the 50+ `eval/README.md` originally described.
+
+**Why**: Confirmed with the user — each golden question round-trips the
+entire real pipeline (~19 real agent stages, one real Snowflake execution,
+one real narrative-generation LLM call) plus one real judge-model LLM
+call. 10 questions already cover all 4 real `IntentLabel` values and 4
+real tables (`STAGING_TRANSACTIONS`, `STAGING_CUSTOMER_INFORMATION`,
+`STAGING_ASSET_INFORMATION`, `STAGING_MARKETS`) at real, moderate cost;
+50 would be a 5x real API-spend and wall-clock multiplier not justified
+until the harness itself was proven correct on a small set first — which
+it now is (see item 38 below for what its first real run found).
+
+**What full version requires**: Grow the set incrementally in a future
+phase, once there's a concrete need (e.g. broader regression coverage).
+
+### 34. Regression-tracking thresholds and the judge's 1-5 scale are unvalidated placeholders
+
+**What's deferred**: `run_harness.py`'s `_REGRESSION_SCORE_DROP_THRESHOLD`
+(`2`, on the judge's 1-5 scale) and the scale itself have no human-graded
+calibration behind them.
+
+**Why**: A real, reasonable v1 default was needed to ship a working
+regression check — same category as item 24's `ROLE_ROW_LIMITS` and item
+29's z-score threshold. Nothing yet confirms a 2-point drop (vs. 1 or 3)
+is the right sensitivity, or that 1-5 (vs. some other scale) best
+distinguishes real answer-quality differences.
+
+**What full version requires**: A human-graded calibration set comparing
+judge scores against real human judgment, once this matters in practice.
+
+### 35. `docs/architecture/overview.md`'s Ops-domain table incorrectly lists two already-shipped Query-domain agents as separate, still-`DESIGNED` work
+
+**What's deferred**: Correcting `overview.md`'s Ops table, which lists
+"Federated Query Executor (Trino)" and "Result Caching" as `DESIGNED`.
+
+**Why**: Both are already shipped, verified, real agents under the Query
+domain (`query.data_federation`, `query.caching`, Phase 5) — the table
+was never updated, consistent with item 32's broader documentation-
+staleness finding. "Error/Retry Handler," the table's 4th listed agent,
+remains genuinely deferred — a separate line in the same document
+explicitly assigns "retries... and error handling across stages" to the
+Orchestrator domain instead, so it is not this phase's job either.
+
+**What full version requires**: The same dedicated docs-reconciliation
+phase item 32 recommends, not addressed piecemeal here.
+
+### 36. Evaluation Judge's 1-5 scoring scale and dimension weighting are unvalidated
+
+**What's deferred**: Confirming the judge model's `correctness`/
+`groundedness`/`narrative_quality` scores actually correlate with real
+human judgment of answer quality.
+
+**Why**: No human-graded calibration set exists yet — same underlying gap
+as item 34, restated here specifically for the judge agent's own design
+(the scale and the three chosen dimensions), not just the regression
+threshold that consumes its output.
+
+**What full version requires**: A calibration pass once real usage
+provides enough real judged answers to compare against human review.
+
+### 37. Real LLM responses wrap structured JSON in markdown code fences — found live, fixed, but a reminder for future agents
+
+**What happened**: The evaluation harness's first-ever real Anthropic call
+(every LLM-backed agent in this project had previously only run against
+`FakeLLMClient` in unit tests, or been skipped in the `llm_integration`
+tier for lack of a real API key) immediately failed: the real
+`claude-sonnet-5` model wrapped its JSON response in a
+` ```json ... ``` ` markdown code fence even though every system prompt
+explicitly asks for "strict JSON." Every one of the 7 LLM-backed agents
+(Conversation, Intent Understanding, Semantic Retrieval, SQL Generation,
+Grounded Narrative Generation, Follow-up Suggestion, Evaluation Judge)
+called `json.loads(llm_response.text)` directly and had the identical
+gap. Fixed once, centrally, in
+`navigraph_shared.llm.strip_json_code_fence` — every agent's
+`_parse_llm_response` now strips a wrapping fence (if present) before
+parsing; a genuinely malformed response still fails exactly as before, so
+this closes a real, comprehensively-observed gap without masking actual
+malformed output.
+
+**Why this is logged at all**: a reminder, for whichever future phase
+adds a new LLM-backed agent, that unit tests against `FakeLLMClient` never
+exercise this exact failure mode — a real model's actual output shape can
+only be proven correct by a real call. `strip_json_code_fence` must be
+called by any new agent's own JSON-parsing path, not reinvented.
+
+### 38. Real findings from Phase 8's first live, full-real-model harness run (10/10 questions, all with a real Anthropic model)
+
+**What was found, run against the real 10-question golden set for real**
+(pipeline success rate 60%, avg scores 3.0/2.8/3.0 out of 5 — see
+`eval/results/` for the full report):
+
+- **Two real, correct PII rejections** (`gq_005`, `gq_009`, both touching
+  `RISKLEVEL`): the Guardrail domain's PII Exposure Checker correctly
+  blocked the `"analyst"` role from a real PII column — the system working
+  exactly as designed, not a bug.
+- **A real, correctly-caught hallucination** (`gq_006`): the real model
+  cited a value not present in the real data; Grounded Narrative
+  Generation's citation-validation mechanism dropped it and recorded
+  `llm_cited_fabricated_value` — proof the mechanism works against a
+  genuine model, not just the hand-scripted rejection case in
+  `tests/integration/insight_pipeline/`.
+- **A real SQL Generation aggregation gap** (`gq_002`, "how many
+  transactions has each customer made"): the generated `SUM`-based
+  aggregate produced nonsensical per-customer totals (e.g. "1,229,737,256
+  transactions"), triggering 14 `narrative_contains_unverified_number`
+  errors — `sql_generation.agent._aggregation_function`'s current rule
+  (numeric `data_type` + a measure-shaped intent → `SUM`) does not
+  distinguish "sum this quantity" from "count these rows," which a
+  "how many X" phrasing needs. Not fixed here — a real, scoped gap for
+  whichever future phase revisits SQL Generation's aggregation-choice
+  heuristic.
+- **Two real schema-resolution misses** (`gq_007`: "transaction volume" +
+  "markets"; `gq_010`: "transaction pattern"): Ontology/Semantic Retrieval
+  failed to resolve these real phrasings to any real column against a
+  real (non-canned) model, unlike every phrasing previously hand-picked
+  for canned test fixtures. A real recall gap in term resolution, not a
+  crash — the pipeline correctly reported `succeeded=False` rather than
+  guessing.
+- **A real golden-set calibration gap** (`gq_008`): the real Intent
+  Understanding classification returned `"unknown"` for a question this
+  golden question's own hand-authored `expected_intent: metric_lookup`
+  assumed would classify cleanly — either the golden set's expectation or
+  Intent Understanding's real classification behavior for this exact
+  question shape needs a closer look; not resolved here.
+- **The judge model's own occasional malformed-JSON response rate isn't
+  zero either** (`gq_002`, `gq_006`): both times handled gracefully by
+  `EvaluationJudgeAgent`'s existing fallback (all three dimensions to
+  `score=1`, one `judge_response_malformed` error), never a crash.
+
+**Why this is logged as a single item**: all of the above were discovered
+by the SAME event (the harness's first live run against a real model) and
+are exactly the kind of honest, real signal the harness exists to
+surface — logging them individually would fragment one coherent finding.
+None are fixed in this phase; fixing any of them is real, valuable, and
+explicitly out of scope for "build a working harness that produces real
+signal," which this phase's job was.

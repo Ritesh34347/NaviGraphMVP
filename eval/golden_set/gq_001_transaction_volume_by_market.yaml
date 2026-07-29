@@ -1,0 +1,14 @@
+question_id: gq_001
+question: "What is the total transaction volume by market?"
+expected_intent: comparison
+expected_entities:
+  - "units traded"
+  - "market"
+expected_tables:
+  - STAGING_TRANSACTIONS
+expected_columns:
+  - MARKETID
+  - UNITS
+notes: >
+  The worked example already proven real end-to-end in
+  tests/integration/insight_pipeline/test_pipeline_chain.py.

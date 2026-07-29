@@ -1,0 +1,16 @@
+question_id: gq_005
+question: "What is the risk level distribution of our customers?"
+expected_intent: metric_lookup
+expected_entities:
+  - "risk level"
+  - "customer"
+expected_tables:
+  - STAGING_CUSTOMER_INFORMATION
+expected_columns:
+  - RISKLEVEL
+notes: >
+  Exercises a different table than STAGING_TRANSACTIONS. Uses the
+  STAGING_-prefixed name, not the bare CUSTOMER_INFORMATION table, since
+  the real SCHEMA_ENRICHMENT glossary only references staging_-prefixed
+  table names (see LIMITATIONS.md item 14) -- real resolution anchors here.
+

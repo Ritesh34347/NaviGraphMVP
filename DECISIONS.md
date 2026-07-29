@@ -474,3 +474,90 @@ more complete than it is, arguably worse than leaving the whole thing
 consistently stale. Recommend a dedicated, later phase whose only job is
 this reconciliation, covering all ~20 real agents across 4 domains at
 once, not addressed piecemeal per feature phase.
+
+## 2026-07-29 — Lineage is a new standalone package, sharing the physical Postgres instance and using the event's own ID as primary key
+
+We chose `packages/lineage` (`navigraph_lineage`) as a new package with its
+own Alembic revision chain (`version_table="alembic_version_lineage"`,
+distinct from `metadata_catalog`'s own `alembic_version` in the same
+database — a real collision we would have hit otherwise, caught and
+avoided during design, not live) rather than adding a table to
+`metadata_catalog`. Lineage is a high-write, append-only, per-request
+audit log with a completely different lifecycle than crawled schema
+structure and no FK relationship to it — mirrors the `navigraph_federation`
+precedent (split from `connector_sdk` when Trino-routed execution became a
+genuinely distinct concern). We used `LineageEvent.event_id` (the real,
+already-`uuid4`-derived string every agent generates) directly as the
+table's primary key rather than a synthetic surrogate, making idempotent
+re-insertion (`INSERT ... ON CONFLICT (event_id) DO NOTHING ...
+RETURNING`) a real, DB-enforced property, not an application convention.
+
+**A real bug found while proving this idempotency for real**: the first
+version of `record_events` used `result.rowcount` to count newly-inserted
+rows, assuming Postgres reports it accurately for a bulk `ON CONFLICT DO
+NOTHING` insert. It does not for SQLAlchemy 2.0's "insertmanyvalues"
+batching strategy — `tests/integration/lineage_pipeline/` caught a real
+`rowcount=-1` for a genuine single-event insert. Fixed by switching to a
+`RETURNING event_id` clause and counting the returned rows instead, which
+is unconditionally accurate.
+
+## 2026-07-29 — Lineage Recorder records incrementally, one call per upstream agent's real output
+
+We chose to have `LineageRecorderAgent` accept one upstream agent's own
+`lineage_events` list per invocation, called immediately after that
+agent's real output is produced, rather than a single end-of-request batch
+flush. We considered batching (fewer total calls) and rejected it: the
+pipeline diagram's own phrasing is "lineage recorded at every stage," and
+no real Orchestrator exists yet to accumulate a full request's events
+before a single flush — incremental recording is both what the spec
+literally describes and the only design that doesn't require inventing a
+new accumulation mechanism this phase wasn't scoped to build.
+
+## 2026-07-29 — Evaluation Judge is a real agent, not a bare script function; the harness uses one real LLM client throughout, not per-step canned responses
+
+We built `ops.evaluation_judge` as a real agent (contract, lineage,
+confidence, HTTP route) rather than a bare scoring function inside
+`run_harness.py` — this codebase already builds even purely deterministic
+steps (Chart Selection, Schema Mapping) as real agents specifically so
+every meaningful step gets a lineage event and a uniform, independently
+testable HTTP surface; scoring a real answer is at least as consequential.
+`intent_match` is computed in Python, never asked of the judge model — a
+closed-vocabulary equality check has no business being an LLM judgment
+call, mirroring this codebase's standing rule.
+
+We chose ONE real, caller-supplied `LLMClient` used uniformly across every
+LLM-backed step in `eval/pipeline_chain.py`'s `run_full_pipeline`, rather
+than refactoring `tests/integration/insight_pipeline/test_pipeline_chain.py`
+to share this same helper (a deviation from the original Phase 8 plan,
+which proposed that refactor). We considered it and rejected it: that
+test needs fully deterministic, per-step CANNED LLM responses (a fixed
+intent, a fixed semantic-retrieval match, a hand-crafted fabricated
+citation) to reliably exercise specific mechanics — citation-validation
+rejection, z-score correctness — against a schema resolution known in
+advance. Routing it through one real `LLMClient` would make it flaky
+(real model variability changing which entities/columns resolve) for no
+real benefit over the ~150 lines of duplication avoiding it costs. The
+harness's own first real run (see `LIMITATIONS.md` item 38) confirms this
+was the right call: a real model's real behavior (differing entity
+extraction, occasional malformed JSON, genuine resolution misses) is
+exactly what the harness exists to observe, and exactly what the
+deterministic test must NOT be subject to.
+
+**A real, foundational bug found by this same first real run** (see
+`LIMITATIONS.md` item 37): every LLM-backed agent's JSON parsing broke on
+the real model's actual output shape (wrapped in a markdown code fence).
+Fixed once, centrally, via `navigraph_shared.llm.strip_json_code_fence`,
+applied to all 7 affected agents rather than patched ad hoc per call site.
+
+## 2026-07-29 — Golden set: 10 real questions, one YAML file each, CI wiring deferred
+
+We chose 10 real, schema-grounded golden questions (confirmed with the
+user) over the README's originally-stated "50+," given each question's
+real cost (the full real pipeline plus two real LLM calls per question) —
+see `LIMITATIONS.md` item 33. One YAML file per question (not one shared
+file) keeps future additions as atomic diffs, matching this repo's
+existing per-unit-of-work file granularity. We deferred wiring
+`eval/run_harness.py` into CI: `.github/workflows/ci.yml` runs only
+`pytest packages/` and has no Anthropic/Snowflake secrets configured
+today, and `tests/integration/*` (which this harness's own dependencies
+mirror) has never been wired into CI either, for the identical reason.

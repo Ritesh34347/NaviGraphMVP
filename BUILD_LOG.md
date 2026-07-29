@@ -576,3 +576,80 @@ not-yet-real, and two module docstrings still say "exactly one agent is
 registered," none updated since Phase 1 despite Phases 4-7 shipping ~20
 real, verified agents. Recommended as a dedicated later phase rather than
 bundled into this one (see DECISIONS.md).
+
+## 2026-07-29 — Phase 8: Lineage Recorder + LLM-as-judge evaluation harness, the first real end-to-end run against a genuine Anthropic model
+
+Built the one genuinely new Ops-domain agent (`ops.lineage_recorder`, a
+real Postgres-backed audit trail for the `LineageEvent`s every agent
+already emits) plus a new standalone package (`packages/lineage`), then
+the LLM-as-judge evaluation harness `eval/README.md` has described since
+Phase 1 (`ops.evaluation_judge`, a 10-question real golden set, and
+`eval/run_harness.py`). Resolved a real, confirmed documentation
+inconsistency first (via `AskUserQuestion` with the user): Federated Query
+Executor and Result Caching, 2 of the "Ops domain" table's 4 listed
+agents, were already shipped under Query (Phase 5); Error/Retry Handler is
+separately assigned to Orchestrator by the same document. This phase
+built only the real remaining gap (Lineage Recorder) plus the harness, in
+that order.
+
+**Real bugs found, fixed before this phase's own review**:
+1. `record_events`'s first version trusted `result.rowcount` to count
+   newly-inserted rows in a bulk `INSERT ... ON CONFLICT DO NOTHING` --
+   Postgres/SQLAlchemy's "insertmanyvalues" batching makes that unreliable
+   (`tests/integration/lineage_pipeline/` caught a real `rowcount=-1` for
+   a genuine single-event insert). Fixed with a `RETURNING event_id`
+   clause instead, unconditionally accurate.
+2. `agent_runtime`'s Dockerfile never installed the new `packages/lineage`
+   -- the same class of gap Phase 5's `federation` package hit when it
+   was first added, caught the same way (a failed `docker compose build`).
+3. **The most significant bug this phase found, by far**: the evaluation
+   harness's first-ever real call to a real Anthropic model (every
+   LLM-backed agent in this entire project had previously only run
+   against `FakeLLMClient`, or been skipped in the optional
+   `llm_integration` tier for lack of a real API key) failed immediately
+   -- the real `claude-sonnet-5` model wraps its JSON output in a
+   ` ```json ... ``` ` markdown code fence even when explicitly asked for
+   "strict JSON," and every one of the 7 LLM-backed agents
+   (Conversation, Intent Understanding, Semantic Retrieval, SQL
+   Generation, Grounded Narrative Generation, Follow-up Suggestion,
+   Evaluation Judge) called `json.loads(llm_response.text)` directly with
+   the identical gap. Fixed once, centrally, via the new
+   `navigraph_shared.llm.strip_json_code_fence`, applied to all 7 -- not
+   patched ad hoc per agent.
+
+**Real verification performed**: `ruff check packages/ tests/ eval/` and
+`mypy` (explicit per-package paths, 173 source files) both clean;
+`pytest packages/` -- 312 passed, 6 skipped as designed. Applied the real
+`packages/lineage` migration against live Postgres (`lineage_events` +
+a real, separate `alembic_version_lineage` tracking table, confirmed no
+collision with `metadata_catalog`'s own `alembic_version`). The real
+`tests/integration/lineage_pipeline/` test passed: a real 3-agent chain's
+lineage recorded and reassembled in order, plus a real idempotency proof
+(re-recording the same events yields `recorded_count=0`). Rebuilt and
+restarted `agent-runtime` twice (once per real bug found); real HTTP
+round-trips confirmed both new agents live: `POST
+/agents/ops/lineage_recorder/invoke` followed by `GET
+/lineage/{trace_id}?tenant_id=...` returned the exact real recorded event,
+and `POST /agents/ops/evaluation_judge/invoke` (with a real
+`ANTHROPIC_API_KEY`, provided by the user directly in chat and written
+only to the local, gitignored `infra/.env`, matching how the real
+Snowflake credentials were handled in Phase 2) returned a real, discerning
+score correctly penalizing a deliberately unsupported test claim.
+
+**The harness's first full real run** (all 10 real golden questions,
+real Snowflake execution, real Anthropic model at every LLM-backed step,
+real judge scoring): pipeline succeeded end-to-end for 6 of 10 (60%),
+average scores 3.0/2.8/3.0 out of 5. This is real, valuable signal, not a
+failure to fix within this phase -- see `LIMITATIONS.md` item 38 for the
+full breakdown: two real, CORRECT PII rejections (the Guardrail domain
+blocking the `analyst` role from real `RISKLEVEL` data, working exactly as
+designed), one real hallucination correctly caught and rejected by
+Grounded Narrative Generation against a genuine (not scripted) model, one
+real SQL Generation aggregation gap (`SUM` where a "how many X" question
+needed `COUNT`), two real schema-resolution misses against real
+(non-canned) phrasings, one real golden-set intent-label calibration gap,
+and confirmation that the judge model's own malformed-response rate isn't
+zero either (handled gracefully both times, never a crash). None of these
+downstream findings are fixed here -- they are exactly the real signal
+this phase's harness was built to produce, logged honestly rather than
+chased down mid-phase.

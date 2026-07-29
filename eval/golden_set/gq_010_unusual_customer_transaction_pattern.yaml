@@ -1,0 +1,12 @@
+question_id: gq_010
+question: "Is there anything unusual about a specific customer's transaction pattern?"
+expected_intent: anomaly_investigation
+expected_entities:
+  - "customer"
+  - "transaction pattern"
+  - "anomaly"
+expected_tables:
+  - STAGING_TRANSACTIONS
+expected_columns:
+  - CUSTOMERID
+notes: "A second anomaly_investigation question, grouped by customer instead of market."

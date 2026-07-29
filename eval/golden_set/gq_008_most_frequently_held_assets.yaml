@@ -1,0 +1,13 @@
+question_id: gq_008
+question: "What assets are held most frequently across transactions?"
+expected_intent: metric_lookup
+expected_entities:
+  - "asset"
+  - "transaction"
+expected_tables:
+  - STAGING_ASSET_INFORMATION
+  - STAGING_TRANSACTIONS
+expected_columns:
+  - ASSETNAME
+  - ASSETSHORTNAME
+notes: "Exercises the STAGING_ASSET_INFORMATION dimension table."

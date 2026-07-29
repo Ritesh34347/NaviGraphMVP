@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-lineage"
+version = "0.1.0"
+description = "NaviGraph lineage store: a Postgres-backed, append-only audit log of the LineageEvents every agent emits, keyed for real per-trace retrieval. Deliberately a separate package from navigraph-metadata-catalog -- per-request audit data has a different lifecycle (high write volume, append-only) than crawled schema structure (slowly changing, re-crawled)."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "sqlalchemy>=2",
+    "alembic",
+    "psycopg[binary]",
+    # Local workspace dependency -- see packages/metadata_catalog/pyproject.toml's
+    # identical comment for why this is a bare PEP 508 name, not a file://
+    # path: install order matters, run `pip install -e packages/shared`
+    # before this package.
+    "navigraph-shared",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["navigraph_lineage*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

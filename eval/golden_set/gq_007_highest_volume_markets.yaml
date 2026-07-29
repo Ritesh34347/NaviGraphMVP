@@ -1,0 +1,14 @@
+question_id: gq_007
+question: "Which markets have the highest transaction volume?"
+expected_intent: comparison
+expected_entities:
+  - "market"
+  - "transaction volume"
+expected_tables:
+  - STAGING_TRANSACTIONS
+  - STAGING_MARKETS
+expected_columns:
+  - MARKETID
+  - NAME
+  - UNITS
+notes: "A real multi-table candidate (STAGING_TRANSACTIONS + STAGING_MARKETS)."

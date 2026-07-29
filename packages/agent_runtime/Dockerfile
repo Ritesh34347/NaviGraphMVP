@@ -38,6 +38,13 @@ RUN pip install --no-cache-dir /app/knowledge_graph
 COPY federation /app/federation
 RUN pip install --no-cache-dir /app/federation
 
+# Phase 8 added navigraph-lineage (the real Lineage Recorder agent's
+# persistence dependency) -- no dependency on the others, position only
+# needs to be before agent_runtime's own install (same reasoning as
+# federation above, which had the identical gap when it was first added).
+COPY lineage /app/lineage
+RUN pip install --no-cache-dir /app/lineage
+
 COPY agent_runtime /app/agent_runtime
 RUN pip install --no-cache-dir /app/agent_runtime
 

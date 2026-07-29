@@ -1,0 +1,13 @@
+question_id: gq_004
+question: "Are there any unusual spikes in units traded by market?"
+expected_intent: anomaly_investigation
+expected_entities:
+  - "units traded"
+  - "market"
+  - "anomaly"
+expected_tables:
+  - STAGING_TRANSACTIONS
+expected_columns:
+  - MARKETID
+  - UNITS
+notes: "Directly exercises the real Anomaly/Outlier Highlighter agent."

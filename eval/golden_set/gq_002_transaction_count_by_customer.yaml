@@ -1,0 +1,11 @@
+question_id: gq_002
+question: "How many transactions has each customer made?"
+expected_intent: metric_lookup
+expected_entities:
+  - "transaction count"
+  - "customer"
+expected_tables:
+  - STAGING_TRANSACTIONS
+expected_columns:
+  - CUSTOMERID
+notes: "A per-customer aggregate metric lookup."

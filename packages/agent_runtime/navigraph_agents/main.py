@@ -24,8 +24,14 @@ Exposes:
   - POST /agents/insight/anomaly_outlier_highlighter/invoke
   - POST /agents/insight/grounded_narrative_generation/invoke
   - POST /agents/insight/follow_up_suggestion/invoke
+  - POST /agents/ops/lineage_recorder/invoke
+  - POST /agents/ops/evaluation_judge/invoke
+  - GET  /lineage/{trace_id}  -- real, live retrieval of one trace's full
+                                  assembled lineage chain (tenant-scoped via
+                                  a required `tenant_id` query param)
                      -- invokes the six Understanding-domain, six Query-domain,
-                        four Guardrail-domain, and four Insight-domain agents
+                        four Guardrail-domain, four Insight-domain, and two
+                        Ops-domain agents
 
 At startup, constructs a real `AnthropicLLMClient` if `ANTHROPIC_API_KEY` is
 set, or falls back to a `FakeLLMClient` (logging a warning) so this service
@@ -59,6 +65,10 @@ from fastapi import FastAPI, HTTPException
 from navigraph_catalog.db import get_engine, get_session_factory
 from navigraph_federation.trino_client import TrinoClient
 from navigraph_kg.client import Neo4jClient
+from navigraph_lineage.api import get_trace
+from navigraph_lineage.db import get_engine as get_lineage_engine
+from navigraph_lineage.db import get_session_factory as get_lineage_session_factory
+from navigraph_lineage.db import session_scope as lineage_session_scope
 from navigraph_shared.config import get_settings
 from navigraph_shared.contracts import AgentInput
 from navigraph_shared.llm import AnthropicLLMClient, FakeLLMClient, LLMClient
@@ -137,6 +147,16 @@ from navigraph_agents.insight.grounded_narrative_generation.agent import (
 from navigraph_agents.insight.grounded_narrative_generation.contracts import (
     NarrativeGenerationInput,
 )
+from navigraph_agents.ops.evaluation_judge.agent import (
+    AGENT_NAME as EVALUATION_JUDGE_AGENT_NAME,
+)
+from navigraph_agents.ops.evaluation_judge.agent import EvaluationJudgeAgent
+from navigraph_agents.ops.evaluation_judge.contracts import EvaluationJudgeInput
+from navigraph_agents.ops.lineage_recorder.agent import (
+    AGENT_NAME as LINEAGE_RECORDER_AGENT_NAME,
+)
+from navigraph_agents.ops.lineage_recorder.agent import LineageRecorderAgent
+from navigraph_agents.ops.lineage_recorder.contracts import LineageRecorderInput
 from navigraph_agents.query.caching.agent import AGENT_NAME as CACHING_AGENT_NAME
 from navigraph_agents.query.caching.agent import CacheClientProtocol, CachingAgent
 from navigraph_agents.query.caching.contracts import CachingInput
@@ -355,10 +375,28 @@ async def lifespan(app: FastAPI):
     follow_up_suggestion_agent = FollowUpSuggestionAgent(llm_client=llm_client, tracer=tracer)
     register(FOLLOW_UP_SUGGESTION_AGENT_NAME, follow_up_suggestion_agent.run)
 
+    # Ops-domain agents (Phase 8). Lineage Recorder needs its own,
+    # SEPARATE session factory -- `navigraph_lineage`'s `get_engine()`/
+    # `get_session_factory()` are independent module-level caches from
+    # `navigraph_catalog.db`'s (a real, deliberate design point: both
+    # packages connect to the same physical Postgres instance, but each
+    # owns its own engine/session-factory cache and its own Alembic
+    # revision chain -- see navigraph_lineage/migrations/env.py's
+    # `alembic_version_lineage` docstring for why).
+    lineage_session_factory = get_lineage_session_factory(get_lineage_engine())
+    lineage_recorder_agent = LineageRecorderAgent(
+        session_factory=lineage_session_factory, tracer=tracer
+    )
+    register(LINEAGE_RECORDER_AGENT_NAME, lineage_recorder_agent.run)
+
+    evaluation_judge_agent = EvaluationJudgeAgent(llm_client=llm_client, tracer=tracer)
+    register(EVALUATION_JUDGE_AGENT_NAME, evaluation_judge_agent.run)
+
     app.state.llm_client = llm_client
     app.state.neo4j_client = neo4j_client
     app.state.trino_client = trino_client
     app.state.redis_client = redis_client
+    app.state.lineage_session_factory = lineage_session_factory
     yield
 
     neo4j_client.close()
@@ -635,3 +673,59 @@ async def invoke_follow_up_suggestion(payload: dict) -> dict:
     return await _invoke_agent(
         FOLLOW_UP_SUGGESTION_AGENT_NAME, FollowUpSuggestionInput, payload
     )
+
+
+@app.post("/agents/ops/lineage_recorder/invoke")
+async def invoke_lineage_recorder(payload: dict) -> dict:
+    """Parse the request body into `LineageRecorderInput`, run the real
+    Lineage Recorder agent, and return its `LineageRecorderOutput`.
+    """
+
+    return await _invoke_agent(LINEAGE_RECORDER_AGENT_NAME, LineageRecorderInput, payload)
+
+
+@app.post("/agents/ops/evaluation_judge/invoke")
+async def invoke_evaluation_judge(payload: dict) -> dict:
+    """Parse the request body into `EvaluationJudgeInput`, run the real
+    Evaluation Judge agent, and return its `EvaluationJudgeOutput`.
+    """
+
+    return await _invoke_agent(EVALUATION_JUDGE_AGENT_NAME, EvaluationJudgeInput, payload)
+
+
+@app.get("/lineage/{trace_id}")
+async def get_lineage_trace(trace_id: str, tenant_id: str) -> dict:
+    """Real, live retrieval of the full assembled lineage chain for one
+    trace. A plain FastAPI route, not an `_invoke_agent`-wrapped POST --
+    mirrors `/healthz`/`/readyz`'s direct-route shape, since reading a
+    trace isn't agent-shaped in this codebase's existing convention (see
+    `navigraph_lineage.api.get_trace`'s docstring).
+
+    `tenant_id` is a REQUIRED query param, not inferred or optional --
+    mirrors `RequestContext.tenant_id`'s own non-optional discipline. No
+    new auth mechanism exists yet in this codebase (see LIMITATIONS.md item
+    23), so this is the simplest tenant-scoping mechanism available; a
+    caller who knows a `trace_id` and a `tenant_id` string can read that
+    trace, which is acceptable for an internal debugging/audit route today
+    but is a real, logged limitation, not a full access-control boundary.
+    """
+
+    with lineage_session_scope(app.state.lineage_session_factory) as session:
+        records = get_trace(session, trace_id=trace_id, tenant_id=tenant_id)
+
+    return {
+        "trace_id": trace_id,
+        "tenant_id": tenant_id,
+        "events": [
+            {
+                "event_id": record.event_id,
+                "agent_name": record.agent_name,
+                "timestamp": record.timestamp.isoformat(),
+                "input_summary": record.input_summary,
+                "output_summary": record.output_summary,
+                "tenant_id": record.tenant_id,
+                "trace_id": record.trace_id,
+            }
+            for record in records
+        ],
+    }

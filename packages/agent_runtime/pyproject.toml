@@ -28,6 +28,8 @@ dependencies = [
     "navigraph-connector-sdk",
     # data_federation's route="trino" path.
     "navigraph-federation",
+    # ops.lineage_recorder's real persistence layer (Phase 8).
+    "navigraph-lineage",
     # caching agent's real Redis client (the agent itself only depends on
     # a minimal get/set protocol, but this service is what actually
     # constructs and injects a real redis.Redis instance).
