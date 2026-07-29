@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-knowledge-graph"
+version = "0.1.0"
+description = "NaviGraph knowledge graph: a Neo4j-backed, two-tier ontology (bounded-cardinality reference/dimension nodes crawled from real Snowflake data, plus a hand-curated business-concept/schema-mapping layer over navigraph-metadata-catalog) used to ground business-term resolution and reference-data validation. Deliberately excludes customer- and transaction-cardinality data -- that's answered by generated SQL against the source, not this graph."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "neo4j",
+    # Local workspace dependency. This is a bare, unpinned PEP 508 name --
+    # it is intentionally NOT a file:// path reference (those require
+    # absolute paths and behave inconsistently across pip versions for
+    # local monorepos). Instead, install order matters: run
+    #   pip install -e packages/shared
+    # BEFORE
+    #   pip install -e packages/knowledge_graph
+    # so that `navigraph-shared` is already satisfied in the environment
+    # when pip resolves this package's dependencies. See packages/pyproject.toml.
+    "navigraph-shared",
+    # Same local-workspace-dependency reasoning as above: install
+    #   pip install -e packages/metadata_catalog
+    # before this package. This package reads `navigraph_catalog.api`'s
+    # `list_tables`/`list_columns`/`list_glossary` functions and depends on
+    # its `CatalogTable`/`CatalogColumn`/`ColumnGlossary` models as its
+    # source of truth for Tier 2 (`Table`/`Column`/`BusinessConcept` proxy
+    # nodes) -- it never talks to Postgres directly itself.
+    "navigraph-metadata-catalog",
+    # Same local-workspace-dependency reasoning as above: install
+    #   pip install -e packages/connector_sdk
+    # before this package. The reference-data crawl stage
+    # (`navigraph_kg.ingestion.pipeline._sync_reference_data`) takes an
+    # already-constructed `navigraph_connectors.base.Connector` instance via
+    # dependency injection, exactly like
+    # `navigraph_catalog.ingestion.snowflake_crawler.crawl_and_store` does.
+    "navigraph-connector-sdk",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["navigraph_kg*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

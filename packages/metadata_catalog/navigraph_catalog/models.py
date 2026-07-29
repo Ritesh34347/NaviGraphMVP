@@ -134,3 +134,46 @@ class CatalogColumn(Base):
     description: Mapped[str | None] = mapped_column(default=None)
 
     table: Mapped[CatalogTable] = relationship(back_populates="columns")
+    glossary_entry: Mapped[ColumnGlossary | None] = relationship(
+        back_populates="column",
+        cascade="all, delete-orphan",
+    )
+
+
+class ColumnGlossary(Base):
+    """A business glossary entry for a single `CatalogColumn`.
+
+    One-to-one with `CatalogColumn` (enforced by the `unique=True` FK below)
+    -- `column_id` is the natural key `upsert_glossary` matches on. Deliberately
+    separate from `CatalogColumn` itself (rather than extra nullable columns
+    on it) so that raw crawled structure and business-glossary enrichment stay
+    two distinct concerns, each with its own lifecycle: a glossary entry can be
+    re-enriched, re-sourced, or removed without touching the crawled schema
+    row it annotates.
+    """
+
+    __tablename__ = "column_glossary"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    column_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_columns.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    business_name: Mapped[str] = mapped_column(nullable=False)
+    # List of synonym strings. The source data (e.g. `SCHEMA_ENRICHMENT`'s
+    # `SYNONYMS` column) is a comma-separated string -- splitting it into this
+    # list happens at ingestion time in the crawler, not stored raw here.
+    synonyms: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    description: Mapped[str | None] = mapped_column(default=None)
+    # e.g. "schema_enrichment" -- which glossary source produced this entry,
+    # so future glossary sources (hand-curated, other tools) are distinguishable.
+    source: Mapped[str] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+    column: Mapped[CatalogColumn] = relationship(back_populates="glossary_entry")

@@ -109,3 +109,67 @@ crawler against a live Snowflake account this same phase surfaced a bug
 `introspect_schema()`, polluting real business tables with ~60 Snowflake
 system views) that was fixed entirely inside the connector, with no changes
 needed to the catalog's models, API, or crawler logic.
+
+## 2026-07-29 — Two-tier knowledge graph: reference data + business-concept mapping, no fact-level data
+
+We chose to model `packages/knowledge_graph` as two tiers only: bounded
+reference/dimension nodes grounded in the real schema (`Asset`, `Market`,
+`Exchange`, `Sector`, `Industry`, `Channel`, `CustomerType`, `RiskLevel`,
+`InvestmentCapacityBand`) and a business-concept-to-schema mapping layer
+(`BusinessConcept`, `Table`, `Column`, `RelationshipConcept`). We explicitly
+excluded individual customers and individual transactions from the graph —
+confirmed with you rather than decided unilaterally, since it shapes what
+Phase 4's agents can ask the graph for later. Every one of the 50 approved
+business questions gets answered by generated SQL against Snowflake; the
+graph's job is reference-data validation (e.g. confirming `"Technology"` is
+a real sector value before it's injected into a SQL filter) and
+business-term resolution, never a duplicate copy of high-cardinality data.
+We considered materializing customer-holds-asset edges (from the
+pre-aggregated `CUSTOMER_ASSET_AGG`/`CUSTOMER_MARKET_AGG` tables) directly
+and rejected it: still customer-cardinality, wrong shape for a
+single-instance Neo4j Community graph, and it would duplicate the warehouse
+rather than add traversal value the SQL layer can't already provide.
+
+## 2026-07-29 — Business glossary lives in Postgres (`metadata_catalog`), not crawled separately by the graph
+
+We chose to ingest the real `SCHEMA_ENRICHMENT` glossary (business names,
+synonyms, descriptions — ~41 real rows) into a new `ColumnGlossary` table in
+the already-shipped `metadata_catalog` package, rather than having
+`knowledge_graph` crawl it from Snowflake directly. `navigraph_catalog`
+remains the single source of truth for everything schema-related (structure
+*and* glossary); `knowledge_graph` becomes a fully rebuildable derived
+semantic layer that needs zero Snowflake credentials for the parts of
+ingestion that only touch structure/glossary — it only talks to Snowflake
+directly for the one thing the catalog genuinely can't supply: live
+reference-data values (distinct assets, sectors, markets, etc.), which are
+data, not structure. We considered keeping `knowledge_graph` fully
+self-contained with its own crawl-and-match logic and rejected it as
+unnecessary duplication of the case-insensitive table/column matching logic
+already proven in Phase 2's crawlers, for a real, if closed, Phase 2 package
+we confirmed was safe to extend.
+
+## 2026-07-29 — Exchange is a real graph node, decided from live data rather than assumed
+
+We chose to model `Exchange` as its own node type with
+`(:Market)-[:PART_OF_EXCHANGE]->(:Exchange)`, rather than treating
+`EXCHANGEID` as a bare property on `Market`. This was decided from a live,
+read-only query against the real account during planning, not assumed: real
+exchanges group multiple real markets (e.g. `ATHEX` groups `EBB`, `XATH`,
+`ENAX`; verified again post-ingestion by querying the live graph and getting
+exactly those three markets back). Modeling it as a property would have
+silently lost this real 1-to-many structure.
+
+## 2026-07-29 — Sector/Industry are independent siblings off Asset, not a hierarchy
+
+We chose `(:Asset)-[:IN_SECTOR]->(:Sector)` and
+`(:Asset)-[:IN_INDUSTRY]->(:Industry)` as independent edges rather than a
+`(:Sector)-[:HAS_INDUSTRY]->(:Industry)` hierarchy. A live query during
+planning found the real data is ~90% clean as a hierarchy but not perfectly
+— `"Building Materials"` genuinely appears under both `"Corporate"` and
+`"Basic Materials"` — and only about half of real assets have any
+sector/industry at all (bonds/MTF funds legitimately have neither). A
+strict hierarchy edge would have forced a false single-parent choice for
+the one real violation; siblings-off-`Asset` makes no such claim and costs
+nothing in query-ability for the questions we actually need to answer.
+Edges are only created when the source value is non-null — no placeholder
+"Unclassified" nodes.

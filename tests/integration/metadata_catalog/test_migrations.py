@@ -60,6 +60,15 @@ _EXPECTED_TABLES_AND_COLUMNS = {
         "ordinal_position",
         "description",
     },
+    "column_glossary": {
+        "id",
+        "column_id",
+        "business_name",
+        "synonyms",
+        "description",
+        "source",
+        "created_at",
+    },
 }
 
 
@@ -104,6 +113,19 @@ def test_upgrade_head_creates_expected_tables_then_downgrade_removes_them() -> N
             fk["referred_table"] == "catalog_tables" and fk.get("options", {}).get("ondelete")
             == "CASCADE"
             for fk in fks
+        )
+
+        # `column_glossary` FKs to `catalog_columns` with ON DELETE CASCADE,
+        # and its `column_id` is unique (one glossary entry per column).
+        glossary_fks = inspector.get_foreign_keys("column_glossary")
+        assert any(
+            fk["referred_table"] == "catalog_columns" and fk.get("options", {}).get("ondelete")
+            == "CASCADE"
+            for fk in glossary_fks
+        )
+        glossary_unique_constraints = inspector.get_unique_constraints("column_glossary")
+        assert any(
+            uc["column_names"] == ["column_id"] for uc in glossary_unique_constraints
         )
     finally:
         # Prove downgrade() is real, not just written for show -- and leave

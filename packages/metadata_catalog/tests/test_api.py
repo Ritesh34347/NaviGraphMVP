@@ -24,14 +24,17 @@ import pytest
 from navigraph_catalog.api import (
     get_table,
     list_columns,
+    list_glossary,
     list_tables,
     register_data_source,
+    upsert_glossary,
     upsert_schema_tree,
 )
 from navigraph_catalog.models import (
     CatalogColumn,
     CatalogSchema,
     CatalogTable,
+    ColumnGlossary,
     DataSource,
 )
 from navigraph_connectors.base import (
@@ -211,6 +214,74 @@ class TestReadHelpers:
         session.execute.return_value.scalars.return_value = expected
 
         result = list_columns(session, table_id=uuid.uuid4())
+
+        assert result == expected
+        session.execute.assert_called_once()
+
+
+class TestUpsertGlossary:
+    def test_inserts_new_glossary_entry_when_none_exists(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        column_id = uuid.uuid4()
+        result = upsert_glossary(
+            session,
+            column_id=column_id,
+            business_name="Total Transaction Value",
+            synonyms=["trade value", "order value"],
+            description="The total value of the transaction.",
+            source="schema_enrichment",
+        )
+
+        session.add.assert_called_once()
+        added = session.add.call_args.args[0]
+        assert isinstance(added, ColumnGlossary)
+        assert added.column_id == column_id
+        assert added.business_name == "Total Transaction Value"
+        assert added.synonyms == ["trade value", "order value"]
+        assert added.description == "The total value of the transaction."
+        assert added.source == "schema_enrichment"
+
+        session.flush.assert_called_once()
+        assert result is added
+
+    def test_updates_existing_glossary_entry_without_reinserting(self) -> None:
+        session = MagicMock()
+        existing_entry = ColumnGlossary(
+            id=uuid.uuid4(),
+            column_id=uuid.uuid4(),
+            business_name="old name",
+            synonyms=["old synonym"],
+            description="old description",
+            source="schema_enrichment",
+        )
+        session.execute.return_value.scalar_one_or_none.return_value = existing_entry
+
+        result = upsert_glossary(
+            session,
+            column_id=existing_entry.column_id,
+            business_name="Total Transaction Value",
+            synonyms=["trade value", "order value", "gross value"],
+            description="new description",
+            source="schema_enrichment",
+        )
+
+        session.add.assert_not_called()
+        assert existing_entry.business_name == "Total Transaction Value"
+        assert existing_entry.synonyms == ["trade value", "order value", "gross value"]
+        assert existing_entry.description == "new description"
+        session.flush.assert_called_once()
+        assert result is existing_entry
+
+
+class TestListGlossary:
+    def test_list_glossary_builds_expected_query_and_returns_scalars(self) -> None:
+        session = MagicMock()
+        expected = [MagicMock(spec=ColumnGlossary), MagicMock(spec=ColumnGlossary)]
+        session.execute.return_value.scalars.return_value = expected
+
+        result = list_glossary(session, data_source_id=uuid.uuid4())
 
         assert result == expected
         session.execute.assert_called_once()

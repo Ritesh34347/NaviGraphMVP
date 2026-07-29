@@ -168,3 +168,37 @@ one-machine quirk, not a design gap. Worth a line in the local-dev runbook
 so the next engineer who hits a confusing Postgres auth error on this or a
 similarly-configured machine knows to check for a port conflict rather
 than doubt their credentials.
+
+### 12. Knowledge graph: Neo4j Community's tenancy is property-based only
+
+**What's deferred**: Real per-tenant database/graph isolation in Neo4j.
+
+**Why**: `infra/docker-compose.yml` runs a single `neo4j:5-community`
+instance (see item 2). Multi-database isolation is a Neo4j Enterprise
+feature, so every node in `packages/knowledge_graph` carries a `tenant_id`
+property instead, filtered explicitly in every Cypher query in
+`navigraph_kg.api`. This isn't a new gap introduced by Phase 3 -- it's the
+same single-instance limitation already logged in item 2, now visible at
+the application-query level rather than only the deployment level.
+
+**What full version requires**: Neo4j Enterprise/Aura Enterprise with real
+per-tenant database isolation, as part of the same cloud-deployment phase
+already named in item 2 -- not a separate effort.
+
+### 13. Business-glossary and reference-data coverage in the graph is partial by design
+
+**What's deferred**: Nothing -- this is a deliberate, permanent property of
+the design, not a gap expected to close over time.
+
+**Why**: Only ~41 of the real crawled columns have a `SCHEMA_ENRICHMENT`
+glossary entry (confirmed against the live account); columns without one
+get no `BusinessConcept` node at all -- "no business concept exists yet
+for this column" is meant to be a legitimate, surfaced answer for a future
+NLQ pipeline, not something to synthesize a fallback for. Similarly,
+`Sector`/`Industry` edges are only created for the ~50% of real assets
+that have a non-null value in Snowflake (bonds/MTF funds legitimately have
+neither) -- there is no placeholder "Unclassified" node.
+
+**What full version requires**: Nothing structurally; if broader glossary
+coverage is wanted later, it's a data-curation task (adding more
+`SCHEMA_ENRICHMENT` rows or a hand-curated equivalent), not a code change.

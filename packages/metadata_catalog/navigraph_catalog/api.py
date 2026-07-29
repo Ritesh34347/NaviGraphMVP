@@ -20,6 +20,7 @@ from navigraph_catalog.models import (
     CatalogColumn,
     CatalogSchema,
     CatalogTable,
+    ColumnGlossary,
     DataSource,
 )
 
@@ -167,5 +168,58 @@ def list_columns(session: Session, *, table_id: uuid.UUID) -> list[CatalogColumn
             select(CatalogColumn)
             .where(CatalogColumn.table_id == table_id)
             .order_by(CatalogColumn.ordinal_position)
+        ).scalars()
+    )
+
+
+def upsert_glossary(
+    session: Session,
+    *,
+    column_id: uuid.UUID,
+    business_name: str,
+    synonyms: list[str],
+    description: str | None,
+    source: str,
+) -> ColumnGlossary:
+    """Idempotently upsert a `ColumnGlossary` entry for `column_id`.
+
+    Matches the existing row by `column_id` (its unique-constraint natural
+    key) and updates it in place; inserts a new row when none exists yet.
+    Mirrors `upsert_schema_tree`'s idempotent-upsert style so repeated crawls
+    of the same glossary source never duplicate rows for the same column.
+    """
+
+    glossary_entry = session.execute(
+        select(ColumnGlossary).where(ColumnGlossary.column_id == column_id)
+    ).scalar_one_or_none()
+
+    if glossary_entry is None:
+        glossary_entry = ColumnGlossary(column_id=column_id)
+        session.add(glossary_entry)
+
+    glossary_entry.business_name = business_name
+    glossary_entry.synonyms = synonyms
+    glossary_entry.description = description
+    glossary_entry.source = source
+
+    session.flush()
+    return glossary_entry
+
+
+def list_glossary(session: Session, *, data_source_id: uuid.UUID) -> list[ColumnGlossary]:
+    """List every `ColumnGlossary` entry belonging to `data_source_id`.
+
+    Joins `ColumnGlossary -> CatalogColumn -> CatalogTable -> CatalogSchema ->
+    DataSource` to find every glossary entry attached to a column that
+    ultimately belongs to this data source.
+    """
+
+    return list(
+        session.execute(
+            select(ColumnGlossary)
+            .join(CatalogColumn, ColumnGlossary.column_id == CatalogColumn.id)
+            .join(CatalogTable, CatalogColumn.table_id == CatalogTable.id)
+            .join(CatalogSchema, CatalogTable.schema_id == CatalogSchema.id)
+            .where(CatalogSchema.data_source_id == data_source_id)
         ).scalars()
     )

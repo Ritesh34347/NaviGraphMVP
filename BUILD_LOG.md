@@ -183,3 +183,56 @@ end-to-end verification, not just mocked tests:
 packages together; `pip-audit` clean; real Alembic up/down migration
 against live Postgres; real Snowflake connector integration test passing;
 real crawl of `FIDELITY_POC` producing 17 correctly-shaped catalog rows.
+
+## 2026-07-29 — Phase 3: Knowledge graph / ontology, verified against real Neo4j + real Snowflake
+
+You approved a set of 50 real business questions grounded in the
+`FIDELITY_POC` schema (asked me to generate them from what the Phase 2
+crawl revealed, rather than supplying your own). Used those questions plus
+two live, read-only Snowflake queries (exchange/market grouping,
+sector/industry cleanliness) to design the ontology for real rather than
+generically, then built:
+
+- Extended `packages/metadata_catalog` (a closed Phase 2 package, extended
+  with your explicit sign-off) with a `ColumnGlossary` model, migration
+  `0002`, `upsert_glossary`/`list_glossary` API, and a
+  `schema_enrichment_crawler` that ingests the real `SCHEMA_ENRICHMENT`
+  glossary.
+- Built new `packages/knowledge_graph` (`navigraph_kg`): a two-tier Neo4j
+  ontology (reference/dimension nodes + business-concept mapping layer),
+  an idempotent four-stage ingestion pipeline with soft staleness
+  (`active`/`last_synced_at`, never hard-delete), and a tenant-scoped
+  read API.
+
+**Two real bugs found and fixed running against live services (not just
+mocks)**:
+1. `schema_enrichment_crawler.py` assumed lowercase dict keys
+   (`row["table_name"]`) matching the SQL as literally written, but
+   Snowflake's cursor always reports column names in their actual stored
+   case — uppercase by default for unquoted identifiers — regardless of
+   query casing. Fixed by normalizing row keys to lowercase before use;
+   also fixed the unit test's fake connector, which had been using
+   lowercase keys and thus couldn't have caught this against a mock alone.
+2. `AssetRecord.asset_name` was a required `str`, but the real
+   `FIDELITY_POC.FAR_TRANS.ASSET_INFORMATION` table has at least one row
+   with a NULL `asset_name` — the real ingestion run crashed with a
+   Pydantic validation error until the field was made `str | None`.
+
+**Real verification performed**: `alembic upgrade head` (now `0002`)
+against the live docker-compose Postgres — real `column_glossary` table
+confirmed; real glossary crawl — 41 real business-term rows landed in
+Postgres; real knowledge-graph ingestion against live Neo4j + live
+Snowflake reference data — 835 assets/38 markets/29 exchanges/15
+sectors/119 industries/41 business concepts synced; idempotency proven
+three ways (identical ingestion-summary counts across two runs, and an
+exact total node/relationship count match — 1203 nodes, 1861
+relationships — before and after a third run); four real questions
+answered via the graph and shown correct: "order value" resolves to
+`TRANSACTIONS.TOTALVALUE`; exchange `ATHEX` correctly groups its three
+real markets (`EBB`, `XATH`, `ENAX`); 26 real assets returned for the
+Technology sector (SAP SE, Western Digital, several Greek tech
+companies); the `RelationshipConcept` metadata for "Customer has
+RiskLevel" resolves to `CUSTOMER_INFORMATION.CUSTOMERID`/`RISKLEVEL`.
+`ruff`, `mypy` (47 source files), and `pytest packages/` (99 passed, 2
+skipped) all clean across all six Python packages together; `pip-audit`
+clean.

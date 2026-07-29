@@ -20,6 +20,7 @@ def test_expected_tables_exist() -> None:
         "catalog_schemas",
         "catalog_tables",
         "catalog_columns",
+        "column_glossary",
     }
 
 
@@ -116,9 +117,44 @@ def test_catalog_columns_columns_and_fk() -> None:
     assert ("name", "table_id") in unique_constraints
 
 
+def test_column_glossary_columns_and_fk() -> None:
+    table = Base.metadata.tables["column_glossary"]
+    columns = table.columns
+
+    assert isinstance(columns["id"].type, UUID)
+    assert columns["id"].primary_key
+
+    assert not columns["column_id"].nullable
+    assert not columns["business_name"].nullable
+
+    assert isinstance(columns["synonyms"].type, JSONB)
+    assert not columns["synonyms"].nullable
+
+    assert columns["description"].nullable
+    assert not columns["source"].nullable
+    assert not columns["created_at"].nullable
+
+    fk = next(iter(columns["column_id"].foreign_keys))
+    assert fk.column.table.name == "catalog_columns"
+    assert fk.ondelete == "CASCADE"
+
+    unique_constraints = {
+        tuple(sorted(c.name for c in uc.columns))
+        for uc in table.constraints
+        if isinstance(uc, UniqueConstraint)
+    }
+    assert ("column_id",) in unique_constraints
+
+
 def test_relationships_navigate_parent_to_child() -> None:
-    from navigraph_catalog.models import CatalogSchema, CatalogTable, DataSource
+    from navigraph_catalog.models import (
+        CatalogColumn,
+        CatalogSchema,
+        CatalogTable,
+        DataSource,
+    )
 
     assert "schemas" in DataSource.__mapper__.relationships
     assert "tables" in CatalogSchema.__mapper__.relationships
     assert "columns" in CatalogTable.__mapper__.relationships
+    assert "glossary_entry" in CatalogColumn.__mapper__.relationships
