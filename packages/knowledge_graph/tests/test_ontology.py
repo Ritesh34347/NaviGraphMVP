@@ -63,8 +63,8 @@ class TestApplyConstraints:
 
 
 class TestRelationshipConcepts:
-    def test_has_exactly_the_three_seed_entries(self) -> None:
-        assert len(RELATIONSHIP_CONCEPTS) == 3
+    def test_has_exactly_the_four_seed_entries(self) -> None:
+        assert len(RELATIONSHIP_CONCEPTS) == 4
 
     def test_every_entry_has_the_expected_keys(self) -> None:
         expected_keys = {
@@ -90,3 +90,15 @@ class TestRelationshipConcepts:
     def test_contains_customer_has_risklevel(self) -> None:
         names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
         assert "Customer has RiskLevel" in names
+
+    def test_contains_transaction_happens_in_market(self) -> None:
+        names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
+        assert "Transaction happens in Market" in names
+
+    def test_transaction_happens_in_market_uses_marketid_as_the_shared_join_key(self) -> None:
+        concept = next(
+            c for c in RELATIONSHIP_CONCEPTS if c["name"] == "Transaction happens in Market"
+        )
+        assert concept["realizing_table"] == "TRANSACTIONS"
+        assert concept["subject_key_column"] == "MARKETID"
+        assert concept["object_key_column"] == "MARKETID"

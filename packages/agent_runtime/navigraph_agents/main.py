@@ -26,12 +26,15 @@ Exposes:
   - POST /agents/insight/follow_up_suggestion/invoke
   - POST /agents/ops/lineage_recorder/invoke
   - POST /agents/ops/evaluation_judge/invoke
+  - POST /agents/orchestrator/session_context_manager/invoke
+  - POST /agents/orchestrator/clarification_coordinator/invoke
+  - POST /agents/orchestrator/request_orchestrator/invoke
   - GET  /lineage/{trace_id}  -- real, live retrieval of one trace's full
                                   assembled lineage chain (tenant-scoped via
                                   a required `tenant_id` query param)
                      -- invokes the six Understanding-domain, six Query-domain,
-                        four Guardrail-domain, four Insight-domain, and two
-                        Ops-domain agents
+                        four Guardrail-domain, four Insight-domain, two
+                        Ops-domain, and three Orchestrator-domain agents
 
 At startup, constructs a real `AnthropicLLMClient` if `ANTHROPIC_API_KEY` is
 set, or falls back to a `FakeLLMClient` (logging a warning) so this service
@@ -157,6 +160,36 @@ from navigraph_agents.ops.lineage_recorder.agent import (
 )
 from navigraph_agents.ops.lineage_recorder.agent import LineageRecorderAgent
 from navigraph_agents.ops.lineage_recorder.contracts import LineageRecorderInput
+from navigraph_agents.orchestrator.clarification_coordinator.agent import (
+    AGENT_NAME as CLARIFICATION_COORDINATOR_AGENT_NAME,
+)
+from navigraph_agents.orchestrator.clarification_coordinator.agent import (
+    ClarificationCoordinatorAgent,
+)
+from navigraph_agents.orchestrator.clarification_coordinator.contracts import (
+    ClarificationCoordinatorInput,
+)
+from navigraph_agents.orchestrator.request_orchestrator.agent import (
+    AGENT_NAME as REQUEST_ORCHESTRATOR_AGENT_NAME,
+)
+from navigraph_agents.orchestrator.request_orchestrator.agent import (
+    RequestOrchestratorAgent,
+)
+from navigraph_agents.orchestrator.request_orchestrator.contracts import (
+    RequestOrchestratorInput,
+)
+from navigraph_agents.orchestrator.session_context_manager.agent import (
+    AGENT_NAME as SESSION_CONTEXT_MANAGER_AGENT_NAME,
+)
+from navigraph_agents.orchestrator.session_context_manager.agent import (
+    CacheClientProtocol as SessionCacheClientProtocol,
+)
+from navigraph_agents.orchestrator.session_context_manager.agent import (
+    SessionContextManagerAgent,
+)
+from navigraph_agents.orchestrator.session_context_manager.contracts import (
+    SessionContextManagerInput,
+)
 from navigraph_agents.query.caching.agent import AGENT_NAME as CACHING_AGENT_NAME
 from navigraph_agents.query.caching.agent import CacheClientProtocol, CachingAgent
 from navigraph_agents.query.caching.contracts import CachingInput
@@ -392,11 +425,45 @@ async def lifespan(app: FastAPI):
     evaluation_judge_agent = EvaluationJudgeAgent(llm_client=llm_client, tracer=tracer)
     register(EVALUATION_JUDGE_AGENT_NAME, evaluation_judge_agent.run)
 
+    # Orchestrator-domain agents (Phase 9). Session/Context Manager reuses
+    # the same real `redis_client` Caching already constructed above --
+    # same protocol, different key namespace (`...:session:...` vs
+    # `...:query_cache:...`), see `session_context_manager/agent.py`'s
+    # module docstring.
+    session_context_manager_agent = SessionContextManagerAgent(
+        cache_client=cast(SessionCacheClientProtocol, redis_client), tracer=tracer
+    )
+    register(SESSION_CONTEXT_MANAGER_AGENT_NAME, session_context_manager_agent.run)
+
+    clarification_coordinator_agent = ClarificationCoordinatorAgent(
+        llm_client=llm_client, tracer=tracer
+    )
+    register(CLARIFICATION_COORDINATOR_AGENT_NAME, clarification_coordinator_agent.run)
+
+    # Request Orchestrator constructs all ~19 of its own sub-agents
+    # in __init__ (its own real, independent instances -- not the ones
+    # registered above, matching every prior agent's own construct-your-
+    # own-dependencies convention). It needs `catalog_session_factory` and
+    # `opa_client`, both of which existed only as local variables until now.
+    request_orchestrator_agent = RequestOrchestratorAgent(
+        llm_client=llm_client,
+        catalog_session_factory=catalog_session_factory,
+        lineage_session_factory=lineage_session_factory,
+        neo4j_client=neo4j_client,
+        opa_client=opa_client,
+        cache_client=cast(SessionCacheClientProtocol, redis_client),
+        trino_client=trino_client,
+        tracer=tracer,
+    )
+    register(REQUEST_ORCHESTRATOR_AGENT_NAME, request_orchestrator_agent.run)
+
     app.state.llm_client = llm_client
     app.state.neo4j_client = neo4j_client
     app.state.trino_client = trino_client
     app.state.redis_client = redis_client
     app.state.lineage_session_factory = lineage_session_factory
+    app.state.catalog_session_factory = catalog_session_factory
+    app.state.opa_client = opa_client
     yield
 
     neo4j_client.close()
@@ -691,6 +758,42 @@ async def invoke_evaluation_judge(payload: dict) -> dict:
     """
 
     return await _invoke_agent(EVALUATION_JUDGE_AGENT_NAME, EvaluationJudgeInput, payload)
+
+
+@app.post("/agents/orchestrator/session_context_manager/invoke")
+async def invoke_session_context_manager(payload: dict) -> dict:
+    """Parse the request body into `SessionContextManagerInput`, run the
+    real Session/Context Manager agent, and return its
+    `SessionContextManagerOutput`.
+    """
+
+    return await _invoke_agent(
+        SESSION_CONTEXT_MANAGER_AGENT_NAME, SessionContextManagerInput, payload
+    )
+
+
+@app.post("/agents/orchestrator/clarification_coordinator/invoke")
+async def invoke_clarification_coordinator(payload: dict) -> dict:
+    """Parse the request body into `ClarificationCoordinatorInput`, run the
+    real Clarification Coordinator agent, and return its
+    `ClarificationCoordinatorOutput`.
+    """
+
+    return await _invoke_agent(
+        CLARIFICATION_COORDINATOR_AGENT_NAME, ClarificationCoordinatorInput, payload
+    )
+
+
+@app.post("/agents/orchestrator/request_orchestrator/invoke")
+async def invoke_request_orchestrator(payload: dict) -> dict:
+    """Parse the request body into `RequestOrchestratorInput`, run the real
+    Request Orchestrator agent (the full ~19-stage pipeline), and return
+    its `RequestOrchestratorOutput`.
+    """
+
+    return await _invoke_agent(
+        REQUEST_ORCHESTRATOR_AGENT_NAME, RequestOrchestratorInput, payload
+    )
 
 
 @app.get("/lineage/{trace_id}")

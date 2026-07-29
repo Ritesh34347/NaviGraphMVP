@@ -230,7 +230,7 @@ real, live-verified fact about the current system, not a hypothetical —
 whichever phase owns SQL Generation (Query domain) needs to account for it
 one way or another.
 
-### 15. Ontology Agent's relationship-concept matching accepts low recall
+### 15. Ontology Agent's relationship-concept matching accepts low recall — a real gap this caused was found and fixed in Phase 9
 
 **What's deferred**: Fuzzy/paraphrase matching of relationship-shaped
 questions (e.g. "which customers hold X").
@@ -249,6 +249,43 @@ than folded in without a decision.
 resolution gets its own fuzzy-matching stage, or whether Semantic
 Retrieval's contract expands to cover it — not yet decided.
 
+**Real gap found and fixed in Phase 9**: this limitation was not just
+theoretical — a real HTTP smoke test of the newly-wired Request
+Orchestrator against the live stack ("What is the total transaction
+volume by market?") hit exactly the "missed match" case documented above.
+`RELATIONSHIP_CONCEPTS` had no entry linking `TRANSACTIONS` and `MARKETS`,
+so Schema Mapping's `_build_joins` (which derives joins *only* from
+`relationship_resolutions` — see its own docstring) emitted zero joins
+even though the resolved columns spanned both tables. SQL Generation then
+had no way to connect them, and the real, generated SQL computed one
+ungrounded grand total over all of `TRANSACTIONS` and cross-joined it
+against every distinct market name — every row of the answer showed the
+identical wrong total. The system's own grounding checks caught the smell
+(Grounded Narrative Generation flagged `narrative_contains_unverified_number`;
+Anomaly/Outlier Highlighter noted "zero variance across all groups"), which
+is what surfaced this during manual review of a real answer rather than
+silently shipping it. Fixed by adding a fourth curated entry,
+`"Transaction happens in Market"` (`realizing_table="TRANSACTIONS"`,
+`subject_key_column`/`object_key_column="MARKETID"`, the real, literal
+foreign-key column shared by both tables), to
+`navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`, then re-running the real,
+idempotent `navigraph_kg.ingestion.pipeline.run_ingestion` against the live
+Neo4j to sync the new node. Verified two ways: a direct, deterministic
+`POST /agents/understanding/ontology/invoke` call confirming the new
+`relationship_resolutions` entry appears, and a direct
+`POST /agents/understanding/schema_mapping/invoke` call confirming the
+real join (`MARKETS.MARKETID = TRANSACTIONS.MARKETID`) now gets built —
+not just an end-to-end re-run, since Semantic Retrieval's LLM-backed
+column choice is nondeterministic and a single successful re-run would not
+have been conclusive proof (an early re-run attempt, in fact, coincidentally
+avoided the join entirely by resolving "market" to `TRANSACTIONS.MARKETID`
+directly rather than `MARKETS.NAME`). **This is a fix to one specific,
+now-observed case, not a fix to the underlying low-recall limitation
+itself** — other real questions needing a join the curated seed list
+doesn't yet cover will still silently produce zero joins rather than a
+loud error. The broader design decision above (fuzzy relationship matching,
+or an expanded Semantic Retrieval contract) remains open.
+
 ### 16. Schema Mapping's measure/dimension role assignment is a heuristic
 
 **What's deferred**: A real, stored semantic-role field in the metadata
@@ -265,22 +302,32 @@ built yet) later needs a firmer signal than this heuristic provides, add a
 real `semantic_role` column to `navigraph_catalog`'s schema (a migration,
 not a heuristic change) rather than making the heuristic more elaborate.
 
-### 17. Conversation Agent has no real persistence this phase
+### 17. Conversation Agent has no real persistence this phase -- RESOLVED in Phase 9
 
-**What's deferred**: Storing, retrieving, summarizing, or evicting
-conversation history across turns/sessions.
+**What was deferred** (Phase 4): Storing, retrieving, summarizing, or
+evicting conversation history across turns/sessions.
 
-**Why**: Conversation Agent operates purely on a `conversation_history`
-list handed to it directly in its input — it never fetches or stores
-anything itself. This is deliberate, not an oversight: a fake in-memory
-store would look production-ready without being durable, multi-instance
-safe, or tenant-isolated. The real home for this is the Memory Agent
-(Phase 9, Orchestrator domain) — Conversation Agent's `conversation_history`
-field is the seam Phase 9 fills in.
+**Why it was deferred**: Conversation Agent operates purely on a
+`conversation_history` list handed to it directly in its input — it never
+fetches or stores anything itself. This was deliberate, not an oversight:
+a fake in-memory store would have looked production-ready without being
+durable, multi-instance safe, or tenant-isolated.
 
-**What full version requires**: Phase 9's Memory Agent, plus whatever
-Coordinator wiring (also Phase 9) actually populates `conversation_history`
-before invoking Conversation Agent turn over turn.
+**Resolution (Phase 9)**: the Session/Context Manager agent
+(`orchestrator.session_context_manager`) now provides real,
+Redis-backed persistence — a tenant-scoped, sliding-TTL (1800s) key per
+session (`navigraph:v1:{tenant_id}:session:{session_id}`), storing up to
+the most recent 20 turns. The Request Orchestrator reads a session's
+history via this agent before calling Conversation Agent, and appends the
+new turn after every branch (success, failure, or clarification) — real,
+proven via `tests/integration/orchestrator_pipeline/test_pipeline_chain.py`'s
+session round-trip test (a real Redis key inspected directly, a second
+call with the same `session_id` seeing the persisted history). No
+"Memory Agent" by that name was built — `docs/architecture/overview.md`'s
+Orchestrator table names it "Session/Context Manager", which is what this
+resolution actually built; see this file's item 32 on documentation
+staleness for the broader note that agent names across docs have drifted
+from what's actually shipped.
 
 ### 18. The Guardrail domain (real RBAC/ABAC/row-column policy) does not exist yet -- RESOLVED in Phase 6
 
@@ -488,34 +535,45 @@ not sufficient evidence of correctness — adversarial inputs against the
 real OPA service are required before any policy change is considered
 done, exactly as this project's working method already states.
 
-### 28. Chart Selection's column-role linkage across SQL Generation's aliasing is manually threaded, not structurally carried by any contract
+### 28. Chart Selection's column-role linkage across SQL Generation's aliasing is manually threaded, not structurally carried by any contract -- PARTIALLY RESOLVED in Phase 9
 
-**What's deferred**: No contract between SQL Generation and Data
+**What was deferred** (Phase 7): No contract between SQL Generation and Data
 Federation (`OptimizedSql`, `ExecutionPlan`, `SourceQueryResult`,
 `DataFederationResult`) preserves a resolved column's measure/dimension
 role or its real result-set header. `DataFederationResult.final_columns`
 is a bare `list[str]`.
 
-**Why**: SQL Generation's own aggregation aliasing
+**Why it was deferred**: SQL Generation's own aggregation aliasing
 (`sql_generation.agent._generate_statements`/`_aggregation_function`: a
 `role="measure"` column becomes `{column_name}_TOTAL` in the real SELECT
 list, e.g. `UNITS` → `UNITS_TOTAL`) means a measure's catalog
 `column_name` and its real result-set header diverge — so Chart Selection
 needs both the role AND the real alias to pick sensible x/y columns.
-`ChartColumnRef.result_alias` exists specifically to carry this, but today
-the CALLER (a human-written test, absent a real Orchestrator) populates
-it by hand, replicating SQL Generation's alias rule — demonstrated
-concretely in `tests/integration/insight_pipeline/test_pipeline_chain.py`
-rather than glossed over.
+`ChartColumnRef.result_alias` exists specifically to carry this, but until
+Phase 9 the CALLER (a human-written test, absent a real Orchestrator)
+populated it by hand, replicating SQL Generation's alias rule —
+demonstrated concretely in
+`tests/integration/insight_pipeline/test_pipeline_chain.py` rather than
+glossed over.
 
-**What full version requires**: A real Coordinator (Phase 9,
-Orchestrator domain) threading this structurally — either a new field on
-`GeneratedSql`/`OptimizedSql` carrying the alias mapping forward, or the
-Coordinator itself building `ChartColumnRef` from data it already holds
-across agent calls. No prior phase has gone back to modify an
-already-shipped upstream agent's contract for a downstream phase's
-convenience; this is the first real case where that tradeoff was
-consciously made (see DECISIONS.md).
+**Partial resolution (Phase 9)**: the real Request Orchestrator now builds
+`ChartColumnRef` itself, in real production code, via a real `_alias_for(...)`
+helper (ported verbatim from the pre-Phase-9 pipeline-chaining logic) —
+so every real request through the real orchestrator gets this threaded
+correctly, not just a hand-written test. This is only a PARTIAL resolution,
+not a full structural fix: `_alias_for` still duplicates SQL Generation's
+aliasing rule rather than SQL Generation/Data Federation's own contracts
+carrying the mapping forward as a first-class field. No prior phase has
+gone back to modify an already-shipped upstream agent's contract for a
+downstream phase's convenience — this remains true; Phase 9 solved the
+"who computes it" problem (a real caller now exists) without solving the
+"is duplicating the rule correct forever" problem.
+
+**What full version requires**: either accept `_alias_for`'s
+rule-duplication as a permanent, working pattern (same category as this
+codebase's other sibling-duplication conventions), or add a real field to
+`GeneratedSql`/`OptimizedSql` carrying the alias mapping forward
+structurally — not yet decided.
 
 ### 29. Anomaly/Outlier Highlighter's z-score threshold and minimum-group-count are placeholders pending business confirmation
 
@@ -740,3 +798,126 @@ surface — logging them individually would fragment one coherent finding.
 None are fixed in this phase; fixing any of them is real, valuable, and
 explicitly out of scope for "build a working harness that produces real
 signal," which this phase's job was.
+
+### 39. No real checkpointing or resumability for a mid-pipeline crash
+
+**What's deferred**: If the agent-runtime process crashes or is killed
+partway through the Request Orchestrator's ~19-stage sequence, the entire
+request is lost — there is no persisted intermediate state to resume from.
+
+**Why**: this is the direct, accepted consequence of the Phase 9 decision
+to build a plain Python orchestrator instead of a LangGraph graph (see
+`DECISIONS.md`) — LangGraph's checkpointing was the one concrete
+capability given up in that reversal. Session/Context Manager's Redis
+persistence covers cross-*request* conversational continuity (the caller
+can retry with the same `session_id` and the prior turn's resolved
+context is still there), but not resuming a single in-flight request
+from wherever it crashed.
+
+**What full version requires**: a real, business-driven need for
+mid-pipeline resumability has not materialized in 9 phases and ~25 real
+agents — if one does, this is exactly the seam a LangGraph (or equivalent
+checkpointed-graph) migration would target.
+
+### 40. Session TTL (1800s) and max-stored-turns (20) are unvalidated placeholders
+
+**What's deferred**: real usage data to confirm these numbers are right.
+
+**Why**: both are reasonable v1 guesses (a half-hour of inactivity before
+a session is considered abandoned; 20 turns is generous for what's
+realistically a short conversational-BI exchange), not derived from any
+real user behavior — same category as `query_cost_estimator.ROLE_ROW_LIMITS`
+(item 24) and the z-score threshold (item 29).
+
+**What full version requires**: real session-length/turn-count telemetry
+once real users exist, then a confirmed (not guessed) value.
+
+### 41. Multi-turn Clarification Coordinator triggers on exactly one narrow condition
+
+**What's deferred**: a general ambiguity/low-confidence detector.
+
+**Why**: the Clarification Coordinator is invoked ONLY when
+`schema_mapping_result.tables == []` — a complete resolution failure, the
+exact real shape `gq_007`/`gq_010` (item 38) hard-failed on in Phase 8.
+A PARTIAL resolution (some `unmapped_terms` but at least one real table)
+still proceeds to attempt an answer, even though the result may be
+incomplete or the wrong shape for what the user actually meant. This is
+deliberately narrow and additive (the same failure mode Phase 8 already
+observed twice, now handled, nothing broader risked) rather than a general
+low-confidence gate that could reject otherwise-answerable questions.
+
+**What full version requires**: real usage data on how often a
+"technically resolved, but probably wrong" partial answer actually
+confuses users, before broadening the trigger condition is justified.
+
+### 42. `data_source_id` auto-resolution requires exactly one match, with no "default" concept
+
+**What's deferred**: a real `is_default` flag (or equivalent) on
+`navigraph_catalog.DataSource`.
+
+**Why**: the Request Orchestrator resolves `data_source_id` from
+`tenant_id` via `list_data_sources` only when the caller omits one —
+exactly one match is used automatically; zero or more than one is a
+structured `outcome="failed"` (`failure_stage="orchestrator.data_source_resolution"`).
+`navikenz-poc` is a real, concrete case of the "more than one" branch
+(`fidelity_poc_snowflake` and `fidelity_poc_snowflake_v2`, see item 26) —
+every real call in this phase's own verification had to supply
+`data_source_id` explicitly to get past this. A real "default data
+source" flag would be a new migration and a bigger surface change, out of
+scope for this phase.
+
+**What full version requires**: either resolve item 26 (reconcile the two
+`navikenz-poc` registrations down to one) or add a real default-designation
+field to `DataSource` — not yet decided.
+
+### 43. Gateway → agent-runtime remains a real, un-collapsed HTTP hop
+
+**What's deferred**: nothing is actually wrong here — this is a reminder,
+not a gap. `packages/gateway` and `packages/agent_runtime` are two
+separate containers/services (confirmed via `infra/docker-compose.yml`
+during Phase 9 planning); `/ask` now POSTs to
+`/agents/orchestrator/request_orchestrator/invoke` over real HTTP inside
+the docker network, exactly like the one agent Phase 1.5's `/ask` called.
+The "modular monolith" decision was always about the ~25 agents sharing
+one process (`agent-runtime`), never about collapsing gateway into it —
+logged here only so a future reader doesn't mistake the real HTTP hop for
+an oversight.
+
+### 44. Real findings from Phase 9's first live run of the Request Orchestrator (10/10 golden questions, real Anthropic model, real Snowflake)
+
+**What was found** (pipeline success/answered rate 70%, up from Phase 8's
+60% — see `eval/results/` for the full report):
+
+- **A real, live-discovered join-inference bug, found and fixed mid-phase**
+  (see item 15's "Real gap found and fixed in Phase 9" section for the
+  full root-cause and fix): `gq_007` ("Which markets have the highest
+  transaction volume?") — one of the two questions that hard-failed in
+  Phase 8 — now resolves and **answers correctly** (correctness 5,
+  groundedness 5, narrative_quality 4), a direct result of adding the
+  missing `"Transaction happens in Market"` `RelationshipConcept`.
+- **`gq_010` ("Is there anything unusual about a specific customer's
+  transaction pattern?") now produces a real `needs_clarification`**
+  outcome with a genuine, on-topic clarifying question, instead of Phase
+  8's bare pipeline failure — exactly the target behavior Phase 9's
+  Clarification Coordinator was built for.
+- **Two real, correct PII rejections** (`gq_005`, `gq_009`, both touching
+  `RISKLEVEL`) — same real Guardrail behavior as Phase 8, still working
+  exactly as designed. Both reported `data_source_id=85db584d...` (the
+  OLDER `fidelity_poc_snowflake` registration, not `_v2`) — a live,
+  concrete confirmation of item 26's already-logged `DataSourceDiscoveryAgent`
+  first-match ambiguity, not a new bug.
+- **`gq_002`, `gq_004`, `gq_006`, `gq_008` all scored low (1-2 out of 5)**
+  on correctness/groundedness — real, valuable signal about the current
+  pipeline's real-world accuracy on aggregation-shape and comparison
+  questions (matching Phase 8's already-logged `gq_002` `SUM`-vs-`COUNT`
+  aggregation gap, item 38), not newly introduced by Phase 9's
+  orchestrator wiring itself. `gq_008`'s intent classification, calibration
+  gap-flagged in Phase 8 (`"unknown"` that run), classified correctly this
+  run (`intent_match=True`) — real model non-determinism between runs on
+  the same question, not a fix.
+
+**Why this is logged as a single item**: same reasoning as item 38 — one
+coherent event (this phase's first live orchestrator run), logged
+together rather than fragmented. None of the low-scoring questions are
+fixed here; they are the real signal a real harness run against a real
+orchestrator was built to produce.

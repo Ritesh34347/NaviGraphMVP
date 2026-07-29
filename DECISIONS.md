@@ -561,3 +561,104 @@ existing per-unit-of-work file granularity. We deferred wiring
 `pytest packages/` and has no Anthropic/Snowflake secrets configured
 today, and `tests/integration/*` (which this harness's own dependencies
 mirror) has never been wired into CI either, for the identical reason.
+
+## 2026-07-29 — Request Orchestrator is a plain Python async function, not a LangGraph graph (reverses Phase 1's decision)
+
+Phase 1's original architecture decision committed to LangGraph for the
+Orchestrator domain's Coordinator/Supervisor/Planning graph execution.
+We formally reverse that decision here, confirmed with the user via
+`AskUserQuestion`: 8 phases and ~22 real agents were built and proven
+correct with zero real need for graph-checkpointing or resumability ever
+emerging, and `eval/pipeline_chain.py`'s `run_full_pipeline` (built Phase
+8) already proved the direct-async-call pattern end-to-end against real
+infrastructure. Formalizing that already-proven pattern into the real
+Request Orchestrator agent is strictly less risk than introducing
+LangGraph for the first time, 8 phases into the project, for a capability
+(checkpointed resumability) nothing has yet needed — see `LIMITATIONS.md`
+item 39 for the one concrete capability given up by this choice (no
+mid-pipeline crash recovery) and the condition under which it would be
+worth revisiting. `docs/architecture/agent-contract.md`'s "Dual invocation"
+section and `docs/architecture/overview.md`'s Orchestrator-domain prose are
+both corrected to describe a direct, in-process call rather than a
+LangGraph node.
+
+## 2026-07-29 — Session state lives in Redis, keyed and TTL'd like the query-result cache, not a new Postgres table
+
+We chose Redis over a new Postgres table for session/conversation-history
+storage, reusing `query.caching`'s exact `CacheClientProtocol` DI pattern
+and `navigraph:v1:{tenant_id}:...` key-scheme convention (just a
+`:session:{session_id}` namespace instead of `:query_cache:...`). Session
+state is short-lived and naturally TTL-bounded (a stale, abandoned
+conversation should simply expire) — the opposite lifecycle from
+`navigraph_catalog`/`navigraph_lineage`'s permanent stores, which would
+need a real eviction job Redis gives for free. We considered a new
+Postgres table (consistent with this project's other durable stores) and
+rejected it: it would need its own migration, its own eviction job, and
+solves a problem Redis already solves for free, for data that was never
+meant to be permanent. `session_id` is deliberately NOT added to
+`RequestContext` — that shared, `extra="forbid"` contract is depended on
+by all ~25 agents; session_id only concerns the Orchestrator domain, so it
+travels in `RequestOrchestratorPayload`/`SessionContextManagerPayload`
+instead, minted fresh (`f"sess_{uuid.uuid4().hex}"`) when the caller omits
+one.
+
+## 2026-07-29 — `eval/pipeline_chain.py::run_full_pipeline` is retired; the eval harness now calls the real Request Orchestrator directly
+
+`run_full_pipeline` (built Phase 8) hand-threaded the same ~19-agent
+sequence the real Request Orchestrator agent now implements for real,
+production use. Keeping both alive would have meant every future contract
+change to any of those 19 agents needing to be applied twice, a real,
+already-demonstrated drift risk in this codebase (see `LIMITATIONS.md`
+item 32's documentation-staleness finding, and item 35's specific
+already-shipped-agents-still-marked-`DESIGNED` case). We deleted
+`eval/pipeline_chain.py` outright rather than keeping it as a deprecated
+re-export — confirmed safe via `grep` (only `eval/run_harness.py` imported
+it) before deleting; this is irreversible, a real, deliberate tradeoff
+named explicitly rather than glossed over. `eval/run_harness.py` was
+rewritten to construct one `RequestOrchestratorAgent` (reused across every
+golden question, matching `main.py`'s own single-shared-instance
+convention) and call it per question, mapping `outcome == "needs_clarification"`
+onto the report shape with a distinct `failure_stage="orchestrator.needs_clarification"`
+value — never conflated with a genuine `outcome == "failed"`.
+`tests/integration/insight_pipeline/test_pipeline_chain.py` was never
+refactored to share this helper in the first place (see the prior
+Phase 8 decision entry above on why), so no other file needed updating.
+
+## 2026-07-29 — Multi-turn Clarification Coordinator triggers on exactly one narrow, already-observed condition
+
+We scoped the Clarification Coordinator's trigger condition to exactly
+`schema_mapping_result.tables == []` — a complete resolution failure —
+rather than a general ambiguity or low-confidence detector. This is the
+exact real failure shape Phase 8's harness hit twice (`gq_007`, `gq_010`,
+see `LIMITATIONS.md` item 38), so it is a targeted fix to an observed,
+concrete gap rather than a speculative general-purpose mechanism. A
+partial resolution (some `unmapped_terms` but at least one real table)
+still proceeds to attempt an answer — see `LIMITATIONS.md` item 41 for
+the real tradeoff this narrow scoping accepts and what would justify
+broadening it.
+
+## 2026-07-29 — A real, live-discovered join-inference gap: a fourth curated `RelationshipConcept` was added, not a new inference mechanism
+
+Phase 9's first real HTTP smoke test of the newly-wired Request
+Orchestrator ("What is the total transaction volume by market?") surfaced
+a genuine bug: Schema Mapping's `_build_joins` derives joins *only* from
+Ontology's curated `RelationshipConcept` matches (see `LIMITATIONS.md`
+item 15's original, already-accepted low-recall design), and no curated
+concept linked `TRANSACTIONS` and `MARKETS` — so a real, resolved
+two-table query produced zero joins, and the generated SQL silently
+cross-joined one ungrounded grand total against every market name. We
+fixed this by adding a fourth entry, `"Transaction happens in Market"`
+(`realizing_table="TRANSACTIONS"`, `subject_key_column`/
+`object_key_column="MARKETID"` — the real, literal shared foreign-key
+column), to `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`, rather than
+building a new automatic join-inference mechanism (e.g. matching shared
+column names across resolved tables). We considered the general
+mechanism and rejected it for now: the curated-concept approach is the
+existing, deliberate Phase 3 design (real, hand-verified relationships
+only, never auto-derived), and expanding it with a fourth real entry
+directly addresses the demonstrated gap without introducing a new
+heuristic with its own new failure modes (e.g. false-positive joins on
+two tables that coincidentally share a generically-named column). See
+`LIMITATIONS.md` item 15 for the full root-cause, fix, and verification
+detail, and item 44 for the real, live proof this fix produced (`gq_007`
+now answers correctly end-to-end where it previously hard-failed).

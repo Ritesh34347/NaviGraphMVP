@@ -319,7 +319,7 @@ class TestSyncReferenceData:
 
 
 class TestSyncRelationshipConcepts:
-    def test_merges_all_three_seed_concepts_with_realizes_and_key_edges(self) -> None:
+    def test_merges_all_four_seed_concepts_with_realizes_and_key_edges(self) -> None:
         client, _summary, *_ = _run_pipeline()
 
         concept_calls = [
@@ -327,12 +327,13 @@ class TestSyncRelationshipConcepts:
             for call in client.run.call_args_list
             if "MERGE (rc:RelationshipConcept" in call.args[0]
         ]
-        assert len(concept_calls) == 3
+        assert len(concept_calls) == 4
         names = {call.kwargs["name"] for call in concept_calls}
         assert names == {
             "Customer holds Asset",
             "Customer uses Channel",
             "Customer has RiskLevel",
+            "Transaction happens in Market",
         }
         for call in concept_calls:
             assert "REALIZES" in call.args[0]
@@ -357,4 +358,4 @@ class TestRunIngestionSummary:
         assert summary.customer_types_synced == 2
         assert summary.risk_levels_synced == 2
         assert summary.investment_capacity_bands_synced == 1
-        assert summary.relationship_concepts_synced == 3
+        assert summary.relationship_concepts_synced == 4

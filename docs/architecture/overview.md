@@ -46,8 +46,10 @@ multiple tenants and (eventually) multiple underlying data sources.
 
 Every stage above emits a lineage event (see
 [`data-flow.md`](./data-flow.md) for the stage-by-stage walkthrough with the
-specific event emitted at each step). The **Orchestrator** domain owns the
-LangGraph graph that sequences all of the above and is responsible for
+specific event emitted at each step). The **Orchestrator** domain's Request
+Orchestrator agent directly calls each of the above in sequence (a plain
+Python async function, not a LangGraph graph — see `DECISIONS.md`'s Phase 9
+entry reversing Phase 1's original LangGraph decision) and is responsible for
 tenant/session context propagation, retries, and error handling across stages.
 
 ## Agent domains and agents
@@ -123,16 +125,21 @@ Coordinates the domains above into a single request lifecycle.
 
 | Agent | Status |
 |---|---|
-| Request Orchestrator (LangGraph graph) | DESIGNED |
-| Session/Context Manager | DESIGNED |
-| Multi-turn Clarification Coordinator | DESIGNED |
+| Request Orchestrator | **BUILT** |
+| Session/Context Manager | **BUILT** |
+| Multi-turn Clarification Coordinator | **BUILT** |
 
 ## Current build status summary
 
-As of 2026-07-28, **only Intent Understanding (Understanding domain) is a real,
-implemented agent**; it lives at
-`packages/agent_runtime/navigraph_agents/understanding/intent_understanding/`.
-Every other agent listed above is designed (its role, inputs, and outputs are
-defined by this document and by `docs/architecture/agent-contract.md`) but not
-yet implemented. See `LIMITATIONS.md` item 7 for why, and `CONTRIBUTING.md` for
-how to add a new agent when its turn comes.
+**This section, and most of the per-domain agent names/tables above, are
+stale** — they describe Phase 1.5's state (only Intent Understanding real)
+and were never updated as Phases 4-9 shipped ~25 real agents across every
+domain under different, more concrete names than the ones listed above
+(e.g. "Semantic Catalog Retrieval" above was actually built as "Semantic
+Retrieval"; "Federated Query Executor"/"Result Caching" above are actually
+`query.data_federation`/`query.caching`). See `LIMITATIONS.md` item 32 for
+the full finding and item 35 for the specific Ops-domain-table correction
+already made. The Orchestrator domain table immediately above is the one
+exception, corrected for real in Phase 9 since leaving it DESIGNED would
+now be actively false. A full reconciliation pass across every other
+domain's table remains a deferred, logged recommendation, not done here.

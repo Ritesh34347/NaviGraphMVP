@@ -74,15 +74,17 @@ handle.
 
 Every agent supports two invocation paths against the same underlying logic:
 
-1. **In-process, as a LangGraph node.** The Orchestrator domain's graph calls
-   the agent directly as a Python function/node for the normal request
-   lifecycle. This is the hot path and avoids network overhead between agents
-   in the same request.
+1. **In-process, as a direct call from the Request Orchestrator.** The
+   Orchestrator domain's Request Orchestrator agent (a plain Python async
+   function, not a LangGraph graph — see `DECISIONS.md`'s Phase 9 entry
+   reversing Phase 1's original LangGraph decision) constructs and calls
+   the agent directly for the normal request lifecycle. This is the hot
+   path and avoids network overhead between agents in the same request.
 2. **Thin HTTP wrapper**: `POST /agents/{domain}/{agent_name}/invoke`, accepting
    a JSON body matching that agent's `AgentInput` and returning its
    `AgentOutput`. This exists so the agent can be invoked in isolation — by the
    eval harness, by integration tests, or for manual debugging — without
-   standing up the full orchestrator graph.
+   standing up the full Request Orchestrator.
 
 Both paths must produce identical output for identical input; the HTTP wrapper
 is a thin `FastAPI` route that deserializes, calls the same `agent.py` entry

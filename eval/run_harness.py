@@ -1,22 +1,34 @@
 """LLM-as-judge evaluation harness.
 
 Runs every real golden-set question (`eval/golden_set/*.yaml`) through the
-real, full pipeline (`eval.pipeline_chain.run_full_pipeline`) against the
-live docker-compose Postgres/Neo4j/OPA stack and a real Snowflake account,
-using a real Anthropic LLM client for every LLM-backed step -- then scores
-each real answer with the real `ops.evaluation_judge` agent. Writes a
-report to `eval/results/<run_id>.json`.
+real Request Orchestrator agent (`orchestrator.request_orchestrator`,
+built in Phase 9 -- see `DECISIONS.md`'s `run_full_pipeline` retirement
+entry) against the live docker-compose Postgres/Neo4j/OPA/Redis stack and
+a real Snowflake account, using a real Anthropic LLM client for every
+LLM-backed step -- then scores each real answer with the real
+`ops.evaluation_judge` agent. Writes a report to `eval/results/<run_id>.json`.
 
-REQUIRES LIVE, REACHABLE POSTGRES, NEO4J, OPA, A REAL SNOWFLAKE ACCOUNT, AND
-`ANTHROPIC_API_KEY` -- same live-dependency stance as every
+Superseded `eval/pipeline_chain.py::run_full_pipeline` (now deleted, see
+that retirement entry): the Request Orchestrator is the same 19-stage real
+chain that helper hand-threaded, but now also handles real lineage
+recording at every stage and a real multi-turn clarification path instead
+of a bare pipeline failure when schema resolution comes back empty --
+exactly the two gaps `run_full_pipeline` never closed. One
+`RequestOrchestratorAgent` instance is constructed once and reused across
+every golden question (matching `main.py`'s and
+`tests/integration/orchestrator_pipeline/`'s own single-shared-instance
+convention), with a fresh `session_id=None` per question -- each golden
+question is an independent, single-turn conversation, not a multi-turn one.
+
+REQUIRES LIVE, REACHABLE POSTGRES, NEO4J, OPA, REDIS, A REAL SNOWFLAKE
+ACCOUNT, AND `ANTHROPIC_API_KEY` -- same live-dependency stance as every
 `tests/integration/` test: does not skip gracefully. Not wired into CI
 (`.github/workflows/ci.yml` runs only `pytest packages/` and has no
 Anthropic/Snowflake secrets configured) -- see `LIMITATIONS.md`/`DECISIONS.md`
 for why that's a deliberate, logged deferral, not an oversight.
 
 Usage (run as a module, from the repo root, so `eval` resolves as a real
-package -- `python eval/run_harness.py` directly would NOT put the repo
-root on `sys.path` and `import eval.pipeline_chain` would fail):
+package):
 
     python -m eval.run_harness
     python -m eval.run_harness --compare-to eval/results/baseline.json
@@ -24,8 +36,8 @@ root on `sys.path` and `import eval.pipeline_chain` would fail):
 
 Point this at the real services via the same env-var convention every other
 NaviGraph integration test uses: `POSTGRES_HOST`/`POSTGRES_PORT`,
-`NEO4J_URI`/`NEO4J_PASSWORD`, `OPA_URL`, the real `SNOWFLAKE_*` credentials,
-and `ANTHROPIC_API_KEY`.
+`NEO4J_URI`/`NEO4J_PASSWORD`, `OPA_URL`, `REDIS_URL`, the real `SNOWFLAKE_*`
+credentials, and `ANTHROPIC_API_KEY`.
 """
 
 from __future__ import annotations
@@ -33,12 +45,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import navigraph_connectors.snowflake  # noqa: F401 -- registers "snowflake" for real connector resolution
+import redis
 import yaml
 from navigraph_agents.ops.evaluation_judge.agent import EvaluationJudgeAgent
 from navigraph_agents.ops.evaluation_judge.contracts import (
@@ -51,17 +66,27 @@ from navigraph_agents.ops.evaluation_judge.contracts import (
     EvaluationJudgeInput,
     EvaluationJudgePayload,
 )
+from navigraph_agents.orchestrator.request_orchestrator.agent import (
+    RequestOrchestratorAgent,
+)
+from navigraph_agents.orchestrator.request_orchestrator.contracts import (
+    RequestOrchestratorInput,
+    RequestOrchestratorPayload,
+)
+from navigraph_agents.orchestrator.session_context_manager.agent import (
+    CacheClientProtocol,
+)
 from navigraph_catalog.api import list_data_sources
 from navigraph_catalog.db import get_engine, get_session_factory, session_scope
 from navigraph_catalog.settings import MetadataCatalogSettings
 from navigraph_kg.client import Neo4jClient
 from navigraph_kg.settings import KnowledgeGraphSettings
+from navigraph_lineage.db import get_engine as get_lineage_engine
+from navigraph_lineage.db import get_session_factory as get_lineage_session_factory
 from navigraph_shared.config import get_settings
 from navigraph_shared.contracts import RequestContext
 from navigraph_shared.llm import AnthropicLLMClient, LLMClient
 from navigraph_shared.opa import HttpOpaClient, OpaSettings
-
-from eval.pipeline_chain import run_full_pipeline
 
 _TENANT_ID = "navikenz-poc"
 _DATA_SOURCE_NAME = "fidelity_poc_snowflake_v2"
@@ -73,6 +98,16 @@ _RESULTS_DIR = Path(__file__).parent / "results"
 # intent_match flip is the smallest change implausible as pure judge-model
 # noise on an otherwise-unchanged pipeline.
 _REGRESSION_SCORE_DROP_THRESHOLD = 2
+
+
+def _redis_url() -> str:
+    """`REDIS_URL` env var, defaulting to the docker-compose service DNS
+    name -- mirrors `navigraph_agents.main._redis_url()`'s exact
+    convention, since this harness (run from the host, not inside the
+    compose network) needs the same `REDIS_URL=redis://localhost:6379`
+    override every other host-run integration test already documents."""
+
+    return os.environ.get("REDIS_URL", "redis://redis:6379")
 
 
 def _load_golden_set() -> list[dict[str, Any]]:
@@ -101,10 +136,7 @@ async def _run_one_question(
     question_spec: dict[str, Any],
     *,
     data_source_id: str,
-    catalog_session_factory: Any,
-    neo4j_client: Neo4jClient,
-    opa_client: HttpOpaClient,
-    llm_client: LLMClient,
+    orchestrator_agent: RequestOrchestratorAgent,
     judge_agent: EvaluationJudgeAgent,
 ) -> dict[str, Any]:
     question_id = question_spec["question_id"]
@@ -112,33 +144,59 @@ async def _run_one_question(
 
     print(f"[{question_id}] running: {question_spec['question']!r}")
 
-    pipeline_result = await run_full_pipeline(
-        question=question_spec["question"],
-        tenant_id=_TENANT_ID,
-        data_source_id=data_source_id,
-        catalog_session_factory=catalog_session_factory,
-        neo4j_client=neo4j_client,
-        opa_client=opa_client,
-        llm_client=llm_client,
-        trace_id=trace_id,
-    )
-
-    if not pipeline_result.succeeded:
-        print(
-            f"[{question_id}] PIPELINE FAILED at {pipeline_result.failure_stage}: "
-            f"{pipeline_result.failure_reason}"
+    orchestrator_output = await orchestrator_agent.run(
+        RequestOrchestratorInput(
+            request_context=RequestContext(
+                tenant_id=_TENANT_ID,
+                user_id="eval-harness",
+                trace_id=trace_id,
+                roles=["analyst"],
+                claims={"tenant_id": _TENANT_ID},
+            ),
+            payload=RequestOrchestratorPayload(
+                question=question_spec["question"],
+                data_source_id=data_source_id,
+                session_id=None,
+            ),
         )
+    )
+    result = orchestrator_output.result
+
+    if result.outcome == "needs_clarification":
+        # A real clarification request is NOT a bare pipeline failure --
+        # this is the one gap Phase 9's Clarification Coordinator closed
+        # (see LIMITATIONS.md item 38's gq_007/gq_010 findings, both of
+        # which hard-failed before this agent existed). Reported with a
+        # distinct, recognizable `failure_stage` so `_summarize`/
+        # `_compare_to_baseline`'s "pipeline_succeeded" bucketing still
+        # treats it as "did not produce a scoreable answer" without
+        # conflating it with a genuine, unexplained failure.
+        print(f"[{question_id}] NEEDS CLARIFICATION: {result.clarifying_question!r}")
         return {
             "question_id": question_id,
             "question": question_spec["question"],
             "pipeline_succeeded": False,
-            "failure_stage": pipeline_result.failure_stage,
-            "failure_reason": pipeline_result.failure_reason,
+            "failure_stage": "orchestrator.needs_clarification",
+            "failure_reason": result.clarifying_question,
         }
 
-    intent_match_expected_vs_actual = (
-        pipeline_result.actual_intent == question_spec["expected_intent"]
-    )
+    if result.outcome == "failed":
+        print(f"[{question_id}] PIPELINE FAILED at {result.failure_stage}: {result.failure_reason}")
+        return {
+            "question_id": question_id,
+            "question": question_spec["question"],
+            "pipeline_succeeded": False,
+            "failure_stage": result.failure_stage,
+            "failure_reason": result.failure_reason,
+        }
+
+    # `outcome == "answered"` structurally guarantees Intent Understanding
+    # ran to completion (see `RequestOrchestratorResult`'s own per-outcome
+    # field documentation) -- this assertion narrows the type for mypy and
+    # doubles as a real runtime check of that invariant.
+    assert result.actual_intent is not None, "answered outcome with no actual_intent"
+
+    intent_match_expected_vs_actual = result.actual_intent == question_spec["expected_intent"]
 
     judge_input = EvaluationJudgeInput(
         request_context=RequestContext(
@@ -151,14 +209,12 @@ async def _run_one_question(
             question=question_spec["question"],
             expected_intent=question_spec["expected_intent"],
             expected_entities=question_spec.get("expected_entities", []),
-            actual_intent=pipeline_result.actual_intent,
-            actual_narrative=pipeline_result.narrative or "",
-            final_columns=pipeline_result.final_columns,
-            final_rows=pipeline_result.final_rows,
-            chart=JudgeChartSpec(**(pipeline_result.chart or {})),
-            anomalies=[
-                JudgeAnomalyFinding(**a) for a in pipeline_result.anomalies
-            ],
+            actual_intent=result.actual_intent,
+            actual_narrative=result.narrative or "",
+            final_columns=result.final_columns,
+            final_rows=result.final_rows,
+            chart=JudgeChartSpec(**(result.chart or {})),
+            anomalies=[JudgeAnomalyFinding(**a) for a in result.anomalies],
         ),
     )
     judge_output = await judge_agent.run(judge_input)
@@ -175,19 +231,19 @@ async def _run_one_question(
         "question_id": question_id,
         "question": question_spec["question"],
         "pipeline_succeeded": True,
-        "resolved_question": pipeline_result.resolved_question,
+        "resolved_question": result.resolved_question,
         "expected_intent": question_spec["expected_intent"],
-        "actual_intent": pipeline_result.actual_intent,
+        "actual_intent": result.actual_intent,
         # Real, deterministic (Python-computed) check against the golden
         # spec's own expectation -- separate from EvaluationJudgeResult's
         # own `intent_match` field, which compares expected vs actual
         # intent, the same computation, exposed here for the report too.
         "intent_match": intent_match_expected_vs_actual,
-        "unmapped_terms": pipeline_result.unmapped_terms,
-        "final_row_count": pipeline_result.final_row_count,
-        "narrative": pipeline_result.narrative,
-        "narrative_errors": pipeline_result.narrative_errors,
-        "follow_up_suggestions": pipeline_result.follow_up_suggestions,
+        "unmapped_terms": result.unmapped_terms,
+        "final_row_count": result.final_row_count,
+        "narrative": result.narrative,
+        "narrative_errors": result.narrative_errors,
+        "follow_up_suggestions": result.follow_up_suggestions,
         "correctness": judge_result.correctness.model_dump(),
         "groundedness": judge_result.groundedness.model_dump(),
         "narrative_quality": judge_result.narrative_quality.model_dump(),
@@ -282,6 +338,23 @@ async def _main(limit: int | None, compare_to: Path | None) -> None:
     opa_client = HttpOpaClient(OpaSettings())
     judge_agent = EvaluationJudgeAgent(llm_client=llm_client)
 
+    lineage_session_factory = get_lineage_session_factory(get_lineage_engine())
+    redis_client = redis.Redis.from_url(_redis_url())
+
+    # One real Request Orchestrator, constructed once and reused across
+    # every golden question -- matches `main.py`'s and
+    # `tests/integration/orchestrator_pipeline/`'s own single-shared-
+    # instance convention. Superseded `eval.pipeline_chain.run_full_pipeline`
+    # (retired this phase, see DECISIONS.md).
+    orchestrator_agent = RequestOrchestratorAgent(
+        llm_client=llm_client,
+        catalog_session_factory=catalog_session_factory,
+        lineage_session_factory=lineage_session_factory,
+        neo4j_client=neo4j_client,
+        opa_client=opa_client,
+        cache_client=cast(CacheClientProtocol, redis_client),
+    )
+
     golden_set = _load_golden_set()
     if limit is not None:
         golden_set = golden_set[:limit]
@@ -292,15 +365,13 @@ async def _main(limit: int | None, compare_to: Path | None) -> None:
         result = await _run_one_question(
             question_spec,
             data_source_id=data_source_id,
-            catalog_session_factory=catalog_session_factory,
-            neo4j_client=neo4j_client,
-            opa_client=opa_client,
-            llm_client=llm_client,
+            orchestrator_agent=orchestrator_agent,
             judge_agent=judge_agent,
         )
         results.append(result)
 
     neo4j_client.close()
+    redis_client.close()
 
     summary = _summarize(results)
     print("\n=== Summary ===")

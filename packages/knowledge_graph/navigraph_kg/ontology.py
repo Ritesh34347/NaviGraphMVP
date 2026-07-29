@@ -139,4 +139,27 @@ RELATIONSHIP_CONCEPTS: list[dict[str, str]] = [
         "subject_key_column": "CUSTOMERID",
         "object_key_column": "RISKLEVEL",
     },
+    {
+        # Real bug found live in Phase 9's real HTTP smoke test of the
+        # Request Orchestrator: "What is the total transaction volume by
+        # market?" resolved TRANSACTIONS.TOTALVALUE and MARKETS.NAME with
+        # zero relationship concepts (Ontology's curated set had no entry
+        # linking them), so Schema Mapping's `_build_joins` -- which ONLY
+        # derives joins from `relationship_resolutions` -- emitted no join
+        # at all. SQL Generation then had no way to connect the two tables,
+        # producing a single ungrouped grand total cross-joined against
+        # every distinct market name (same wrong value on all 38 rows).
+        # Unlike the other three entries, MARKETID is the literal SAME
+        # column name on both sides (TRANSACTIONS.MARKETID is a real
+        # foreign key to MARKETS.MARKETID) rather than a Customer-style
+        # subject/object key split, so `subject_key_column` and
+        # `object_key_column` are identical here.
+        "name": "Transaction happens in Market",
+        "subject_label": "Transaction",
+        "predicate": "HAPPENS_IN",
+        "object_label": "Market",
+        "realizing_table": "TRANSACTIONS",
+        "subject_key_column": "MARKETID",
+        "object_key_column": "MARKETID",
+    },
 ]

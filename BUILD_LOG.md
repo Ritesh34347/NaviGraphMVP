@@ -653,3 +653,96 @@ zero either (handled gracefully both times, never a crash). None of these
 downstream findings are fixed here -- they are exactly the real signal
 this phase's harness was built to produce, logged honestly rather than
 chased down mid-phase.
+
+## 2026-07-29 — Phase 9: Orchestrator domain (3 agents), replacing every hand-threaded pipeline chain with one real, callable agent
+
+Built the 3 agents `docs/architecture/overview.md` names for the
+Orchestrator domain: Session/Context Manager (Redis-backed conversation
+history, real sliding TTL), Multi-turn Clarification Coordinator
+(LLM-backed, triggers only on `schema_mapping.tables == []`), and the
+Request Orchestrator itself (the ~19-stage real caller of every other
+domain, superseding `eval/pipeline_chain.py::run_full_pipeline`). Resolved
+the single biggest open question via `AskUserQuestion` before writing any
+code: Phase 1's original architecture decision committed to LangGraph,
+but 8 phases and ~22 real agents were built and proven correct with zero
+real need for graph-checkpointing ever emerging -- confirmed to build a
+plain Python orchestrator instead, formally reversing that decision (see
+`DECISIONS.md`). Wired all 3 into `main.py` (adding `catalog_session_factory`/
+`opa_client` to `app.state`, a small real gap the wiring surfaced), rebuilt
+and restarted `agent-runtime`; rewrote `gateway/main.py`'s `/ask` to POST
+to the new `/agents/orchestrator/request_orchestrator/invoke` route
+(replacing Phase 1.5's single-agent minimal wiring), rebuilt and restarted
+`gateway`.
+
+**A real, live-discovered bug, found by the very first real HTTP smoke
+test of the newly-wired orchestrator** (see `LIMITATIONS.md` item 15 and
+`DECISIONS.md` for the full detail) -- not a synthetic or hypothetical
+case: "What is the total transaction volume by market?" resolved real
+columns from two different tables (`MARKETS`, `TRANSACTIONS`) with zero
+relationship concepts linking them, so Schema Mapping's join-building
+logic (which derives joins *only* from Ontology's curated
+`RelationshipConcept` matches) emitted no join at all. The generated SQL
+silently computed one ungrounded grand total and cross-joined it against
+every distinct market name -- every row of the real answer showed the
+identical wrong total. The system's own grounding checks caught the smell
+first (Grounded Narrative Generation flagged an unverified number; Anomaly
+Highlighter noted zero variance across all groups), which is what
+surfaced this during manual review rather than shipping it silently.
+Fixed by adding a fourth curated `RelationshipConcept`
+(`"Transaction happens in Market"`, keyed on the real, literal shared
+`MARKETID` foreign-key column) and re-running the real, idempotent
+`navigraph_kg.ingestion.pipeline.run_ingestion` against the live Neo4j.
+Verified three independent ways before trusting it: a deterministic,
+LLM-free `POST /agents/understanding/ontology/invoke` call confirming the
+new relationship resolves; a deterministic `POST
+/agents/understanding/schema_mapping/invoke` call confirming the real
+join gets built; and a real regression assertion built directly into
+`tests/integration/orchestrator_pipeline/test_pipeline_chain.py`'s happy
+path (asserting more than one distinct total across the real result set).
+
+**A second, smaller bug found and fixed while building that same
+integration test**: the test's own fake-LLM dispatcher matched agents by
+a bare substring of their prompt title (e.g. `"Grounded Narrative
+Generation" in system`), and Follow-Up Suggestion's own real prompt body
+happens to reference "the Grounded Narrative Generation agent" by name to
+explain its own, deliberately different grounding discipline -- silently
+misrouting Follow-Up Suggestion's real call to the narrative branch and
+producing an empty `follow_up_suggestions` list with no visible error
+(the orchestrator's own contract doesn't surface a downstream agent's
+internal errors when its parent stage still "succeeds" with an empty
+result). Fixed by matching each agent's exact `# <Title> — System Prompt`
+H1 line via `.startswith(...)` instead of a bare substring anywhere in
+the body.
+
+**Real verification performed**: `ruff check packages/ tests/ eval/` and
+`mypy` (explicit per-package paths plus `tests/integration/orchestrator_pipeline`
+and `eval`, 193 source files) both clean; `pytest packages/` -- 337
+passed, 6 skipped as designed. The real
+`tests/integration/orchestrator_pipeline/test_pipeline_chain.py` suite
+(3 tests, all passing against live Postgres/Neo4j/OPA/Redis/Snowflake)
+proved: the worked-example question answered end-to-end with a real chart/
+narrative/follow-ups AND a real, correct cross-table join (the exact
+regression case for the bug above); a real session round-trip (a real
+Redis key inspected directly, a second same-`session_id` call seeing
+`turn_count == 2`); and a real clarification trigger (gibberish entities
+producing a real, non-empty clarifying question, `outcome ==
+"needs_clarification"`, never a bare failure). Real HTTP smoke tests
+against both rebuilt containers: `POST /ask` on the live gateway returned
+a complete, real answer through the full real orchestrator; a direct call
+to `POST /agents/orchestrator/request_orchestrator/invoke` with an
+ambiguous `data_source_id` (this tenant genuinely has two registered
+data sources, see `LIMITATIONS.md` item 26) correctly returned a
+structured `outcome="failed"` rather than guessing.
+
+**The real eval harness, rewritten to call the real orchestrator and
+re-run against the live stack** (all 10 real golden questions, real
+Snowflake, real Anthropic model): pipeline success/answered rate improved
+to 70% (7/10), up from Phase 8's 60%. Both questions that hard-failed in
+Phase 8 no longer do: `gq_010` now produces a real `needs_clarification`
+outcome with a genuine clarifying question -- exactly Phase 9's target
+behavior -- and `gq_007` now **answers correctly** (correctness 5,
+groundedness 5), a direct, real consequence of the join-inference fix
+above. See `LIMITATIONS.md` item 44 for the full breakdown, including two
+still-correct PII rejections and a live confirmation of the already-logged
+`DataSourceDiscoveryAgent` first-match ambiguity (item 26) -- neither new,
+neither fixed here.

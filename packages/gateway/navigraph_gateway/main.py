@@ -4,23 +4,33 @@ Exposes:
   - GET  /healthz    -- liveness probe
   - GET  /readyz     -- readiness probe (see NOTE below)
   - GET  /metrics    -- Prometheus metrics (via prometheus-fastapi-instrumentator)
-  - POST /ask        -- Phase 1.5 minimal wiring: accepts a question, builds a
-                          RequestContext, calls the agent-runtime's Intent
-                          Understanding agent, and returns its output.
+  - POST /ask        -- accepts a question (plus optional session_id/
+                          data_source_id/roles/claims), builds a
+                          RequestContext, calls the agent-runtime's real
+                          Request Orchestrator agent over HTTP, and returns
+                          its `RequestOrchestratorOutput` verbatim.
 
-PHASE 1.5 NOTE: `/ask` currently calls exactly one agent
-(understanding.intent_understanding) and returns its raw output. This is
-deliberately minimal wiring to prove the gateway -> agent-runtime path works
-end to end. The full pipeline (Understanding -> Query -> Guardrail -> Trino
-execution -> Insight, with lineage assembled across every hop) lands in
-later phases once those agents exist -- see LIMITATIONS.md and
-docs/architecture/overview.md at the repo root.
+Gateway and agent-runtime are two separate containers/services (see
+infra/docker-compose.yml) -- this call is a real HTTP hop, not an in-process
+call, even though both share the "modular monolith" agent-runtime process
+internally.
+
+ROLES/CLAIMS ARE CALLER-SUPPLIED, NOT YET CRYPTOGRAPHICALLY VERIFIED: no
+real Azure AD JWT validation exists yet in this codebase (see
+LIMITATIONS.md's Azure AD token verification item) -- Guardrail's Policy
+Authorization agent fails closed on empty/mismatched roles/claims exactly as
+designed, so a caller that omits them will legitimately get an
+`outcome="failed"`/`guardrail.policy_authorization` response rather than a
+silent bypass. This is the same trust model every other real HTTP smoke test
+against agent-runtime has used since Phase 6, just now reachable through the
+gateway too.
 """
 
 from __future__ import annotations
 
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -92,12 +102,18 @@ class AskRequest(BaseModel):
     question: str
     tenant_id: str
     user_id: str
+    session_id: str | None = None
+    data_source_id: str | None = None
+    roles: list[str] = []
+    claims: dict[str, Any] = {}
 
 
 @app.post("/ask")
 async def ask(request: AskRequest) -> dict:
-    """Phase 1.5 minimal wiring: forward a question to the Intent
-    Understanding agent and return its output verbatim.
+    """Forward a question to the real Request Orchestrator agent (the full
+    ~19-stage pipeline: Understanding -> Query -> Guardrail -> Insight, with
+    lineage recorded at every stage and multi-turn session/clarification
+    handling) and return its `RequestOrchestratorOutput` verbatim.
     """
 
     trace_id = str(uuid.uuid4())
@@ -107,13 +123,17 @@ async def ask(request: AskRequest) -> dict:
         tenant_id=request.tenant_id,
         user_id=request.user_id,
         trace_id=trace_id,
-        roles=[],
-        claims={},
+        roles=request.roles,
+        claims=request.claims,
     )
 
     agent_payload = {
         "request_context": request_context.model_dump(mode="json"),
-        "payload": {"question": request.question},
+        "payload": {
+            "question": request.question,
+            "session_id": request.session_id,
+            "data_source_id": request.data_source_id,
+        },
     }
 
     http_client: httpx.AsyncClient = app.state.http_client
@@ -123,7 +143,7 @@ async def ask(request: AskRequest) -> dict:
         span.set_attribute("navigraph.trace_id", trace_id)
         try:
             response = await http_client.post(
-                "/agents/understanding/intent_understanding/invoke",
+                "/agents/orchestrator/request_orchestrator/invoke",
                 json=agent_payload,
             )
             response.raise_for_status()
