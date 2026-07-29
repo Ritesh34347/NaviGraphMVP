@@ -15,9 +15,22 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the local workspace dependency first, then the service itself.
+# Install local workspace dependencies in dependency order, then the
+# service itself. Phase 4 added navigraph-metadata-catalog and
+# navigraph-knowledge-graph as real dependencies (the new Understanding
+# agents import them directly) -- connector_sdk is metadata_catalog's own
+# dependency and must be installed before it for the same reason.
 COPY shared /app/shared
 RUN pip install --no-cache-dir /app/shared
+
+COPY connector_sdk /app/connector_sdk
+RUN pip install --no-cache-dir /app/connector_sdk
+
+COPY metadata_catalog /app/metadata_catalog
+RUN pip install --no-cache-dir /app/metadata_catalog
+
+COPY knowledge_graph /app/knowledge_graph
+RUN pip install --no-cache-dir /app/knowledge_graph
 
 COPY agent_runtime /app/agent_runtime
 RUN pip install --no-cache-dir /app/agent_runtime
