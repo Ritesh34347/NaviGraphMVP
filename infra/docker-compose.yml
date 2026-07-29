@@ -29,8 +29,17 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    # Host port 5433, not 5432: this dev machine has a separate, unrelated
+    # native Postgres service already bound to 5432 (confirmed via
+    # `Get-NetTCPConnection -LocalPort 5432` -> a real `postgres.exe`
+    # process, not this container), which silently intercepts host-side
+    # TCP connections meant for this container and rejects them with a
+    # password-auth error rather than "connection refused" -- very
+    # confusing to debug. Internal container-to-container traffic (e.g.
+    # agent-runtime -> postgres:5432) is unaffected either way, since that
+    # never touches the host-mapped port at all.
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro

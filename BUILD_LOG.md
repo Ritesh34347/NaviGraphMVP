@@ -137,3 +137,49 @@ at http://gateway:8000"; `terraform validate` passes for the `dev`
 environment (`terraform plan` correctly stops asking for
 `subscription_id`/`tenant_id` rather than touching a real Azure account,
 since none were supplied).
+
+## 2026-07-29 — Phase 2: Metadata catalog + connector SDK, verified against a real Snowflake account
+
+Built `packages/connector_sdk` (`navigraph_connectors`) and
+`packages/metadata_catalog` (`navigraph_catalog`), plus
+`tests/integration/metadata_catalog/`, matching every existing package
+convention. Real, working Snowflake credentials were provided this phase
+(account `TKISXMB-JYB85836`, user `SHUBHSNFLK`) and used for genuine
+end-to-end verification, not just mocked tests:
+
+- Discovered the account's real structure via a live connection: databases
+  (`FIDELITY_POC`, `TEST_DB`, plus Snowflake's built-in ones), warehouses,
+  and roles. Confirmed `FIDELITY_POC` / `FIDELITY_WH` / `FIDELITY_ANALYST_ROLE`
+  is the intended target (matched naming, confirmed with you), and switched
+  off the account's overly-privileged `ACCOUNTADMIN` default to the
+  least-privilege `FIDELITY_ANALYST_ROLE` for routine schema crawling.
+- `pytest -m snowflake_integration` passes for real against this account.
+- Ran the real crawler end-to-end: registered a `DataSource`, crawled
+  `FIDELITY_POC`, and stored real rows in the catalog tables. First run
+  returned 78 tables — caught a real bug: `introspect_schema()` didn't
+  exclude Snowflake's own `INFORMATION_SCHEMA` metadata schema, pulling in
+  ~60 system views alongside real business tables. Fixed in
+  `navigraph_connectors/snowflake/connector.py`; re-ran and got the
+  correct 17 real tables (`FAR_TRANS` schema: asset/customer/transaction/
+  market data; `STAGING` schema: staging versions of the same) — a real
+  financial trading/portfolio dataset. Worth noting for Phase 3: one table,
+  `STAGING.SCHEMA_ENRICHMENT` (`COLUMN_NAME`, `BUSINESS_NAME`, `SYNONYMS`),
+  already looks like a business-glossary seed that the ontology work should
+  look at.
+- Found and fixed a second real, unrelated environment bug while running
+  the live migration: this dev machine has a separate native Postgres
+  process already bound to host port 5432, which intercepts host-side
+  connections meant for the docker-compose Postgres container and rejects
+  them with a misleading password-auth error. Remapped the container to
+  host port 5433 (`infra/docker-compose.yml`) rather than touch the
+  unrelated system process — logged in `LIMITATIONS.md` item 11 and the
+  local-dev runbook.
+- `alembic upgrade head` and `alembic downgrade base` both run for real
+  against the live docker-compose Postgres (via the new port 5433) and
+  produce the expected schema exactly.
+
+**Final verified state**: `ruff check`, `mypy`, and `pytest packages/`
+(55 passed, 2 skipped as designed) all clean across all five Python
+packages together; `pip-audit` clean; real Alembic up/down migration
+against live Postgres; real Snowflake connector integration test passing;
+real crawl of `FIDELITY_POC` producing 17 correctly-shaped catalog rows.

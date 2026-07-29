@@ -130,3 +130,41 @@ domain) so the repository isn't left with no license statement at all.
 actual entity name, copyright holder, permitted-use terms for contractors or
 partners, and any export-control or data-residency clauses relevant to a
 multi-tenant BI product handling customer data.
+
+### 10. Metadata catalog's `connection_ref` is not a real secrets-manager integration
+
+**What's deferred**: Storing/retrieving real data-source credentials via a
+proper secrets manager.
+
+**Why**: `DataSource.connection_ref` (added in Phase 2) is deliberately an
+opaque JSON pointer (e.g. `{"env_prefix": "SNOWFLAKE"}`), never raw
+credentials -- but today that pointer just means "read `SNOWFLAKE_*` from
+this process's environment / local `.env`," which only works for a single,
+globally-configured data source per environment.
+
+**What full version requires**: Real integration with a secrets manager
+(Azure Key Vault, per the Azure target) so each registered `DataSource` row
+can reference its own independently-rotatable credential set, supporting
+multiple data sources (and eventually multiple tenants' own credentials)
+without collisions -- a cloud-deployment-phase concern, not a local-dev one.
+
+### 11. Local dev has a host-level Postgres port conflict, worked around
+
+**What's deferred**: A clean host environment with no port collisions.
+
+**Why**: This dev machine runs a separate, unrelated native Postgres
+process already bound to host port 5432. It silently intercepts host-side
+TCP connections meant for the docker-compose `postgres` container and
+rejects them with a *password authentication failed* error (not
+"connection refused"), which is very misleading to debug. Rather than
+touch a system service that might belong to something else on this
+machine, `infra/docker-compose.yml` now maps the container to host port
+**5433** instead (`"5433:5432"`) -- internal container-to-container traffic
+(e.g. `agent-runtime` connecting to `postgres:5432`) is unaffected either
+way, since that never touches the host-mapped port.
+
+**What full version requires**: Nothing, structurally -- this is a
+one-machine quirk, not a design gap. Worth a line in the local-dev runbook
+so the next engineer who hits a confusing Postgres auth error on this or a
+similarly-configured machine knows to check for a port conflict rather
+than doubt their credentials.

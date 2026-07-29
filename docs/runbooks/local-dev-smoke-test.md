@@ -87,6 +87,20 @@ containers resolved `discovery.uri` to the coordinator's service name
 and that both containers are on the `navigraph-net` network. Restarting the
 worker after the coordinator is fully up often resolves a race on first boot.
 
+### Postgres connections from the host fail with "password authentication failed"
+
+If a host-side tool (Alembic, a local Python script, a GUI client) gets a
+password-auth error connecting to Postgres even though you're sure the
+credentials in `infra/.env` are right, check whether something *else* on
+your machine is already listening on port 5432
+(`Get-NetTCPConnection -LocalPort 5432` on Windows) — a stray native
+Postgres install silently intercepts the connection instead of Docker's
+forwarded port, and rejects it with a *password* error rather than
+"connection refused," which is very misleading. This project's compose
+file maps the container to host port **5433** specifically to avoid this
+(`postgres:5432` from *inside* the docker network is unaffected either
+way) — connect host-side tools to `localhost:5433`, not `5432`.
+
 ### OPA bundle not loading
 
 This local setup runs OPA in bundle-less mode, reading policy files directly

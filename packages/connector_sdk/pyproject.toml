@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-connector-sdk"
+version = "0.1.0"
+description = "NaviGraph connector SDK: a source-agnostic plugin interface for talking to external data sources (Snowflake today, Postgres/REST later) and describing their schemas."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "pydantic>=2",
+    # Local workspace dependency. This is a bare, unpinned PEP 508 name --
+    # it is intentionally NOT a file:// path reference (those require
+    # absolute paths and behave inconsistently across pip versions for
+    # local monorepos). Instead, install order matters: run
+    #   pip install -e packages/shared
+    # BEFORE
+    #   pip install -e packages/connector_sdk
+    # so that `navigraph-shared` is already satisfied in the environment
+    # when pip resolves this package's dependencies. See packages/pyproject.toml.
+    "navigraph-shared",
+    "snowflake-connector-python",
+    # Needed to load an RSA private key for Snowflake key-pair auth.
+    "cryptography",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["navigraph_connectors*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "snowflake_integration: tests that connect to a real Snowflake account (excluded by default; run with `pytest -m snowflake_integration`, requires real SNOWFLAKE_* env vars)",
+]

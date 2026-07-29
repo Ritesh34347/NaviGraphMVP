@@ -3,10 +3,11 @@
 # Workspace tooling choice: this repo assumes a bare `pip` toolchain (no
 # assumption that `uv` is installed). Each package under `packages/` is a
 # real, independently pip-installable Python package (`navigraph-shared`,
-# `navigraph-gateway`, `navigraph-agent-runtime`), and this file exists only
-# as human-facing documentation of the workspace layout and the commands to
-# bootstrap a local dev environment. It is NOT itself installed as a package
-# (there is no build-system table) and `pip install .` here does nothing.
+# `navigraph-gateway`, `navigraph-agent-runtime`, `navigraph-connector-sdk`,
+# `navigraph-metadata-catalog`), and this file exists only as human-facing
+# documentation of the workspace layout and the commands to bootstrap a
+# local dev environment. It is NOT itself installed as a package (there is
+# no build-system table) and `pip install .` here does nothing.
 #
 # To set up a local dev environment from scratch:
 #
@@ -15,16 +16,20 @@
 #   pip install -e packages/shared[dev]
 #   pip install -e packages/gateway
 #   pip install -e packages/agent_runtime
+#   pip install -e packages/connector_sdk[dev]
+#   pip install -e packages/metadata_catalog[dev]
 #
-# If you do have `uv` installed and prefer it, the three packages below are
-# also structured so that a `[tool.uv.workspace]` member list "just works" --
+# If you do have `uv` installed and prefer it, the packages below are also
+# structured so that a `[tool.uv.workspace]` member list "just works" --
 # feel free to add one locally. It is intentionally not declared here so this
 # file never implies `uv` is a hard requirement.
 #
 # members (informational only):
-#   - packages/shared        -> navigraph-shared
-#   - packages/gateway       -> navigraph-gateway
-#   - packages/agent_runtime -> navigraph-agent-runtime
+#   - packages/shared          -> navigraph-shared
+#   - packages/gateway         -> navigraph-gateway
+#   - packages/agent_runtime   -> navigraph-agent-runtime
+#   - packages/connector_sdk   -> navigraph-connector-sdk
+#   - packages/metadata_catalog -> navigraph-metadata-catalog
 
 # This IS a real, active pytest config, not documentation: it's the nearest
 # pyproject.toml above all three packages, so `pytest packages/` (what CI
@@ -42,4 +47,5 @@ addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
 markers = [
     "llm_integration: tests that call the real Anthropic API (excluded by default; run with `pytest -m llm_integration`, requires ANTHROPIC_API_KEY)",
+    "snowflake_integration: tests that connect to a real Snowflake account (excluded by default; run with `pytest -m snowflake_integration`, requires real SNOWFLAKE_* env vars)",
 ]

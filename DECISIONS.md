@@ -90,3 +90,22 @@ functions) that maps cleanly onto both local docker-compose and an eventual Azur
 target. We considered a plain client-side React SPA (e.g. Vite + React Router) and
 rejected it because we want server-side rendering and API-route colocation
 available without adopting a second framework later if/when we need them.
+
+## 2026-07-29 — Connector SDK decoupled from the metadata catalog's storage model
+
+We chose to make `navigraph_connectors` (the data-source plugin interface)
+return plain Pydantic descriptors with zero dependency on SQLAlchemy or the
+catalog's own tables, rather than having connectors write directly into
+catalog rows. `navigraph_catalog`'s crawler is the only thing that
+translates a connector's `introspect_schema()` output into catalog storage.
+We considered letting connectors own persistence directly (simpler for a
+single connector) and rejected it because it would make the "source-agnostic
+SDK" claim untestable — the whole point of building the abstraction now,
+with only Snowflake implemented, is to be able to pressure-test it with a
+second, differently-shaped connector (e.g. Postgres) later without touching
+the catalog schema at all. This paid off immediately: running the real
+crawler against a live Snowflake account this same phase surfaced a bug
+(the `INFORMATION_SCHEMA` metadata schema wasn't excluded from
+`introspect_schema()`, polluting real business tables with ~60 Snowflake
+system views) that was fixed entirely inside the connector, with no changes
+needed to the catalog's models, API, or crawler logic.

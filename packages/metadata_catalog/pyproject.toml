@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-metadata-catalog"
+version = "0.1.0"
+description = "NaviGraph metadata catalog: a Postgres-backed store of raw schema structure (data sources, schemas, tables, columns) crawled via navigraph-connector-sdk. Deliberately not a business glossary or ontology mapping -- that's a later phase's job."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "sqlalchemy>=2",
+    "alembic",
+    "psycopg[binary]",
+    # Local workspace dependency. This is a bare, unpinned PEP 508 name --
+    # it is intentionally NOT a file:// path reference (those require
+    # absolute paths and behave inconsistently across pip versions for
+    # local monorepos). Instead, install order matters: run
+    #   pip install -e packages/shared
+    # BEFORE
+    #   pip install -e packages/metadata_catalog
+    # so that `navigraph-shared` is already satisfied in the environment
+    # when pip resolves this package's dependencies. See packages/pyproject.toml.
+    "navigraph-shared",
+    # Same local-workspace-dependency reasoning as above: install
+    #   pip install -e packages/connector_sdk
+    # before this package. This package takes an already-constructed
+    # `navigraph_connectors.base.Connector` instance via dependency
+    # injection (see navigraph_catalog/ingestion/snowflake_crawler.py) and
+    # validates `source_type` strings against
+    # `navigraph_connectors.registry.get_connector_class`.
+    "navigraph-connector-sdk",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["navigraph_catalog*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
