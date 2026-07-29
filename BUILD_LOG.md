@@ -302,3 +302,98 @@ so the `llm_integration`-marked tests for Conversation and Semantic
 Retrieval were verified to skip cleanly, not run for real against the
 live Anthropic API — matches the existing graceful-degradation pattern and
 isn't required to consider this phase done.
+
+## 2026-07-29 — Phase 5: Query domain (6 agents) + Trino/Snowflake federation, real SQL executed against a live Snowflake account
+
+Built the 6 Query-domain agents (Data Source Discovery, SQL Generation,
+SQL Optimization, Execution Planning, Data Federation, Caching) plus a new
+standalone `packages/federation` package, via three parallel workstreams
+following the exact contract pattern established in Understanding. Two
+real safety decisions were confirmed with the user before building: to
+execute real SQL against the live Snowflake account this phase (with
+structural compensating controls, ahead of the Guardrail domain), and to
+run a live, read-only `SHOW GRANTS TO ROLE FIDELITY_ANALYST_ROLE` check
+first — confirmed the role has zero write privileges (only
+`USAGE`/`READ`/`SELECT`).
+
+**Integration work done directly**: wired all 6 new agents into
+`agent_runtime`'s `main.py` (a real `redis.Redis` client, a
+`navigraph_federation.TrinoClient`, reusing the existing Postgres session
+factory and LLM client); added `navigraph-connector-sdk`,
+`navigraph-federation`, and `redis` to `agent_runtime/pyproject.toml`;
+added a real Snowflake catalog (`infra/trino/{coordinator,worker}/catalog/snowflake.properties`,
+gitignored) to Trino; built
+`tests/integration/query_pipeline/test_pipeline_chain.py` chaining all 6
+Query agents (plus the 6 Understanding agents feeding them) for real
+against live Postgres, Neo4j, Redis, and the live Snowflake account.
+
+**Real bugs found and fixed, in the order discovered**:
+1. **Trino crash-loop** (`RestartCount=13`) the moment the real Snowflake
+   catalog was registered: `ApplicationConfigurationException: Connector
+   'snowflake' requires additional JVM argument(s) ...
+   --add-opens=java.base/java.nio=ALL-UNNAMED`. Fixed by adding that line
+   to both `infra/trino/coordinator/jvm.config` and
+   `infra/trino/worker/jvm.config`; confirmed via `RestartCount=0` and a
+   real `SHOW CATALOGS`/`SHOW SCHEMAS IN snowflake` returning
+   `far_trans`/`staging`.
+2. `schema_mapping.contracts.ResolvedColumnRef` was missing a `schema_name`
+   field — SQL Generation's build workstream correctly flagged this as a
+   real contract gap (dialect-neutral `SCHEMA.TABLE` SQL genuinely needs to
+   know which schema a table lives in) rather than guessing a hardcoded
+   schema name. Fixed directly by adding the field to the real, already-
+   shipped Phase 4 contract and threading it through
+   `schema_mapping/agent.py`'s `_resolve_columns`.
+3. A `mypy` structural-typing mismatch between `CachingAgent`'s
+   `CacheClientProtocol` and the real `redis.Redis` instance
+   (`Redis.get`'s actual stub signature is broader than the protocol's,
+   differing in both parameter name and return-type breadth). Fixed with
+   an explicit, documented `typing.cast` at the one call site in
+   `main.py`, rather than loosening the protocol itself (which exists
+   specifically so `agent_runtime`'s own dependency, not the Caching
+   agent package, decides to depend on `redis` — see that package's
+   module docstring).
+4. **The most significant real bug, caught only by testing the live
+   HTTP endpoint directly, not by any test suite**: after rebuilding and
+   restarting the `agent-runtime` container, a real `POST
+   /agents/query/data_source_discovery/invoke` call returned
+   `"No connector registered for source_type='snowflake'. Registered
+   types: []"` — `main.py` had never imported
+   `navigraph_connectors.snowflake` (the module whose import side effect
+   registers `"snowflake"` in the connector registry), so the real running
+   service's registry was empty despite every unit test passing (unit
+   tests inject a fake connector directly; the pytest-based integration
+   test imports the module itself). Fixed by adding that import to
+   `main.py` with a comment explaining exactly why it's needed; re-verified
+   live via the same HTTP call, which now returns `"reachable": true` with
+   a real Snowflake connection.
+5. The `agent_runtime` Dockerfile never copied/installed the new
+   `packages/federation` package, so the image build failed with
+   `No matching distribution found for navigraph-federation` — a real gap
+   left by the parallel build workstream (out of its scope to edit).
+   Fixed by adding the missing `COPY federation` / `RUN pip install
+   .../federation` stage in the correct dependency position.
+
+**Real verification performed**: `ruff check packages/` and `mypy`
+(explicit per-package paths, 110 source files) both clean; `pytest
+packages/` — 215 passed, 5 skipped as designed (the `llm_integration`/
+`snowflake_integration`-marked tests, no `ANTHROPIC_API_KEY` in this
+shell's env by default). The real `tests/integration/query_pipeline/`
+test passed end-to-end on the first full run after the contract-gap fix:
+real SQL (`SELECT MARKETID, SUM(UNITS) AS UNITS_TOTAL FROM
+STAGING.STAGING_TRANSACTIONS GROUP BY MARKETID`, LIMIT-injected and audit-
+commented by SQL Optimization) executed for real via the direct-connector
+route, returning 16 real rows from Snowflake; a deliberately malicious
+`SELECT 1; DROP TABLE STAGING.STAGING_TRANSACTIONS` statement, run through
+the same Execution Planning call, was rejected (`"multiple SQL statements
+detected (stacked/chained query)"`) and never reached Data Federation; a
+real Redis lookup→store→lookup cycle showed a genuine miss then a genuine
+hit with matching `final_row_count`. Separately confirmed via `docker exec
+navigraph-trino-coordinator trino --execute "SHOW SCHEMAS IN snowflake"`
+that Trino's real federation route is live (`far_trans`, `staging`,
+`information_schema`, `public`), even though it isn't the default
+execution route this phase. The `agent-runtime` container was rebuilt and
+restarted twice (once for the new agents, once for the connector-
+registration fix) — `RestartCount=0`, `healthy` both times — and a direct
+`POST /agents/query/data_source_discovery/invoke` HTTP call against the
+live container confirmed `"reachable": true` against the real Snowflake
+account after the fix.

@@ -20,6 +20,18 @@ dependencies = [
     # ontology, schema_mapping) call into these directly.
     "navigraph-metadata-catalog",
     "navigraph-knowledge-graph",
+    # Query-domain agents added in Phase 5 (data_source_discovery,
+    # data_federation) resolve/construct connectors directly; this was
+    # already a real, used dependency before Phase 5 (navigraph_catalog's
+    # own register_data_source validates against the connector registry)
+    # but was never declared here.
+    "navigraph-connector-sdk",
+    # data_federation's route="trino" path.
+    "navigraph-federation",
+    # caching agent's real Redis client (the agent itself only depends on
+    # a minimal get/set protocol, but this service is what actually
+    # constructs and injects a real redis.Redis instance).
+    "redis",
     "prometheus-fastapi-instrumentator",
     "opentelemetry-instrumentation-fastapi",
     "pytest",

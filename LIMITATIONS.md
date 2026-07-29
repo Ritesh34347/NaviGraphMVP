@@ -33,19 +33,21 @@ sufficient to validate the knowledge-graph query patterns.
 causal cluster) as part of the cloud deployment phase, including backup/restore,
 read-replica routing, and failover testing.
 
-### 3. Trino has zero real catalogs registered
+### 3. Trino has zero real catalogs registered -- RESOLVED in Phase 5 (catalog registration), but the route is not yet default
 
-**What's deferred**: Wiring an actual Snowflake catalog (or any catalog) into Trino.
+**What was deferred**: Wiring an actual Snowflake catalog (or any catalog) into Trino.
 
-**Why**: Phase 1 stands up the coordinator/worker topology and proves the compose
-stack forms a working cluster. Real catalog wiring depends on Snowflake credentials
-and network access that belong to a later phase.
+**Resolution**: Phase 5 registered a real `snowflake.properties` catalog in
+both `infra/trino/coordinator/catalog/` and `infra/trino/worker/catalog/`,
+fixed a real Trino crash-loop this surfaced (`--add-opens=java.base/java.nio=ALL-UNNAMED`
+missing from `jvm.config`), and confirmed via live `SHOW CATALOGS`/
+`SHOW SCHEMAS IN snowflake` that Trino genuinely sees the real `FIDELITY_POC`
+schema (`far_trans`, `staging`).
 
-**What full version requires**: A real `snowflake.properties` catalog file in
-both `infra/trino/coordinator/catalog/` and `infra/trino/worker/catalog/` (see
-`infra/trino/coordinator/catalog/snowflake.properties.example` for the intended
-shape), Snowflake network policy/firewall coordination, and a validation pass
-confirming federated queries return correct results end-to-end.
+**What's still deferred**: `route="trino"` is fully built and unit-tested on
+`ExecutionPlan`, but Phase 5's confirmed default (and the only route real
+executions currently use) is `route="direct_connector"` -- see item 18
+below for why.
 
 ### 4. OPA runs an allow-all placeholder policy
 
@@ -279,3 +281,111 @@ field is the seam Phase 9 fills in.
 **What full version requires**: Phase 9's Memory Agent, plus whatever
 Coordinator wiring (also Phase 9) actually populates `conversation_history`
 before invoking Conversation Agent turn over turn.
+
+### 18. The Guardrail domain (real RBAC/ABAC/row-column policy) does not exist yet -- Phase 5 executes real SQL against live Snowflake with compensating controls only
+
+**What's deferred**: Real, policy-driven access control (OPA Rego rules
+evaluated per-request against a user's role/attributes, row-level and
+column-level masking). OPA currently runs the same allow-all placeholder
+policy from Phase 1 (item 4) — nothing added this phase.
+
+**Why**: The product spec places Guardrail immediately after Query
+(this phase), not before it. Rather than block all real SQL execution
+until Guardrail lands, Phase 5 was built with the user's explicit,
+confirmed go-ahead to execute real SQL now, backed by real, structural
+compensating controls that do not depend on Guardrail existing:
+
+- Execution Planning Agent's real string-masking SQL parser hard-rejects
+  anything that isn't a single read-only `SELECT`/`WITH` statement —
+  verified live: a deliberately malicious `SELECT 1; DROP TABLE ...`
+  statement was rejected by this exact gate in
+  `tests/integration/query_pipeline/test_pipeline_chain.py`, and never
+  reached Data Federation.
+- Every literal predicate value is bind-parameterized (`%(name)s`), never
+  string-interpolated into SQL text — closes SQL injection independently
+  of Guardrail.
+- A live, read-only `SHOW GRANTS TO ROLE FIDELITY_ANALYST_ROLE` check
+  (run with the user's explicit approval) confirmed the account's
+  Snowflake role has zero write privileges — only `USAGE`/`READ`/`SELECT`.
+- A hard row-cap (`max_rows`, capped at 10,000) and timeout
+  (`timeout_seconds=30`) are re-verified at the `ExecutionPlan` level,
+  not just trusted from upstream.
+
+**What full version requires**: Phase 6's real OPA Rego policies (RBAC by
+Azure AD role, ABAC by claim, row/column masking), the Security Validation
+Agent, and the adversarial tests (`tests/security/`) the user's working
+method requires before any of it is marked done. None of Phase 5's
+compensating controls are a substitute for this — they exist because of
+the gap, not instead of closing it.
+
+### 19. Execution defaults to the direct Snowflake connector, not Trino
+
+**What's deferred**: Routing real query execution through Trino by default.
+
+**Why**: Confirmed with the user during Phase 5 planning — routing through
+a general-purpose distributed SQL engine's unaudited access-control
+surface during the exact window there is no policy gate (see item 18) to
+catch a mistake is the wrong tradeoff. `route="trino"` exists on
+`ExecutionPlan` and is unit-tested, but Execution Planning Agent never
+assigns it yet; `route="direct_connector"` is the only route any real
+execution in this environment has used, including the live proof in
+`tests/integration/query_pipeline/`.
+
+**What full version requires**: Either a second real registered data
+source creating genuine federation need, or an independent review of
+Trino's own access-control configuration — whichever comes first.
+
+### 20. Data Federation's multi-source combine path is real code, unit-tested only against fakes
+
+**What's deferred**: Proving `DataFederationAgent._combine_results`'s
+2+-source join/union logic against two genuinely distinct, live data
+sources.
+
+**Why**: Exactly one real data source (`fidelity_poc_snowflake_v2`,
+Snowflake) is registered in this environment, so every real execution this
+phase — including `tests/integration/query_pipeline/`'s live proof — only
+ever exercises the single-source pass-through branch. The 2+-source
+combine branch (join on shared column names, or union if none are shared)
+is real, working code, exercised only by this package's own unit tests
+using fake `SourceQueryResult` objects.
+
+**What full version requires**: A second real registered data source, and
+a real `ExecutionPlan` field naming the intended join key(s) explicitly
+(today the combine step *infers* a join key from column-name overlap,
+which is a documented heuristic, not a real join predicate — see
+`agent.py`'s `_combine_results` docstring).
+
+### 21. Connector credential routing is global-env-var-based, not per-`DataSource`
+
+**What's deferred**: Resolving distinct credentials for two `DataSource`
+rows that share the same `source_type`.
+
+**Why**: `DataSource.connection_ref` is only an opaque pointer (e.g.
+`{"env_prefix": "SNOWFLAKE"}`); every connector this phase constructs is
+built with no arguments (`get_connector_class(source_type)()`), which
+reads that connector class's own global env-var-backed settings. Two
+`DataSource` rows of the same `source_type` are therefore indistinguishable
+to Data Source Discovery and Data Federation — both resolve to a connector
+reading the identical global env vars. Harmless today (exactly one
+Snowflake data source is registered), but a real gap.
+
+**What full version requires**: A per-`DataSource` credential-routing
+layer (e.g. resolving `connection_ref.env_prefix` to a distinct settings
+instance per row) that doesn't exist anywhere in this codebase yet.
+
+### 22. Caching TTL is a flat, conservative default, not a per-intent policy
+
+**What's deferred**: Varying cache TTL (or whether a result is cacheable
+at all) by `IntentLabel`, query shape, or a future Guardrail policy.
+
+**Why**: `CachingPayload.ttl_seconds` defaults to a flat 300 seconds for
+every cached result, regardless of intent — a deliberate v1 simplification,
+not a policy decision made unilaterally. `CachingPayload.policy_version`
+is already reserved (defaulted to `"none"`) specifically so a real
+Guardrail-driven policy variation becomes "populate an existing field"
+later, not a cache-key redesign.
+
+**What full version requires**: Whichever future phase actually needs
+intent-aware or policy-aware cache TTLs to populate `policy_version` and
+vary `ttl_seconds` accordingly — not addressed here since nothing yet
+depends on it.

@@ -259,6 +259,11 @@ services:
       - .env
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # Phase 5: Caching agent's real Redis client. Trino settings
+      # (host/port) are not overridden here -- navigraph_federation's
+      # FederationSettings defaults (trino-coordinator:8080) already match
+      # this compose file's service DNS name.
+      REDIS_URL: redis://redis:6379
     ports:
       - "8001:8001"
     healthcheck:
@@ -273,6 +278,8 @@ services:
       postgres:
         condition: service_healthy
       neo4j:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       otel-collector:
         # service_started, not service_healthy: otel-collector has no

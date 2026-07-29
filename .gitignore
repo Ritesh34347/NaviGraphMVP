@@ -6,6 +6,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+.venv-*/
 venv/
 *.egg-info/
 .eggs/
@@ -42,6 +43,10 @@ override.tf.json
 .env
 .env.local
 .env.*.local
+# Real Trino catalog files contain live connection-password values (e.g.
+# infra/trino/coordinator/catalog/snowflake.properties) -- only the
+# `.example` template variants are meant to be committed.
+infra/trino/*/catalog/*.properties
 
 # --- IDE ---
 .vscode/

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-federation"
+version = "0.1.0"
+description = "NaviGraph federation: a real Trino DB-API client plus dialect-rewrite helpers that let generated SQL be routed either straight at a single tenant connector or, when a query spans more than one registered data source, through Trino's cross-source federation instead."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    # Official Trino Python DB-API client, published on PyPI as "trino"
+    # (import name is also `trino`, e.g. `trino.dbapi.connect(...)`).
+    # Verified against the real PyPI index while building this package
+    # (`pip index versions trino` resolved real published versions) -- this
+    # is not a guess.
+    "trino",
+    # Local workspace dependency. This is a bare, unpinned PEP 508 name --
+    # it is intentionally NOT a file:// path reference (those require
+    # absolute paths and behave inconsistently across pip versions for
+    # local monorepos). Instead, install order matters: run
+    #   pip install -e packages/shared
+    # BEFORE
+    #   pip install -e packages/federation
+    # so that `navigraph-shared` is already satisfied in the environment
+    # when pip resolves this package's dependencies. See packages/pyproject.toml.
+    "navigraph-shared",
+    # `TrinoClient.execute_query` builds the same `QueryResult` shape
+    # `navigraph_connectors.base.QueryResult` defines, imported directly for
+    # interchangeability with `SnowflakeConnector.execute_query`'s return
+    # type rather than declaring a parallel/duplicate model.
+    "navigraph-connector-sdk",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["navigraph_federation*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

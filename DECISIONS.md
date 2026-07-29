@@ -196,6 +196,84 @@ has an exact glossary match, and Phase 4's real integration test confirmed
 the split works as intended — "units traded" resolved for free via
 Ontology, "market" correctly fell through to Semantic Retrieval.
 
+## 2026-07-29 — Execute real SQL against live Snowflake now, ahead of Guardrail, with compensating controls
+
+We chose to build Data Federation to actually execute generated SQL against
+the real Snowflake account this phase, rather than stubbing execution until
+the Guardrail domain (real OPA RBAC/ABAC/row-column policy) exists —
+confirmed explicitly with the user before building, alongside a live,
+read-only `SHOW GRANTS TO ROLE FIDELITY_ANALYST_ROLE` check (also
+user-approved) that verified the account has zero write privileges. We
+considered stubbing execution entirely until Guardrail lands and rejected
+it: it would leave the Query domain's core value (agents that actually
+answer questions) unproven for an entire extra phase, and the real risk
+this phase (executing unsafe or injected SQL) is fully addressed by
+structural compensating controls that don't depend on Guardrail existing at
+all — Execution Planning Agent's real string-masking SQL parser (single
+read-only `SELECT`/`WITH` statement only, no exceptions), bind-parameterized
+literal values only (never string-interpolated), and a re-verified hard
+row-cap/timeout. This is explicitly framed as compensating controls for a
+real, temporary gap (see `LIMITATIONS.md` item 18), not a substitute for
+Guardrail — the adversarial test proving the safety gate rejects a
+malicious `; DROP TABLE` statement (`tests/integration/query_pipeline/`) is
+required evidence for this decision, not optional polish.
+
+## 2026-07-29 — Execution defaults to the direct Snowflake connector, not Trino
+
+We chose `route="direct_connector"` as Execution Planning Agent's only
+assigned route this phase, even though the real Snowflake catalog is
+already registered in Trino and `route="trino"` is fully built and unit
+tested on `ExecutionPlan`. We considered defaulting to Trino now (it's
+already wired, and federation-shaped routing is the eventual goal) and
+rejected it: routing real execution through a general-purpose distributed
+SQL engine's own access-control surface — which has not been independently
+reviewed — during the exact window there is no policy gate (Guardrail,
+still Phase 6) to catch a mistake trades a known-narrow risk (a single,
+audited direct connector) for a broader, unaudited one. `route="trino"`
+stays real, tested code precisely so switching the default later is a
+one-line change in Execution Planning Agent, not a rebuild — it becomes the
+default once either a second real data source creates genuine federation
+need, or Trino's access-control configuration gets its own independent
+review.
+
+## 2026-07-29 — Trino gets its own `navigraph_federation` package, not a `TrinoConnector` inside `connector_sdk`
+
+We chose to build Trino integration as a standalone package
+(`packages/federation`) rather than as another `Connector` implementation
+registered in `navigraph_connectors`. We considered the latter (it would
+reuse the existing `Connector` interface/registry machinery directly) and
+rejected it: `navigraph_connectors`' registry models a tenant's actual
+`DataSource` rows (Snowflake account, eventually Postgres, etc.) — but
+Trino isn't itself a tenant's data source; there is no "Trino data"
+independent of whatever real data source it federates. Registering it via
+`source_type="trino"` would imply a `DataSource` row that doesn't
+correspond to any real, independent system a tenant configured, which is
+conceptually wrong. `navigraph_federation.TrinoClient` instead reuses
+`navigraph_connectors.base.QueryResult`/`ConnectionTestResult`'s shapes
+directly (so a Trino result is interchangeable with a direct-connector
+result for any caller), without pretending to be one.
+
+## 2026-07-29 — Caching agent's key is tenant-prefixed as a literal segment, not folded into the hash, with a reserved policy-version segment
+
+We chose
+`navigraph:v1:{tenant_id}:query_cache:policy={policy_version}:{sha256(sql,params,data_source_id)}`
+as the real cache-key shape, with `tenant_id` as a literal, readable prefix
+segment rather than folded into the hash alongside everything else. We
+considered hashing `tenant_id` in with the rest of the fingerprint (simpler,
+one hash covers everything) and rejected it: a literal prefix means two
+tenants' cache entries can never collide even under a hash collision on an
+otherwise-identical fingerprint (verified directly in
+`packages/agent_runtime/navigraph_agents/query/caching/tests/`, not just
+inferred from the format string), and it lets a future "flush every cached
+entry for tenant X" operation use a `SCAN`-based prefix match without
+reversing a hash first. `policy_version` (defaulted to `"none"`) is
+reserved now, specifically so a future Guardrail-driven policy variation
+(e.g. a masking policy that changes what a cached result is even allowed to
+contain) becomes "populate an existing key segment," never a cache-key
+migration. TTL is a flat, conservative 300-second default for v1 — a
+deliberate simplification (`LIMITATIONS.md` item 22), not a per-intent
+policy decision made unilaterally here.
+
 ## 2026-07-30 — Schema Mapping is the only assembly point; sibling agents don't cross-import each other's contracts
 
 We chose to have Schema Mapping Agent merge Ontology's and Semantic

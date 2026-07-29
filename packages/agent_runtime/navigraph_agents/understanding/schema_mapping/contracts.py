@@ -140,6 +140,12 @@ class ResolvedColumnRef(BaseModel):
     term: str
     catalog_column_id: str
     table_name: str
+    # Added in Phase 5: dialect-neutral SQL generation (SCHEMA.TABLE form)
+    # needs the schema name, which was already available on
+    # `CatalogInventoryEntry` but was being dropped here -- a real gap
+    # surfaced when the Query domain's SQL Generation agent needed it and
+    # had to work around its absence with a local guess.
+    schema_name: str
     column_name: str
     data_type: str
     role: Literal["measure", "dimension", "filter"]

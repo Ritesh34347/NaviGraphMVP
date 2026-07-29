@@ -193,6 +193,7 @@ class SchemaMappingAgent:
                     term=term,
                     catalog_column_id=entry.catalog_column_id,
                     table_name=entry.table_name,
+                    schema_name=entry.schema_name,
                     column_name=entry.column_name,
                     data_type=entry.data_type,
                     role=_assign_role(entry.data_type, intent),

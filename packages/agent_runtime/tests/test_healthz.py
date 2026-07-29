@@ -28,6 +28,12 @@ def test_readyz_returns_ok_and_lists_registered_agents() -> None:
         "understanding.ontology",
         "understanding.semantic_retrieval",
         "understanding.schema_mapping",
+        "query.data_source_discovery",
+        "query.sql_generation",
+        "query.sql_optimization",
+        "query.execution_planning",
+        "query.data_federation",
+        "query.caching",
     }
     assert expected_agents.issubset(set(body["registered_agents"]))
 
