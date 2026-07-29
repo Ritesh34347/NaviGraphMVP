@@ -182,10 +182,13 @@ services:
     # a minimal static binary with no /bin/sh, wget, or curl (confirmed via
     # `docker exec navigraph-opa wget` -> "executable file not found"), so an
     # exec-based HTTP healthcheck can't run inside this container at all.
-    # Nothing else in this stack depends on OPA's health condition (see
-    # LIMITATIONS.md item 4 -- it's an allow-all placeholder anyway); real
-    # liveness is checked from the host by tools/scripts/smoke-test.sh,
-    # which does have curl/wget.
+    # As of Phase 6, OPA is genuinely load-bearing (a real Rego policy in
+    # infra/opa/policies/authz.rego, called for real by
+    # guardrail.policy_authorization) -- its liveness is proven by
+    # tools/scripts/smoke-test.sh's real HTTP check from the host, and more
+    # strongly by tests/security/'s real adversarial suite actually
+    # exercising the policy over the network, not by a container-exec
+    # healthcheck this image still cannot run.
     networks:
       - navigraph-net
 

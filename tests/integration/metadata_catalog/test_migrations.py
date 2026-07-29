@@ -35,7 +35,6 @@ import pytest
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
-
 from navigraph_catalog.settings import MetadataCatalogSettings
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3] / "packages" / "metadata_catalog"

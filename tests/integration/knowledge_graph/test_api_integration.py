@@ -21,7 +21,6 @@ that file and `tests/integration/metadata_catalog/test_migrations.py`.
 from __future__ import annotations
 
 import pytest
-
 from navigraph_kg.api import list_markets_for_exchange, resolve_business_term
 from navigraph_kg.client import Neo4jClient
 from navigraph_kg.settings import KnowledgeGraphSettings

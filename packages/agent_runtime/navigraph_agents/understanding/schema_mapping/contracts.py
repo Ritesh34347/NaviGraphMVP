@@ -102,6 +102,7 @@ class CatalogInventoryEntry(BaseModel):
     column_name: str
     data_type: str
     nullable: bool
+    is_pii: bool = False
     business_name: str | None = None
     synonyms: list[str] = Field(default_factory=list)
     description: str | None = None

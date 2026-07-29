@@ -16,15 +16,21 @@ Exposes:
   - POST /agents/query/execution_planning/invoke
   - POST /agents/query/data_federation/invoke
   - POST /agents/query/caching/invoke
-                     -- invokes the six Understanding-domain and six Query-domain agents
+  - POST /agents/guardrail/schema_constraint_validator/invoke
+  - POST /agents/guardrail/policy_authorization/invoke
+  - POST /agents/guardrail/query_cost_estimator/invoke
+  - POST /agents/guardrail/pii_exposure_checker/invoke
+                     -- invokes the six Understanding-domain, six Query-domain,
+                        and four Guardrail-domain agents
 
 At startup, constructs a real `AnthropicLLMClient` if `ANTHROPIC_API_KEY` is
 set, or falls back to a `FakeLLMClient` (logging a warning) so this service
 still boots and answers requests locally without a real API key -- useful
 for local dev and for the smoke test in tools/scripts/smoke-test.sh. Also
 constructs a `navigraph_catalog` session factory, a `navigraph_kg`
-`Neo4jClient`, a `navigraph_federation` `TrinoClient`, and a real
-`redis.Redis` client for the agents that need them.
+`Neo4jClient`, a `navigraph_federation` `TrinoClient`, a real `redis.Redis`
+client, and a real `navigraph_shared.opa.HttpOpaClient` for the agents that
+need them.
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ from navigraph_kg.client import Neo4jClient
 from navigraph_shared.config import get_settings
 from navigraph_shared.contracts import AgentInput
 from navigraph_shared.llm import AnthropicLLMClient, FakeLLMClient, LLMClient
+from navigraph_shared.opa import HttpOpaClient
 from navigraph_shared.telemetry import (
     bind_request_context,
     configure_logging,
@@ -60,6 +67,42 @@ from navigraph_shared.telemetry import (
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import ValidationError
 
+from navigraph_agents.guardrail.pii_exposure_checker.agent import (
+    AGENT_NAME as PII_EXPOSURE_CHECKER_AGENT_NAME,
+)
+from navigraph_agents.guardrail.pii_exposure_checker.agent import (
+    PiiExposureCheckerAgent,
+)
+from navigraph_agents.guardrail.pii_exposure_checker.contracts import (
+    PiiExposureCheckerInput,
+)
+from navigraph_agents.guardrail.policy_authorization.agent import (
+    AGENT_NAME as POLICY_AUTHORIZATION_AGENT_NAME,
+)
+from navigraph_agents.guardrail.policy_authorization.agent import (
+    PolicyAuthorizationAgent,
+)
+from navigraph_agents.guardrail.policy_authorization.contracts import (
+    PolicyAuthorizationInput,
+)
+from navigraph_agents.guardrail.query_cost_estimator.agent import (
+    AGENT_NAME as QUERY_COST_ESTIMATOR_AGENT_NAME,
+)
+from navigraph_agents.guardrail.query_cost_estimator.agent import (
+    QueryCostEstimatorAgent,
+)
+from navigraph_agents.guardrail.query_cost_estimator.contracts import (
+    QueryCostEstimatorInput,
+)
+from navigraph_agents.guardrail.schema_constraint_validator.agent import (
+    AGENT_NAME as SCHEMA_CONSTRAINT_VALIDATOR_AGENT_NAME,
+)
+from navigraph_agents.guardrail.schema_constraint_validator.agent import (
+    SchemaConstraintValidatorAgent,
+)
+from navigraph_agents.guardrail.schema_constraint_validator.contracts import (
+    SchemaConstraintValidatorInput,
+)
 from navigraph_agents.query.caching.agent import AGENT_NAME as CACHING_AGENT_NAME
 from navigraph_agents.query.caching.agent import CacheClientProtocol, CachingAgent
 from navigraph_agents.query.caching.contracts import CachingInput
@@ -200,8 +243,37 @@ async def lifespan(app: FastAPI):
     sql_generation_agent = SqlGenerationAgent(llm_client=llm_client, tracer=tracer)
     register(SQL_GENERATION_AGENT_NAME, sql_generation_agent.run)
 
+    # Guardrail-domain agents (Phase 6). Three of the four consume
+    # `GeneratedSql` directly -- the only shape upstream carrying
+    # `referenced_tables`/`referenced_columns` -- so they sit here, right
+    # after SQL Generation and before SQL Optimization strips that
+    # structure away. `HttpOpaClient` is lazy (mirrors `Neo4jClient()`/
+    # `TrinoClient()`) -- constructing it here never requires OPA to be
+    # reachable at startup; `OPA_URL` defaults to the docker-compose
+    # in-network DNS name (see `OpaSettings`).
+    schema_constraint_validator_agent = SchemaConstraintValidatorAgent(
+        session_factory=catalog_session_factory, tracer=tracer
+    )
+    register(SCHEMA_CONSTRAINT_VALIDATOR_AGENT_NAME, schema_constraint_validator_agent.run)
+
+    opa_client = HttpOpaClient()
+    policy_authorization_agent = PolicyAuthorizationAgent(opa_client=opa_client, tracer=tracer)
+    register(POLICY_AUTHORIZATION_AGENT_NAME, policy_authorization_agent.run)
+
+    pii_exposure_checker_agent = PiiExposureCheckerAgent(
+        session_factory=catalog_session_factory, tracer=tracer
+    )
+    register(PII_EXPOSURE_CHECKER_AGENT_NAME, pii_exposure_checker_agent.run)
+
     sql_optimization_agent = SqlOptimizationAgent(tracer=tracer)
     register(SQL_OPTIMIZATION_AGENT_NAME, sql_optimization_agent.run)
+
+    # Query Cost/Row-Limit Estimator needs `OptimizedSql.estimated_row_count`,
+    # which SQL Optimization populates -- so it sits here, after SQL
+    # Optimization and before Execution Planning's independent SELECT-only
+    # safety gate.
+    query_cost_estimator_agent = QueryCostEstimatorAgent(tracer=tracer)
+    register(QUERY_COST_ESTIMATOR_AGENT_NAME, query_cost_estimator_agent.run)
 
     execution_planning_agent = ExecutionPlanningAgent(tracer=tracer)
     register(EXECUTION_PLANNING_AGENT_NAME, execution_planning_agent.run)
@@ -417,3 +489,50 @@ async def invoke_caching(payload: dict) -> dict:
     """
 
     return await _invoke_agent(CACHING_AGENT_NAME, CachingInput, payload)
+
+
+@app.post("/agents/guardrail/schema_constraint_validator/invoke")
+async def invoke_schema_constraint_validator(payload: dict) -> dict:
+    """Parse the request body into `SchemaConstraintValidatorInput`, run the
+    real Schema Constraint Validator agent, and return its
+    `SchemaConstraintValidatorOutput`.
+    """
+
+    return await _invoke_agent(
+        SCHEMA_CONSTRAINT_VALIDATOR_AGENT_NAME, SchemaConstraintValidatorInput, payload
+    )
+
+
+@app.post("/agents/guardrail/policy_authorization/invoke")
+async def invoke_policy_authorization(payload: dict) -> dict:
+    """Parse the request body into `PolicyAuthorizationInput`, run the real
+    Policy Authorization agent (calls the real OPA policy engine), and
+    return its `PolicyAuthorizationOutput`.
+    """
+
+    return await _invoke_agent(
+        POLICY_AUTHORIZATION_AGENT_NAME, PolicyAuthorizationInput, payload
+    )
+
+
+@app.post("/agents/guardrail/query_cost_estimator/invoke")
+async def invoke_query_cost_estimator(payload: dict) -> dict:
+    """Parse the request body into `QueryCostEstimatorInput`, run the real
+    Query Cost/Row-Limit Estimator agent, and return its
+    `QueryCostEstimatorOutput`.
+    """
+
+    return await _invoke_agent(
+        QUERY_COST_ESTIMATOR_AGENT_NAME, QueryCostEstimatorInput, payload
+    )
+
+
+@app.post("/agents/guardrail/pii_exposure_checker/invoke")
+async def invoke_pii_exposure_checker(payload: dict) -> dict:
+    """Parse the request body into `PiiExposureCheckerInput`, run the real
+    PII Exposure Checker agent, and return its `PiiExposureCheckerOutput`.
+    """
+
+    return await _invoke_agent(
+        PII_EXPOSURE_CHECKER_AGENT_NAME, PiiExposureCheckerInput, payload
+    )

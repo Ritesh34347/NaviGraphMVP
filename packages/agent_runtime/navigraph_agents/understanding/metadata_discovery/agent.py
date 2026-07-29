@@ -150,6 +150,7 @@ class MetadataDiscoveryAgent:
                             column_name=column.name,
                             data_type=column.data_type,
                             nullable=column.nullable,
+                            is_pii=column.is_pii,
                             business_name=(
                                 glossary_entry.business_name if glossary_entry else None
                             ),

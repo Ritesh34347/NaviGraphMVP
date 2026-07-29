@@ -282,41 +282,30 @@ field is the seam Phase 9 fills in.
 Coordinator wiring (also Phase 9) actually populates `conversation_history`
 before invoking Conversation Agent turn over turn.
 
-### 18. The Guardrail domain (real RBAC/ABAC/row-column policy) does not exist yet -- Phase 5 executes real SQL against live Snowflake with compensating controls only
+### 18. The Guardrail domain (real RBAC/ABAC/row-column policy) does not exist yet -- RESOLVED in Phase 6
 
-**What's deferred**: Real, policy-driven access control (OPA Rego rules
-evaluated per-request against a user's role/attributes, row-level and
-column-level masking). OPA currently runs the same allow-all placeholder
-policy from Phase 1 (item 4) — nothing added this phase.
+**What was deferred** (Phase 5): Real, policy-driven access control (OPA
+Rego rules evaluated per-request against a user's role/attributes, and
+column-level PII enforcement). OPA ran the same allow-all placeholder
+policy from Phase 1 (item 4).
 
-**Why**: The product spec places Guardrail immediately after Query
-(this phase), not before it. Rather than block all real SQL execution
-until Guardrail lands, Phase 5 was built with the user's explicit,
-confirmed go-ahead to execute real SQL now, backed by real, structural
-compensating controls that do not depend on Guardrail existing:
+**Resolution**: Phase 6 built the real Guardrail domain: the 4 agents
+`docs/architecture/overview.md` actually names (**Schema Constraint
+Validator**, **Policy Authorization**, **Query Cost/Row-Limit Estimator**,
+**PII Exposure Checker**), a real `infra/opa/policies/authz.rego` policy
+(deny-by-default RBAC + tenant ABAC, replacing the allow-all placeholder),
+and the adversarial test suite `tests/security/` now contains for real —
+see that directory's README for exactly what each test proves. (This
+item's earlier draft used the imprecise phrase "the Security Validation
+Agent," which didn't correspond to anything in `overview.md`'s actual
+4-agent list; corrected here to name the real agents that shipped.)
 
-- Execution Planning Agent's real string-masking SQL parser hard-rejects
-  anything that isn't a single read-only `SELECT`/`WITH` statement —
-  verified live: a deliberately malicious `SELECT 1; DROP TABLE ...`
-  statement was rejected by this exact gate in
-  `tests/integration/query_pipeline/test_pipeline_chain.py`, and never
-  reached Data Federation.
-- Every literal predicate value is bind-parameterized (`%(name)s`), never
-  string-interpolated into SQL text — closes SQL injection independently
-  of Guardrail.
-- A live, read-only `SHOW GRANTS TO ROLE FIDELITY_ANALYST_ROLE` check
-  (run with the user's explicit approval) confirmed the account's
-  Snowflake role has zero write privileges — only `USAGE`/`READ`/`SELECT`.
-- A hard row-cap (`max_rows`, capped at 10,000) and timeout
-  (`timeout_seconds=30`) are re-verified at the `ExecutionPlan` level,
-  not just trusted from upstream.
+Compensating controls Phase 5 relied on remain in place, now layered
+underneath real policy enforcement rather than standing in for it:
+Execution Planning's read-only-SELECT gate, bind-parameterized predicate
+values, and the live-verified `FIDELITY_ANALYST_ROLE` read-only grant.
 
-**What full version requires**: Phase 6's real OPA Rego policies (RBAC by
-Azure AD role, ABAC by claim, row/column masking), the Security Validation
-Agent, and the adversarial tests (`tests/security/`) the user's working
-method requires before any of it is marked done. None of Phase 5's
-compensating controls are a substitute for this — they exist because of
-the gap, not instead of closing it.
+**What's still deferred**: see items 23–25 below.
 
 ### 19. Execution defaults to the direct Snowflake connector, not Trino
 
@@ -389,3 +378,112 @@ later, not a cache-key redesign.
 intent-aware or policy-aware cache TTLs to populate `policy_version` and
 vary `ttl_seconds` accordingly — not addressed here since nothing yet
 depends on it.
+
+### 23. Azure AD token verification is not implemented — `RequestContext.roles`/`claims` remain caller-supplied
+
+**What's deferred**: Real JWT/OIDC validation of an Azure AD (Entra ID)
+token, extracting `roles`/`claims` from a cryptographically verified
+identity rather than trusting whatever the caller directly supplies.
+
+**Why**: Confirmed explicitly with the user before building Phase 6 (via
+`AskUserQuestion`) — the real policy engine and Guardrail agents were
+built to evaluate `RequestContext.roles`/`claims` exactly as every other
+agent already trusts that field, deliberately deferring gateway-level
+token verification rather than blocking this phase on an Azure Portal
+app-registration step. This is what makes
+`tests/security/test_opa_policy_adversarial.py`'s
+`test_self_declared_role_escalation_with_a_matching_tenant_claim_is_allowed`
+test pass — a self-declared `roles=["admin"]` with a matching tenant claim
+IS allowed by the real policy today, because Rego has no cryptographic
+identity to check that claim's provenance against.
+
+**What full version requires**: Real Azure AD JWT/JWKS validation
+middleware in the gateway (or agent-runtime), populating
+`RequestContext.roles`/`claims` from a verified token rather than a
+caller-supplied field — the terraform/entra-app-registration skeleton
+(item 5) and a real dev app registration are prerequisites.
+
+### 24. Query Cost/Row-Limit Estimator's per-role limits are a hardcoded Python dict, not policy-driven
+
+**What's deferred**: Sourcing per-role row limits from OPA/Rego (or any
+other centrally-managed policy store) instead of a module-level constant.
+
+**Why**: `guardrail.query_cost_estimator.agent.ROLE_ROW_LIMITS` is a plain
+Python dict (`{"analyst": 5_000, "pii_viewer": 5_000, "admin": 10_000}`,
+default `1_000`, capped at `MAX_ROWS_CAP=10_000`) — cost/capacity policy is
+a distinct concern from authorization (see DECISIONS.md), and doesn't need
+Rego's deny-by-default semantics. `QueryCostEstimatorResult.cost_policy_version`
+is reserved (always `"v1"` today) specifically so a future policy-driven
+variant is "populate an existing field," not a redesign — mirrors
+`CachingPayload.policy_version`'s identical precedent.
+
+**What full version requires**: The exact `ROLE_ROW_LIMITS` numbers are the
+build's own placeholders, not a real, confirmed business requirement —
+flagged for the user to confirm or override before relying on them as
+real policy. Whichever future phase needs the limits centrally managed
+(rather than redeployed per code change) should push them through Rego or
+a config service, populating `cost_policy_version` at that point.
+
+### 25. PII tagging (`CatalogColumn.is_pii`) is a manual, scripted backfill
+
+**What's deferred**: Automatically inferring which columns carry PII (from
+Snowflake column tags/comments, a real DLP/classification scan, or a
+naming heuristic run at crawl time).
+
+**Why**: `is_pii` defaults to `false` for every crawled column and is only
+ever set true by a human deliberately running
+`tools/scripts/tag_pii_columns.py` against a column list confirmed via a
+real, live discovery query — never guessed automatically. In the real
+`FIDELITY_POC` dataset, this surfaced a genuine finding: there are no
+traditional PII fields at all (no name/email/phone/address columns) — the
+one real, defensible PII-shaped column is `CUSTOMERID` (a direct customer
+identifier), tagged on both registered data sources
+(`fidelity_poc_snowflake` and `fidelity_poc_snowflake_v2`) across
+`CUSTOMER_INFORMATION`/`STAGING_CUSTOMER_INFORMATION`/`V_CUSTOMER_CURRENT`.
+This was confirmed with the user (via `AskUserQuestion`) rather than
+decided unilaterally, given the real compliance-classification judgment
+call involved.
+
+**What full version requires**: A real DLP scan or Snowflake-native
+column-tagging integration, if/when this dataset (or a future real
+tenant's dataset) has richer PII surface than a bare identifier column.
+
+### 26. Two registered data sources exist for one tenant, with divergent PII tagging risk
+
+**What's deferred**: Reconciling why `navikenz-poc` has two registered
+`DataSource` rows for the same underlying Snowflake account
+(`fidelity_poc_snowflake` and `fidelity_poc_snowflake_v2`, both created
+during Phase 2/3 crawls) — a real, pre-existing condition Phase 6's PII
+backfill surfaced concretely: `DataSourceDiscoveryAgent`'s table-owner
+resolution picks whichever data source it encounters first for a given
+table name (no defined ordering), so `STAGING_TRANSACTIONS` and
+`CUSTOMER_INFORMATION` currently resolve to `fidelity_poc_snowflake` (the
+older registration) at runtime, not `_v2`. Phase 6's PII tagging was
+applied to BOTH registrations specifically to avoid this ambiguity causing
+a real, silent security gap (tagging only `_v2` while the pipeline
+actually resolves the other one — a real mistake caught live via
+`tests/integration/guardrail_pipeline/` before this fix).
+
+**What full version requires**: A decision on which of the two data
+source registrations is canonical (or a real de-duplication pass), so
+future catalog-derived decisions (PII tagging, glossary curation, business
+concept mapping) don't need to be applied twice defensively.
+
+### 27. Rego policy hardening found live, during adversarial testing, not before
+
+**What's deferred**: A general practice note, not a specific gap — two
+real correctness issues in `infra/opa/policies/authz.rego` were found only
+by actually running `tests/security/test_opa_policy_adversarial.py`
+against the real, live policy, not by reading the Rego: (1) `input.claims`
+being `null` produced an empty `deny_reasons` list despite correctly
+denying (an `object.get` internal error silently dropped that rule
+instance); (2) an empty-string `tenant_id` matching an equally
+empty-string claim was structurally `==` and therefore incorrectly
+**allowed**. Both are fixed in the shipped policy (`default claims := {}`
+null-coalescing, and an explicit `input.tenant_id != ""` check).
+
+**Why this is logged at all**: a reminder, for whichever future phase adds
+more Rego rules, that "the policy compiles and the happy path works" is
+not sufficient evidence of correctness — adversarial inputs against the
+real OPA service are required before any policy change is considered
+done, exactly as this project's working method already states.

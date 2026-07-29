@@ -397,3 +397,109 @@ registration fix) — `RestartCount=0`, `healthy` both times — and a direct
 `POST /agents/query/data_source_discovery/invoke` HTTP call against the
 live container confirmed `"reachable": true` against the real Snowflake
 account after the fix.
+
+## 2026-07-29 — Phase 6: Guardrail domain (4 agents) + real OPA policy, closing the Phase 5 compensating-controls gap
+
+Built the 4 Guardrail-domain agents named in `docs/architecture/overview.md`
+(Schema Constraint Validator, Policy Authorization, Query Cost/Row-Limit
+Estimator, PII Exposure Checker) via two parallel workstreams, plus a new
+`packages/shared/navigraph_shared/opa/` client (mirroring `llm/client.py`'s
+ABC/real/fake triad) and a real `infra/opa/policies/authz.rego` policy
+replacing the Phase 1 allow-all placeholder. One real judgment call was
+confirmed with the user via `AskUserQuestion` before building: the real
+policy engine and Guardrail agents evaluate `RequestContext.roles`/`claims`
+as-is, exactly like every other agent already trusts that field — real
+Azure AD JWT verification populating those fields from a cryptographically
+verified identity stays a separate, explicitly deferred gap (no Azure
+Portal click-through needed this phase).
+
+**A real environment failure needed fixing before any of this could be
+verified**: Docker Desktop repeatedly crash-looped on startup with
+`"listening on unix://.../dockerInference: ... The filename, directory
+name, or volume label syntax is incorrect"` (and, on a later attempt, the
+identical failure shape for `docker-secrets-engine/engine.sock`) — stale,
+un-deletable reparse-point socket files left over from a prior session,
+which even `Remove-Item`/`fsutil reparsepoint delete` could not clear
+directly. Fixed by renaming the parent directories aside (Windows allowed
+renaming the directory even though the individual locked file inside
+couldn't be removed) and relaunching; Docker Desktop recreated fresh,
+working socket files on the next start.
+
+**Real bugs found and fixed, in the order discovered**:
+1. **The most significant bug this phase**: both Schema Constraint
+   Validator and PII Exposure Checker (built independently by two parallel
+   workstreams) assumed `GeneratedSql.referenced_columns` was a flat list
+   of bare column names, requiring a cross-product search against
+   `referenced_tables`. The real value SQL Generation actually produces is
+   `"TABLE.COLUMN"`-qualified (`sql_generation.agent._qualified_col`) —
+   caught live via `tests/integration/guardrail_pipeline/`, where every
+   real statement was rejected as `unknown_column` (Schema Constraint
+   Validator) and, more seriously, PII Exposure Checker's fail-open-on-
+   unresolvable design meant a qualified name that never matched a bare
+   lookup silently `cleared` every real PII statement regardless of
+   actual sensitivity. Fixed by parsing the qualified form directly in
+   both agents (`_split_qualified_column`), with a documented fallback for
+   unqualified names; added dedicated unit tests pinning the real shape
+   down so this can't regress silently again.
+2. `CatalogColumnEntry` (metadata_discovery's contracts) got a new
+   `is_pii` field as planned, but its sibling-package mirror,
+   `schema_mapping.contracts.CatalogInventoryEntry`, wasn't updated to
+   match — a real contract-drift bug, caught immediately by
+   `tests/integration/guardrail_pipeline/` (`extra_forbidden` validation
+   error) the moment the two agents' real outputs were wired together.
+   Fixed by adding the matching field to the sibling contract.
+3. `metadata_discovery`'s own existing unit test used a `SimpleNamespace`
+   stand-in for `CatalogColumn` that didn't have an `is_pii` attribute —
+   broke the moment `agent.py` started reading that field. Fixed the test
+   fixture, not the feature.
+4. **A real PII-tagging/runtime-resolution mismatch**: the initial PII
+   backfill tagged `CUSTOMER_INFORMATION.CUSTOMERID` only on the
+   `fidelity_poc_snowflake_v2` data source, but
+   `DataSourceDiscoveryAgent`'s table-owner resolution actually resolves
+   `STAGING_TRANSACTIONS`/`CUSTOMER_INFORMATION` to the OLDER
+   `fidelity_poc_snowflake` registration at runtime (no defined ordering
+   between the two, confirmed via a live query) — caught by
+   `tests/integration/guardrail_pipeline/` returning a false `cleared` for
+   a real PII statement instead of the expected denial. Fixed by tagging
+   both registrations; logged as `LIMITATIONS.md` item 26 (the underlying
+   two-data-sources-for-one-tenant condition is a real, pre-existing
+   inconsistency worth resolving later, not something this phase silently
+   worked around).
+5. Two real Rego policy bugs, found only by running the adversarial suite
+   against the live OPA service, not by reading the policy: `input.claims`
+   being `null` correctly denied (`allow=false`) but silently produced an
+   EMPTY `deny_reasons` (an internal `object.get` type error dropped that
+   rule instance) — fixed with `default claims := {}` null-coalescing; an
+   empty-string `tenant_id` matching an equally empty-string claim was
+   structurally `==` and therefore incorrectly **allowed** — fixed by
+   requiring `input.tenant_id != ""` explicitly.
+
+**Real PII classification, decided with the user, not assumed**: a live
+discovery query of the real `FIDELITY_POC` catalog found NO traditional
+PII fields at all (no name/email/phone/address columns) — customers are
+identified only by an opaque `CUSTOMERID`. Confirmed with the user via
+`AskUserQuestion` to tag `CUSTOMERID` itself as PII (a direct customer
+identifier, personal data under GDPR-style definitions even without a
+name attached) rather than proceed with no real PII data to test against.
+
+**Real verification performed**: `ruff check packages/ tests/` and `mypy`
+(explicit per-package paths, 134 source files) both clean; `pytest
+packages/` — 257 passed, 5 skipped as designed. The real
+`tests/integration/guardrail_pipeline/` test passed end-to-end: Schema
+Constraint Validator rejected an unknown-column statement while validating
+its real sibling in the same batch; PII Exposure Checker denied `analyst`
+and cleared `pii_viewer` for the real, tagged `CUSTOMERID` column; Policy
+Authorization authorized a matching-tenant request and denied a
+mismatched-tenant one via the real, live OPA service; the resulting
+`ExecutionPlan` was real and `read_only_verified`. The real
+`tests/security/` suite (16 tests) passed against the live OPA service,
+covering all three of `tests/security/README.md`'s required minimums plus
+dedicated PII Exposure Checker coverage — including a control test
+documenting the known, deliberately out-of-scope self-declared-role-
+escalation gap (allowed today, closed only by future real Azure AD
+verification). The `agent-runtime` container was rebuilt and restarted
+twice (once after wiring the 4 new agents, once after the qualified-
+column bugfix) — `RestartCount=0`, `healthy` both times — and real HTTP
+calls to `POST /agents/guardrail/policy_authorization/invoke` against the
+live container confirmed both a real `allow` decision (matching tenant)
+and a real `deny` decision (mismatched tenant) from the live OPA service.

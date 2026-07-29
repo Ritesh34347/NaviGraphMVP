@@ -49,7 +49,6 @@ from navigraph_catalog.ingestion.snowflake_crawler import crawl_and_store
 from navigraph_catalog.settings import MetadataCatalogSettings
 from navigraph_connectors.snowflake.connector import SnowflakeConnector
 from navigraph_connectors.snowflake.settings import SnowflakeSettings
-
 from navigraph_kg.client import Neo4jClient
 from navigraph_kg.ingestion.pipeline import run_ingestion
 from navigraph_kg.ontology import apply_constraints

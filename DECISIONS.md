@@ -295,3 +295,94 @@ only when Phase 4's real integration test wired the two together. Accepted
 as the correct tradeoff (a Coordinator-mediated contract, verified by
 integration tests, over a compile-time-enforced but architecturally wrong
 direct dependency) rather than reversed.
+
+## 2026-07-29 — Guardrail agents split around the `GeneratedSql`/`OptimizedSql` data-availability boundary
+
+We placed three of the four Guardrail agents (Schema Constraint Validator,
+Policy Authorization, PII Exposure Checker) between SQL Generation and SQL
+Optimization, and the fourth (Query Cost/Row-Limit Estimator) between SQL
+Optimization and Execution Planning — rather than following
+`docs/architecture/overview.md`'s table order, which is a status listing,
+not a sequencing statement. We considered placing all four after SQL
+Optimization (matching the doc's visual order) and rejected it: `GeneratedSql`
+(SQL Generation's own output) is the only contract shape anywhere in the
+Query-domain chain carrying `referenced_tables`/`referenced_columns` —
+`OptimizedSql` and `ExecutionPlan` don't retain that structure. Three of
+the four agents structurally need those fields; placing them downstream of
+where SQL Optimization strips that data away would have made real
+enforcement impossible without adding fields back onto sibling contracts
+for no reason other than doc-order fidelity.
+
+## 2026-07-29 — OPA and PII Exposure Checker are two separate enforcement layers, not one
+
+We chose to keep column-level PII enforcement entirely in the PII Exposure
+Checker agent's Python code (querying `CatalogColumn.is_pii` directly
+against the live Postgres catalog), while `infra/opa/policies/authz.rego`
+handles RBAC and tenant ABAC only. We considered pushing PII/column
+sensitivity facts into OPA's own `data` document so one policy engine
+decided everything, and rejected it: `infra/opa/conf/config.yaml` runs OPA
+bundle-less (policies loaded only from mounted `.rego` files), and there is
+no live-data-API integration anywhere in this stack to push dynamic
+catalog facts (which change as new columns get tagged) into OPA without
+building that integration from scratch this phase. `docs/architecture/overview.md`
+already names these as two distinct agents — Policy Authorization and PII
+Exposure Checker — so this boundary is load-bearing documentation, not
+incidental phrasing. Keeping Rego itself simple and stateless also keeps it
+independently adversarially-testable (see `tests/security/test_opa_policy_adversarial.py`)
+without needing a live database in the loop.
+
+## 2026-07-29 — Policy Authorization fails closed on OPA-unreachable, the deliberate opposite of Caching's fail-open
+
+We chose to treat any exception from the real OPA call (connection
+refused, timeout, non-2xx) as a single, non-recoverable
+`AgentError(code="opa_unreachable")` for the whole batch, discarding
+anything already authorized earlier in the same call. We considered
+mirroring `CachingAgent`'s fail-OPEN convention (`cache_backend_unavailable`,
+`recoverable=True`) for consistency with an existing precedent, and
+rejected it: a cache miss costs nothing security-wise (the caller just
+re-executes against the real source), but "the policy engine didn't
+answer" silently becoming an implicit allow would disable tenant
+isolation and RBAC entirely for that request. Verified live via
+`tests/security/test_insufficient_roles_fail_closed.py::test_opa_unreachable_fails_closed_not_open`
+against a real, deliberately unreachable address — not mocked.
+
+## 2026-07-29 — `is_pii` lives on `CatalogColumn`, not `ColumnGlossary`
+
+We added the new PII flag directly to `CatalogColumn` rather than to
+`ColumnGlossary` (the existing business-enrichment table). We considered
+`ColumnGlossary` (it already carries business-facing metadata) and
+rejected it: `ColumnGlossary` is optional/nullable enrichment — most real
+columns in `FIDELITY_POC` have no glossary entry at all — but PII
+sensitivity must apply to every column unconditionally, glossaried or not.
+`CatalogColumn` is the row that unconditionally exists for every crawled
+column, so that's where a mandatory, defaulted-false flag belongs.
+
+## 2026-07-29 — `OpaClient` lives in `navigraph_shared`, not a new package
+
+We added `HttpOpaClient`/`FakeOpaClient` to `packages/shared/navigraph_shared/opa/`,
+mirroring `navigraph_shared/llm/client.py`'s exact ABC/real/fake triad,
+rather than creating a new standalone package (the way `navigraph_federation`
+was split out for Trino in Phase 5). We considered a new package for
+symmetry with that precedent and rejected it: `httpx` was already a real,
+declared `navigraph-shared` dependency (unlike Trino, which needed a new
+driver dependency), and OPA authorization is a cross-cutting concern
+`gateway` will eventually need too, not just `agent_runtime` — the same
+reasoning that already put `LLMClient` in `shared` rather than in
+`agent_runtime` alone.
+
+## 2026-07-29 — Real adversarial testing surfaced two live Rego bugs and one PII-tagging gap before shipping
+
+We treated `tests/security/`'s real, live-OPA adversarial run as a
+required gate before considering Phase 6 done, not a formality — and it
+caught two real policy-correctness bugs (a `null` `claims` value silently
+producing an empty `deny_reasons` despite correctly denying; an
+empty-string `tenant_id` matching an empty-string claim being incorrectly
+*allowed*) plus one real data-inconsistency bug (the initial PII backfill
+tagged `fidelity_poc_snowflake_v2`, but `DataSourceDiscoveryAgent`
+actually resolves `STAGING_TRANSACTIONS`/`CUSTOMER_INFORMATION` to the
+older `fidelity_poc_snowflake` registration at runtime — caught by
+`tests/integration/guardrail_pipeline/` returning a false "cleared" for a
+real PII statement). All three were fixed before this phase was marked
+done, not deferred to a follow-up — consistent with the user's standing
+rule that a security-relevant component is never "done" without a real
+adversarial test proving it.

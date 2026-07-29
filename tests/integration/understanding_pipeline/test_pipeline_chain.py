@@ -39,12 +39,6 @@ market-dimension column, with no unmapped terms.
 from __future__ import annotations
 
 import pytest
-from navigraph_catalog.api import list_data_sources
-from navigraph_catalog.db import get_engine, get_session_factory, session_scope
-from navigraph_catalog.settings import MetadataCatalogSettings
-from navigraph_shared.contracts import RequestContext
-from navigraph_shared.llm import FakeLLMClient
-
 from navigraph_agents.understanding.conversation.agent import ConversationAgent
 from navigraph_agents.understanding.conversation.contracts import (
     ConversationInput,
@@ -65,7 +59,10 @@ from navigraph_agents.understanding.metadata_discovery.contracts import (
     MetadataDiscoveryPayload,
 )
 from navigraph_agents.understanding.ontology.agent import OntologyAgent
-from navigraph_agents.understanding.ontology.contracts import OntologyInput, OntologyPayload
+from navigraph_agents.understanding.ontology.contracts import (
+    OntologyInput,
+    OntologyPayload,
+)
 from navigraph_agents.understanding.schema_mapping.agent import SchemaMappingAgent
 from navigraph_agents.understanding.schema_mapping.contracts import (
     CatalogInventoryEntry,
@@ -83,9 +80,13 @@ from navigraph_agents.understanding.semantic_retrieval.contracts import (
     SemanticRetrievalInput,
     SemanticRetrievalPayload,
 )
-
+from navigraph_catalog.api import list_data_sources
+from navigraph_catalog.db import get_engine, get_session_factory, session_scope
+from navigraph_catalog.settings import MetadataCatalogSettings
 from navigraph_kg.client import Neo4jClient
 from navigraph_kg.settings import KnowledgeGraphSettings
+from navigraph_shared.contracts import RequestContext
+from navigraph_shared.llm import FakeLLMClient
 
 pytestmark = pytest.mark.postgres_integration
 

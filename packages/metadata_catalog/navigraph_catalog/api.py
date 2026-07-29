@@ -10,10 +10,12 @@ that is the caller's `session_scope`'s job.
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 from navigraph_connectors.base import SchemaDescriptor
 from navigraph_connectors.registry import get_connector_class
-from sqlalchemy import select
+from sqlalchemy import func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from navigraph_catalog.models import (
@@ -212,6 +214,82 @@ def upsert_glossary(
 
     session.flush()
     return glossary_entry
+
+
+def find_column(
+    session: Session,
+    *,
+    data_source_id: uuid.UUID,
+    table_name: str,
+    column_name: str,
+) -> CatalogColumn | None:
+    """Case-insensitive point lookup of a single column, scoped to a data
+    source -- joins `CatalogColumn -> CatalogTable -> CatalogSchema ->
+    DataSource`. Matches case-insensitively (real crawled Snowflake
+    identifiers are typically uppercase, but a caller like SQL Generation's
+    `GeneratedSql.referenced_tables`/`referenced_columns` is not guaranteed
+    to match that case exactly) -- mirrors
+    `DataSourceDiscoveryAgent._resolve_table_owners`' identical
+    case-insensitive-matching rationale, at the SQL layer via `func.lower()`
+    rather than fetching every row and comparing in Python, since this is a
+    single targeted lookup, not a build-an-index-once pass over the whole
+    catalog.
+
+    Used by the Guardrail domain's Schema Constraint Validator and PII
+    Exposure Checker agents -- both need to resolve a `(table_name,
+    column_name)` pair from `GeneratedSql.referenced_tables`/
+    `referenced_columns` back to the real `CatalogColumn` row it names.
+    """
+
+    return session.execute(
+        select(CatalogColumn)
+        .join(CatalogTable, CatalogColumn.table_id == CatalogTable.id)
+        .join(CatalogSchema, CatalogTable.schema_id == CatalogSchema.id)
+        .where(
+            CatalogSchema.data_source_id == data_source_id,
+            func.lower(CatalogTable.name) == table_name.lower(),
+            func.lower(CatalogColumn.name) == column_name.lower(),
+        )
+    ).scalar_one_or_none()
+
+
+def mark_columns_pii(
+    session: Session,
+    *,
+    data_source_id: uuid.UUID,
+    table_name: str,
+    column_names: list[str],
+) -> int:
+    """Idempotently set `is_pii = true` on every column in `column_names`
+    for `table_name`, scoped to `data_source_id`. Matches case-
+    insensitively, same rationale as `find_column`. Safe to call repeatedly
+    (a bulk `UPDATE`, not an insert) -- re-running the same backfill list
+    is a no-op on rows already tagged. Returns the number of rows matched
+    (not necessarily the number actually changed, since a row already
+    `is_pii = true` still counts as matched) so
+    `tools/scripts/tag_pii_columns.py` can report real, verifiable output
+    rather than assuming success silently.
+    """
+
+    lowered_names = [name.lower() for name in column_names]
+
+    table_ids = select(CatalogTable.id).where(
+        CatalogTable.schema_id.in_(
+            select(CatalogSchema.id).where(CatalogSchema.data_source_id == data_source_id)
+        ),
+        func.lower(CatalogTable.name) == table_name.lower(),
+    )
+
+    result = session.execute(
+        update(CatalogColumn)
+        .where(
+            CatalogColumn.table_id.in_(table_ids),
+            func.lower(CatalogColumn.name).in_(lowered_names),
+        )
+        .values(is_pii=True)
+    )
+    session.flush()
+    return cast(CursorResult, result).rowcount
 
 
 def list_glossary(session: Session, *, data_source_id: uuid.UUID) -> list[ColumnGlossary]:

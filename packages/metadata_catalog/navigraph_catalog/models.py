@@ -132,6 +132,14 @@ class CatalogColumn(Base):
     nullable: Mapped[bool] = mapped_column(nullable=False)
     ordinal_position: Mapped[int] = mapped_column(nullable=False)
     description: Mapped[str | None] = mapped_column(default=None)
+    # Phase 6 (Guardrail domain): whether this column carries personally
+    # identifiable information. Defaults false -- crawling never infers
+    # this on its own; a real value is only ever set by a deliberate,
+    # human-run backfill (see tools/scripts/tag_pii_columns.py), never
+    # guessed from a naming heuristic at crawl time. Checked directly by
+    # the PII Exposure Checker agent, not pushed through OPA/Rego -- see
+    # DECISIONS.md for why these are two separate enforcement layers.
+    is_pii: Mapped[bool] = mapped_column(nullable=False, default=False, server_default=text("false"))
 
     table: Mapped[CatalogTable] = relationship(back_populates="columns")
     glossary_entry: Mapped[ColumnGlossary | None] = relationship(

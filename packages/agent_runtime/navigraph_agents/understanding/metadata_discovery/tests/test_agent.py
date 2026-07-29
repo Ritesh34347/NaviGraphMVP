@@ -52,10 +52,20 @@ def _table(table_id: uuid.UUID, name: str, schema_name: str) -> SimpleNamespace:
 
 
 def _column(
-    column_id: uuid.UUID, table_id: uuid.UUID, name: str, data_type: str, nullable: bool
+    column_id: uuid.UUID,
+    table_id: uuid.UUID,
+    name: str,
+    data_type: str,
+    nullable: bool,
+    is_pii: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        id=column_id, table_id=table_id, name=name, data_type=data_type, nullable=nullable
+        id=column_id,
+        table_id=table_id,
+        name=name,
+        data_type=data_type,
+        nullable=nullable,
+        is_pii=is_pii,
     )
 
 

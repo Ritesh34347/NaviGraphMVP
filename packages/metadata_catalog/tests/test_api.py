@@ -22,11 +22,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from navigraph_catalog.api import (
+    find_column,
     get_table,
     list_columns,
     list_data_sources,
     list_glossary,
     list_tables,
+    mark_columns_pii,
     register_data_source,
     upsert_glossary,
     upsert_schema_tree,
@@ -298,3 +300,74 @@ class TestListGlossary:
 
         assert result == expected
         session.execute.assert_called_once()
+
+
+class TestFindColumn:
+    def test_find_column_returns_single_result_or_none(self) -> None:
+        session = MagicMock()
+        expected = MagicMock(spec=CatalogColumn)
+        session.execute.return_value.scalar_one_or_none.return_value = expected
+
+        result = find_column(
+            session,
+            data_source_id=uuid.uuid4(),
+            table_name="STAGING_TRANSACTIONS",
+            column_name="marketid",
+        )
+
+        assert result is expected
+        session.execute.assert_called_once()
+
+    def test_find_column_returns_none_when_not_found(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = find_column(
+            session,
+            data_source_id=uuid.uuid4(),
+            table_name="NO_SUCH_TABLE",
+            column_name="no_such_column",
+        )
+
+        assert result is None
+
+
+class TestMarkColumnsPii:
+    def test_mark_columns_pii_issues_a_bulk_update_and_returns_matched_count(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.rowcount = 2
+
+        data_source_id = uuid.uuid4()
+        result = mark_columns_pii(
+            session,
+            data_source_id=data_source_id,
+            table_name="CUSTOMER_INFORMATION",
+            column_names=["FIRSTNAME", "LASTNAME"],
+        )
+
+        assert result == 2
+        session.execute.assert_called_once()
+        session.flush.assert_called_once()
+
+    def test_mark_columns_pii_is_idempotent_re_run_still_reports_matched_count(self) -> None:
+        """Re-running with the same (already-tagged) columns still reports
+        them as matched -- a bulk UPDATE, not an insert, so no duplicate
+        rows and no error on re-run."""
+
+        session = MagicMock()
+        session.execute.return_value.rowcount = 2
+
+        first = mark_columns_pii(
+            session,
+            data_source_id=uuid.uuid4(),
+            table_name="CUSTOMER_INFORMATION",
+            column_names=["FIRSTNAME", "LASTNAME"],
+        )
+        second = mark_columns_pii(
+            session,
+            data_source_id=uuid.uuid4(),
+            table_name="CUSTOMER_INFORMATION",
+            column_names=["FIRSTNAME", "LASTNAME"],
+        )
+
+        assert first == second == 2
