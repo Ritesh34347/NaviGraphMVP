@@ -20,8 +20,12 @@ Exposes:
   - POST /agents/guardrail/policy_authorization/invoke
   - POST /agents/guardrail/query_cost_estimator/invoke
   - POST /agents/guardrail/pii_exposure_checker/invoke
+  - POST /agents/insight/chart_selection/invoke
+  - POST /agents/insight/anomaly_outlier_highlighter/invoke
+  - POST /agents/insight/grounded_narrative_generation/invoke
+  - POST /agents/insight/follow_up_suggestion/invoke
                      -- invokes the six Understanding-domain, six Query-domain,
-                        and four Guardrail-domain agents
+                        four Guardrail-domain, and four Insight-domain agents
 
 At startup, constructs a real `AnthropicLLMClient` if `ANTHROPIC_API_KEY` is
 set, or falls back to a `FakeLLMClient` (logging a warning) so this service
@@ -102,6 +106,36 @@ from navigraph_agents.guardrail.schema_constraint_validator.agent import (
 )
 from navigraph_agents.guardrail.schema_constraint_validator.contracts import (
     SchemaConstraintValidatorInput,
+)
+from navigraph_agents.insight.anomaly_outlier_highlighter.agent import (
+    AGENT_NAME as ANOMALY_OUTLIER_HIGHLIGHTER_AGENT_NAME,
+)
+from navigraph_agents.insight.anomaly_outlier_highlighter.agent import (
+    AnomalyOutlierHighlighterAgent,
+)
+from navigraph_agents.insight.anomaly_outlier_highlighter.contracts import (
+    AnomalyDetectionInput,
+)
+from navigraph_agents.insight.chart_selection.agent import (
+    AGENT_NAME as CHART_SELECTION_AGENT_NAME,
+)
+from navigraph_agents.insight.chart_selection.agent import ChartSelectionAgent
+from navigraph_agents.insight.chart_selection.contracts import ChartSelectionInput
+from navigraph_agents.insight.follow_up_suggestion.agent import (
+    AGENT_NAME as FOLLOW_UP_SUGGESTION_AGENT_NAME,
+)
+from navigraph_agents.insight.follow_up_suggestion.agent import FollowUpSuggestionAgent
+from navigraph_agents.insight.follow_up_suggestion.contracts import (
+    FollowUpSuggestionInput,
+)
+from navigraph_agents.insight.grounded_narrative_generation.agent import (
+    AGENT_NAME as GROUNDED_NARRATIVE_GENERATION_AGENT_NAME,
+)
+from navigraph_agents.insight.grounded_narrative_generation.agent import (
+    GroundedNarrativeGenerationAgent,
+)
+from navigraph_agents.insight.grounded_narrative_generation.contracts import (
+    NarrativeGenerationInput,
 )
 from navigraph_agents.query.caching.agent import AGENT_NAME as CACHING_AGENT_NAME
 from navigraph_agents.query.caching.agent import CacheClientProtocol, CachingAgent
@@ -299,6 +333,27 @@ async def lifespan(app: FastAPI):
     redis_client = redis.Redis.from_url(_redis_url())
     caching_agent = CachingAgent(cache_client=cast(CacheClientProtocol, redis_client), tracer=tracer)
     register(CACHING_AGENT_NAME, caching_agent.run)
+
+    # Insight-domain agents (Phase 7). Chart Selection and Anomaly/Outlier
+    # Highlighter are pure functions, no external client dependency, same
+    # as the Guardrail domain's own deterministic agents. Grounded
+    # Narrative Generation and Follow-up Suggestion take the same shared
+    # `llm_client` every other LLM-backed agent uses.
+    chart_selection_agent = ChartSelectionAgent(tracer=tracer)
+    register(CHART_SELECTION_AGENT_NAME, chart_selection_agent.run)
+
+    anomaly_outlier_highlighter_agent = AnomalyOutlierHighlighterAgent(tracer=tracer)
+    register(ANOMALY_OUTLIER_HIGHLIGHTER_AGENT_NAME, anomaly_outlier_highlighter_agent.run)
+
+    grounded_narrative_generation_agent = GroundedNarrativeGenerationAgent(
+        llm_client=llm_client, tracer=tracer
+    )
+    register(
+        GROUNDED_NARRATIVE_GENERATION_AGENT_NAME, grounded_narrative_generation_agent.run
+    )
+
+    follow_up_suggestion_agent = FollowUpSuggestionAgent(llm_client=llm_client, tracer=tracer)
+    register(FOLLOW_UP_SUGGESTION_AGENT_NAME, follow_up_suggestion_agent.run)
 
     app.state.llm_client = llm_client
     app.state.neo4j_client = neo4j_client
@@ -535,4 +590,48 @@ async def invoke_pii_exposure_checker(payload: dict) -> dict:
 
     return await _invoke_agent(
         PII_EXPOSURE_CHECKER_AGENT_NAME, PiiExposureCheckerInput, payload
+    )
+
+
+@app.post("/agents/insight/chart_selection/invoke")
+async def invoke_chart_selection(payload: dict) -> dict:
+    """Parse the request body into `ChartSelectionInput`, run the real
+    Chart Selection agent, and return its `ChartSelectionOutput`.
+    """
+
+    return await _invoke_agent(CHART_SELECTION_AGENT_NAME, ChartSelectionInput, payload)
+
+
+@app.post("/agents/insight/anomaly_outlier_highlighter/invoke")
+async def invoke_anomaly_outlier_highlighter(payload: dict) -> dict:
+    """Parse the request body into `AnomalyDetectionInput`, run the real
+    Anomaly/Outlier Highlighter agent, and return its
+    `AnomalyDetectionOutput`.
+    """
+
+    return await _invoke_agent(
+        ANOMALY_OUTLIER_HIGHLIGHTER_AGENT_NAME, AnomalyDetectionInput, payload
+    )
+
+
+@app.post("/agents/insight/grounded_narrative_generation/invoke")
+async def invoke_grounded_narrative_generation(payload: dict) -> dict:
+    """Parse the request body into `NarrativeGenerationInput`, run the real
+    Grounded Narrative Generation agent, and return its
+    `NarrativeGenerationOutput`.
+    """
+
+    return await _invoke_agent(
+        GROUNDED_NARRATIVE_GENERATION_AGENT_NAME, NarrativeGenerationInput, payload
+    )
+
+
+@app.post("/agents/insight/follow_up_suggestion/invoke")
+async def invoke_follow_up_suggestion(payload: dict) -> dict:
+    """Parse the request body into `FollowUpSuggestionInput`, run the real
+    Follow-up Suggestion agent, and return its `FollowUpSuggestionOutput`.
+    """
+
+    return await _invoke_agent(
+        FOLLOW_UP_SUGGESTION_AGENT_NAME, FollowUpSuggestionInput, payload
     )

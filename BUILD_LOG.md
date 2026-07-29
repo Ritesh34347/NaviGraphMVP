@@ -503,3 +503,76 @@ column bugfix) — `RestartCount=0`, `healthy` both times — and real HTTP
 calls to `POST /agents/guardrail/policy_authorization/invoke` against the
 live container confirmed both a real `allow` decision (matching tenant)
 and a real `deny` decision (mismatched tenant) from the live OPA service.
+
+## 2026-07-29 — Phase 7: Insight domain (4 agents), the first fully real end-to-end chain from Understanding through a grounded narrative
+
+Built the 4 Insight-domain agents named in `docs/architecture/overview.md`
+(Chart Selection, Anomaly/Outlier Highlighter, Grounded Narrative
+Generation, Follow-up Suggestion) via two parallel workstreams, following
+the exact contract pattern established in every prior domain. Chart
+Selection and Anomaly/Outlier Highlighter are fully deterministic (z-score
+via stdlib `statistics`, no new dependency); Grounded Narrative Generation
+and Follow-up Suggestion are LLM-backed via the shared `llm_client`.
+
+**A real architectural gap surfaced during design, not silently patched**:
+no contract between SQL Generation and Data Federation carries a resolved
+column's measure/dimension role or SQL Generation's own real aggregation
+aliasing (`UNITS` → `UNITS_TOTAL`) forward — `DataFederationResult.final_columns`
+is a bare `list[str]`. Fixed by adding `ChartColumnRef.result_alias`,
+populated by the caller (today: the integration test, absent a real
+Orchestrator) rather than reaching back into an already-shipped upstream
+contract — logged honestly as `LIMITATIONS.md` item 28, demonstrated
+concretely in `tests/integration/insight_pipeline/` rather than glossed
+over.
+
+**Grounded Narrative Generation's real anti-hallucination mechanism**
+(the most significant new piece of discipline this phase adds): the LLM
+returns structured JSON with `citations` naming exact `(row_index,
+column, cited_value)` triples; every citation is validated against a
+closed candidate set built from the real result rows and anomaly data —
+a fabricated or misattributed citation is dropped, never partially
+trusted, mirroring `SemanticRetrievalAgent`'s "closed candidate list,
+reject anything not in it" discipline exactly, applied here to real
+result-set cells instead of catalog column IDs. A second, independent
+whole-narrative numeric scan catches any number the LLM stated without
+even citing it. Follow-up Suggestion is deliberately exempt from this
+same discipline (a suggested question is a proposal, not a factual
+claim), verified live by accepting a suggestion referencing "account," a
+concept absent from the real result columns.
+
+**Real bugs found, fixed before this phase's own review**: none in the
+built agent code itself this time (both parallel workstreams' unit tests,
+`ruff`, and `mypy` were clean on first integration) — the one real
+correction was my own smoke-test payload initially omitting the `term`
+field the built `ChartColumnRef` correctly requires (a real mirror of
+`ResolvedColumnRef`'s actual field, more faithful than my own plan's
+simplified sketch), caught immediately by Pydantic's `extra="forbid"`
+validation on the live HTTP call.
+
+**Real verification performed**: `ruff check packages/ tests/` and `mypy`
+(explicit per-package paths, 156 source files) both clean; `pytest
+packages/` — 284 passed, 6 skipped as designed. The real
+`tests/integration/insight_pipeline/` test passed end-to-end on the first
+full run: chained the entire real pipeline (Understanding → Query → all
+4 Guardrail gates → SQL Optimization → Query Cost Estimator → Execution
+Planning) into a REAL Data Federation execution against live Snowflake
+(unlike `guardrail_pipeline`, which deliberately stopped short of it) —
+Chart Selection correctly picked a `"bar"` chart (`MARKETID`/`UNITS_TOTAL`);
+Anomaly/Outlier Highlighter found 1 real anomaly, independently
+re-derived and matched against a hand-computed z-score in the test itself
+using the real live data; Grounded Narrative Generation validated a real
+citation drawn dynamically from the live result set, and correctly
+rejected a deliberately fabricated citation (`llm_cited_fabricated_value`
++ `narrative_contains_unverified_number`); Follow-up Suggestion returned
+real, valid suggestions. The `agent-runtime` container was rebuilt and
+restarted — `RestartCount=0`, `healthy` — and a real HTTP call to `POST
+/agents/insight/chart_selection/invoke` against the live container
+returned a correct, real chart decision.
+
+**Logged, not fixed, this phase**: a broader documentation-staleness
+finding (`LIMITATIONS.md` item 32) — `docs/architecture/overview.md` and
+`data-flow.md` still describe every domain's agents as `DESIGNED`/
+not-yet-real, and two module docstrings still say "exactly one agent is
+registered," none updated since Phase 1 despite Phases 4-7 shipping ~20
+real, verified agents. Recommended as a dedicated later phase rather than
+bundled into this one (see DECISIONS.md).

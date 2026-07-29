@@ -487,3 +487,116 @@ more Rego rules, that "the policy compiles and the happy path works" is
 not sufficient evidence of correctness — adversarial inputs against the
 real OPA service are required before any policy change is considered
 done, exactly as this project's working method already states.
+
+### 28. Chart Selection's column-role linkage across SQL Generation's aliasing is manually threaded, not structurally carried by any contract
+
+**What's deferred**: No contract between SQL Generation and Data
+Federation (`OptimizedSql`, `ExecutionPlan`, `SourceQueryResult`,
+`DataFederationResult`) preserves a resolved column's measure/dimension
+role or its real result-set header. `DataFederationResult.final_columns`
+is a bare `list[str]`.
+
+**Why**: SQL Generation's own aggregation aliasing
+(`sql_generation.agent._generate_statements`/`_aggregation_function`: a
+`role="measure"` column becomes `{column_name}_TOTAL` in the real SELECT
+list, e.g. `UNITS` → `UNITS_TOTAL`) means a measure's catalog
+`column_name` and its real result-set header diverge — so Chart Selection
+needs both the role AND the real alias to pick sensible x/y columns.
+`ChartColumnRef.result_alias` exists specifically to carry this, but today
+the CALLER (a human-written test, absent a real Orchestrator) populates
+it by hand, replicating SQL Generation's alias rule — demonstrated
+concretely in `tests/integration/insight_pipeline/test_pipeline_chain.py`
+rather than glossed over.
+
+**What full version requires**: A real Coordinator (Phase 9,
+Orchestrator domain) threading this structurally — either a new field on
+`GeneratedSql`/`OptimizedSql` carrying the alias mapping forward, or the
+Coordinator itself building `ChartColumnRef` from data it already holds
+across agent calls. No prior phase has gone back to modify an
+already-shipped upstream agent's contract for a downstream phase's
+convenience; this is the first real case where that tradeoff was
+consciously made (see DECISIONS.md).
+
+### 29. Anomaly/Outlier Highlighter's z-score threshold and minimum-group-count are placeholders pending business confirmation
+
+**What's deferred**: `insight.anomaly_outlier_highlighter.agent._Z_SCORE_THRESHOLD`
+(`2.0`) and `_MIN_GROUPS_FOR_DETECTION` (`3`) are reasonable v1 defaults,
+not a confirmed business requirement.
+
+**Why**: Same category as item 24's `ROLE_ROW_LIMITS` — a real,
+conservative default was needed to ship a working agent; the exact
+numbers were never validated against a real business threshold for "how
+unusual is unusual."
+
+**What full version requires**: Confirm or override with the user once
+this matters in practice — e.g. real users flagging too many/too few
+detected anomalies against the actual data distributions NaviGraph sees.
+
+### 30. Grounded Narrative Generation's numeric-hallucination check has a real, scoped blind spot
+
+**What's deferred**: Catching a real value *misattributed* to the wrong
+row/group (e.g. citing the West region's real number as if it were the
+East region's).
+
+**Why**: The two-layer validation (`_validate_citations`'s closed
+candidate-set check, `_scan_for_unverifiable_numbers`'s whole-narrative
+scan) can only ever catch wholesale fabrication — a number that doesn't
+match ANY real value anywhere in the data. If the LLM cites a genuinely
+real value but attaches it to the wrong row/column, and that same value
+also doesn't happen to be wrong-but-absent elsewhere, both layers pass it
+through. Catching misattribution would require re-deriving each claim's
+intended row/group from the narrative's own prose, which neither layer
+attempts.
+
+**What full version requires**: A more sophisticated grounding check (or
+a stricter prompt constraining the LLM to only ever restate values
+verbatim from a single, pre-selected row) if misattribution turns out to
+be a real, observed failure mode in practice — not addressed
+speculatively here.
+
+### 31. Follow-up Suggestion's question text is unvalidated free text beyond shape/length/count checks
+
+**What's deferred**: Any grounding/hallucination check on suggested
+follow-up question text.
+
+**Why**: Deliberate, not an oversight — a suggested question is a
+proposal, not a factual claim, and routinely and correctly introduces
+concepts outside the closed candidate list on purpose (the worked
+example's own "did any single account drive the Southwest spike"
+deliberately introduces "account," absent from `final_columns`). Applying
+Grounded Narrative Generation's closed-candidate-list discipline here
+would reject exactly the useful, exploratory suggestions this agent
+exists to produce. Only shape validation applies: 1-3 non-empty
+suggestions, or a recoverable `AgentError` + empty fallback.
+
+**What full version requires**: Nothing planned — this is a permanent
+design boundary, not a gap expected to close.
+
+### 32. Documentation staleness is broader than previously logged
+
+**What's deferred**: `docs/architecture/overview.md`'s domain status
+tables still mark every Understanding/Query/Guardrail/Insight agent
+`DESIGNED` (none reflect the ~20 real agents actually shipped across
+Phases 4-7); `docs/architecture/data-flow.md` still narrates Query/
+Guardrail/Ops stages as "(designed)" throughout; `packages/agent_runtime/navigraph_agents/__init__.py`'s
+and `packages/gateway/navigraph_gateway/main.py`'s module docstrings still
+say "Currently exactly one agent is registered." None of these were
+updated as Phases 4-7 actually shipped real, verified agents — this is
+stale documentation, not a functional gap.
+
+**Why this wasn't fixed in Phase 7**: reconciling ~20 real agent names
+across 4 domains' worth of drift accumulated over 4 prior phases is a
+real, careful task on its own. Bundling it into Phase 7 (or any single
+feature phase) risks fixing one domain's rows while leaving, or further
+obscuring, the rest inconsistent. `LIMITATIONS.md`/`DECISIONS.md`/
+`BUILD_LOG.md` — the three documents this project's working method
+actually requires kept current every phase — ARE current; the
+`docs/architecture/` narrative docs and two module docstrings are a
+separate, pre-existing set that was never part of that per-phase
+discipline.
+
+**What full version requires**: A dedicated, later "docs reconciliation"
+phase whose only job is updating `docs/architecture/overview.md`'s and
+`data-flow.md`'s domain tables/narrative and the two stale module
+docstrings to reflect the real, current agent roster — not addressed
+here, per the recommendation in DECISIONS.md.

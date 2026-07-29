@@ -386,3 +386,91 @@ real PII statement). All three were fixed before this phase was marked
 done, not deferred to a follow-up — consistent with the user's standing
 rule that a security-relevant component is never "done" without a real
 adversarial test proving it.
+
+## 2026-07-29 — Chart Selection consumes a mirrored, role-bearing column list, not raw-value inference
+
+We chose `ChartColumnRef` (mirroring `schema_mapping.contracts.ResolvedColumnRef`'s
+role-bearing fields, plus a new `result_alias` field) as Chart Selection's
+input, rather than having it infer measure/dimension/temporal signal from
+`DataFederationResult.final_rows`' raw cell values. We considered
+raw-value inference (it would need no new field, no caller-side threading)
+and rejected it: `final_rows`' cells are untyped `Any` — a Snowflake
+`NUMBER` can arrive as `int`/`float`/`Decimal`/`str` depending on the
+connector — so "is this numeric" from raw values alone would silently
+re-derive a classification Schema Mapping already computed correctly,
+violating this codebase's consistent "thread the already-computed signal
+forward, don't re-derive" discipline (see
+`sql_generation._aggregation_function` trusting `role` rather than
+re-inspecting values). The real cost of this choice is `result_alias`
+itself: no existing contract carries SQL Generation's real aliasing
+(`UNITS` → `UNITS_TOTAL`) forward, so today's caller must populate it by
+hand — accepted as a real, logged gap (`LIMITATIONS.md` item 28) rather
+than reaching back into an already-shipped upstream contract for this
+phase's convenience.
+
+## 2026-07-29 — Anomaly/Outlier Highlighter is fully deterministic, placed between Chart Selection and Grounded Narrative Generation, and its output is both cited and standalone
+
+We chose z-score detection via stdlib `statistics.mean`/`statistics.pstdev`
+(population, not sample, stdev — these grouped-by-dimension result sets
+are small and treated as the entire population under comparison, not a
+sample) with no LLM and no new dependency (confirmed no numpy/scipy/pandas
+declared in `packages/agent_runtime/pyproject.toml`) — mirroring
+`query_cost_estimator`/`sql_optimization`'s existing deterministic-agent
+precedent exactly. We placed it between Chart Selection and Grounded
+Narrative Generation (reusing Chart Selection's already-resolved
+measure/dimension columns rather than re-implementing that resolution) and
+made its `AnomalyDetectionResult` both independently returned AND citable
+grounding material for the narrative agent — because the `insight_generated`
+lineage event must record "which result values it grounded each claim in,"
+and a narrative's anomaly citation must trace back to a real,
+independently-auditable finding, only possible if the Highlighter's result
+survives as first-class output rather than being merged away into
+narrative text only.
+
+## 2026-07-29 — Grounded Narrative Generation's two-layer citation validation mirrors Semantic Retrieval's closed-candidate-list discipline
+
+We required the LLM to return structured `{"narrative": str, "citations":
+[{citation_id, row_index, column, cited_value}]}` JSON, then validated
+every citation against a closed candidate set built directly from the
+real `final_rows`/anomaly data — a citation naming a `(row_index, column)`
+that doesn't exist, or a value that doesn't match the real one, is dropped
+and recorded as `llm_cited_fabricated_value`, never partially trusted. A
+second, independent whole-narrative numeric scan catches any number the
+LLM stated without even attempting to cite. We considered trusting the
+LLM's narrative at face value with only a prompt instruction ("never
+invent a number") and rejected it outright: this project's standing rule
+requires a real, verifiable mechanism for any hallucination-risk
+LLM output, not a trusted instruction — exactly the discipline
+`SemanticRetrievalAgent`'s "closed candidate list, reject anything not in
+it" already established for catalog column IDs, applied here to real
+result-set cells instead. A real, honestly-scoped blind spot remains and
+is logged (`LIMITATIONS.md` item 30): this can only catch wholesale
+fabrication, not a real value misattributed to the wrong row/group.
+
+## 2026-07-29 — Follow-up Suggestion is deliberately exempt from the closed-candidate-list discipline
+
+We chose to apply only shape validation (1-3 non-empty suggestions) to
+Follow-up Suggestion's output, explicitly NOT the grounding check Grounded
+Narrative Generation requires. We considered applying the same discipline
+uniformly across both LLM-backed Insight agents for consistency, and
+rejected it: a suggested question is a proposal, not a factual claim, and
+`data-flow.md`'s own worked example ("Did any single account drive the
+Southwest spike?") deliberately introduces "account," a concept outside
+the closed candidate list — rejecting that on principle would reject
+exactly the useful, exploratory suggestions this agent exists to produce.
+Verified live in `tests/integration/insight_pipeline/`: a suggestion
+referencing a concept absent from `final_columns` is accepted, not
+rejected.
+
+## 2026-07-29 — Documentation staleness is logged, not fixed, this phase
+
+We chose to record the accumulated drift in `docs/architecture/overview.md`,
+`data-flow.md`, and two module docstrings (`LIMITATIONS.md` item 32) as a
+finding rather than reconciling it as part of Phase 7. We considered
+fixing at least Insight's own rows/sections while we were already touching
+this domain, and rejected doing even that much: partial reconciliation
+(Insight's rows current, every other domain's rows still stale) reads as
+more complete than it is, arguably worse than leaving the whole thing
+consistently stale. Recommend a dedicated, later phase whose only job is
+this reconciliation, covering all ~20 real agents across 4 domains at
+once, not addressed piecemeal per feature phase.

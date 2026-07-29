@@ -38,6 +38,10 @@ def test_readyz_returns_ok_and_lists_registered_agents() -> None:
         "guardrail.policy_authorization",
         "guardrail.query_cost_estimator",
         "guardrail.pii_exposure_checker",
+        "insight.chart_selection",
+        "insight.anomaly_outlier_highlighter",
+        "insight.grounded_narrative_generation",
+        "insight.follow_up_suggestion",
     }
     assert expected_agents.issubset(set(body["registered_agents"]))
 
