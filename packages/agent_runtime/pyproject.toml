@@ -16,6 +16,10 @@ dependencies = [
     # install order (shared, then this package) matters for a bare pip
     # toolchain.
     "navigraph-shared",
+    # Understanding-domain agents added in Phase 4 (metadata_discovery,
+    # ontology, schema_mapping) call into these directly.
+    "navigraph-metadata-catalog",
+    "navigraph-knowledge-graph",
     "prometheus-fastapi-instrumentator",
     "opentelemetry-instrumentation-fastapi",
     "pytest",

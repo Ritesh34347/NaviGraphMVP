@@ -55,6 +55,14 @@ def register_data_source(
     return data_source
 
 
+def list_data_sources(session: Session, *, tenant_id: str) -> list[DataSource]:
+    """List every `DataSource` registered for `tenant_id`."""
+
+    return list(
+        session.execute(select(DataSource).where(DataSource.tenant_id == tenant_id)).scalars()
+    )
+
+
 def upsert_schema_tree(
     session: Session,
     *,

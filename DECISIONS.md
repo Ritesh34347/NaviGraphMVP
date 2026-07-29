@@ -173,3 +173,47 @@ the one real violation; siblings-off-`Asset` makes no such claim and costs
 nothing in query-ability for the questions we actually need to answer.
 Edges are only created when the source value is non-null — no placeholder
 "Unclassified" nodes.
+
+## 2026-07-30 — Understanding-domain pipeline order: Conversation before Intent Understanding, deterministic before LLM-backed
+
+We chose a fixed Understanding-domain pipeline order — Conversation →
+Intent Understanding → Metadata Discovery → Ontology → Semantic Retrieval
+→ Schema Mapping — rather than treating the six agents as independently
+orderable. Conversation must precede Intent Understanding: it rewrites a
+follow-up ("what about last quarter?") into a standalone question, and
+Intent Understanding has to classify the *resolved* question, not a
+fragment. We also chose two-tier term resolution over one fuzzy pass:
+Ontology Agent resolves business terms via the knowledge graph's curated,
+zero-hallucination `BusinessConcept`/synonym match first; only terms it
+can't resolve go to Semantic Retrieval's LLM call, which is hard-
+constrained to a closed candidate list built from Metadata Discovery's
+real catalog inventory (the LLM can select an existing column or say "no
+match," never invent one — every returned ID is validated against the
+candidate set before being trusted). We considered a single LLM-backed
+resolution pass for every term and rejected it: it would call an LLM (cost,
+latency, hallucination risk) even for the common case where a term already
+has an exact glossary match, and Phase 4's real integration test confirmed
+the split works as intended — "units traded" resolved for free via
+Ontology, "market" correctly fell through to Semantic Retrieval.
+
+## 2026-07-30 — Schema Mapping is the only assembly point; sibling agents don't cross-import each other's contracts
+
+We chose to have Schema Mapping Agent merge Ontology's and Semantic
+Retrieval's outputs into one deduplicated, role-assigned,
+join-annotated structure, rather than having any upstream agent do partial
+assembly. To keep agents independently buildable and testable without a
+Coordinator existing yet, agents whose input shape mirrors a sibling
+agent's output (e.g. Schema Mapping's `ConceptResolution`/
+`RelationshipResolution`/`TermMatch`/`CatalogInventoryEntry`) declare that
+shape locally rather than importing the sibling package's `contracts`
+module directly. We considered direct cross-package imports (simpler,
+guarantees the shapes never drift) and rejected it as the wrong long-term
+pattern: a future Coordinator is what should pass one agent's output into
+the next agent's input, so no agent package should depend on another
+agent package's internals. The real cost of this choice showed up
+immediately: `schema_mapping`'s locally-declared `TermMatch` was missing
+the `rationale` field `semantic_retrieval`'s real `TermMatch` has, caught
+only when Phase 4's real integration test wired the two together. Accepted
+as the correct tradeoff (a Coordinator-mediated contract, verified by
+integration tests, over a compile-time-enforced but architecturally wrong
+direct dependency) rather than reversed.

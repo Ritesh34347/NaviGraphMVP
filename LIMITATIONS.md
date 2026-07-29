@@ -202,3 +202,80 @@ neither) -- there is no placeholder "Unclassified" node.
 **What full version requires**: Nothing structurally; if broader glossary
 coverage is wanted later, it's a data-curation task (adding more
 `SCHEMA_ENRICHMENT` rows or a hand-curated equivalent), not a code change.
+
+### 14. Business-concept mappings are anchored to `STAGING`, not `FAR_TRANS`
+
+**What's deferred**: Deciding whether `FAR_TRANS` (not `STAGING`) should be
+the canonical resolution target for business terms.
+
+**Why**: The real `STAGING.SCHEMA_ENRICHMENT` glossary only references
+`staging_`-prefixed table names, so every `BusinessConcept -> MAPS_TO ->
+Column` edge in the graph resolves to the `STAGING` schema's copies (e.g.
+`STAGING.STAGING_TRANSACTIONS.UNITS`), never the equivalent `FAR_TRANS`
+column, even though both real columns exist side by side. Confirmed live
+while building Phase 4's cross-agent integration test: Ontology correctly
+resolved "units traded" to the `STAGING` column per the graph's actual
+data, which initially broke a test assumption that it would resolve to
+`FAR_TRANS` instead.
+
+**What full version requires**: A decision (not made yet) on which schema
+is the intended long-term query target for generated SQL. If `FAR_TRANS`
+is meant to be canonical (`STAGING` reads as an ETL staging area, not a
+production query surface), the glossary crawl and/or the knowledge-graph
+ingestion would need a preference rule to resolve business terms against
+`FAR_TRANS` columns when an equivalent exists in both schemas. This is a
+real, live-verified fact about the current system, not a hypothetical —
+whichever phase owns SQL Generation (Query domain) needs to account for it
+one way or another.
+
+### 15. Ontology Agent's relationship-concept matching accepts low recall
+
+**What's deferred**: Fuzzy/paraphrase matching of relationship-shaped
+questions (e.g. "which customers hold X").
+
+**Why**: Ontology Agent matches raw extracted entity strings against the
+hand-curated `RelationshipConcept` seed data's `subject_label`/
+`object_label` fields via case-insensitive substring matching only — it
+will miss many real phrasings of a relationship. This is deliberately
+additive-only (a missed match just means `relationship_resolutions` stays
+empty, never a wrong answer), not silently accepted — expanding Semantic
+Retrieval's LLM-backed fallback to also handle relationship shapes (not
+just single-column terms) was considered and explicitly deferred rather
+than folded in without a decision.
+
+**What full version requires**: A design decision on whether relationship
+resolution gets its own fuzzy-matching stage, or whether Semantic
+Retrieval's contract expands to cover it — not yet decided.
+
+### 16. Schema Mapping's measure/dimension role assignment is a heuristic
+
+**What's deferred**: A real, stored semantic-role field in the metadata
+catalog.
+
+**Why**: `role` (`measure` vs `dimension`) is inferred from `data_type`
+(numeric or not) plus the classified intent, entirely in Schema Mapping
+Agent's business logic — `CatalogColumn`/`ColumnGlossary` have no field
+recording a column's intended semantic role. This works for the columns
+seen so far but is a guess, not an authoritative signal.
+
+**What full version requires**: If the Query domain (SQL Generation, not
+built yet) later needs a firmer signal than this heuristic provides, add a
+real `semantic_role` column to `navigraph_catalog`'s schema (a migration,
+not a heuristic change) rather than making the heuristic more elaborate.
+
+### 17. Conversation Agent has no real persistence this phase
+
+**What's deferred**: Storing, retrieving, summarizing, or evicting
+conversation history across turns/sessions.
+
+**Why**: Conversation Agent operates purely on a `conversation_history`
+list handed to it directly in its input — it never fetches or stores
+anything itself. This is deliberate, not an oversight: a fake in-memory
+store would look production-ready without being durable, multi-instance
+safe, or tenant-isolated. The real home for this is the Memory Agent
+(Phase 9, Orchestrator domain) — Conversation Agent's `conversation_history`
+field is the seam Phase 9 fills in.
+
+**What full version requires**: Phase 9's Memory Agent, plus whatever
+Coordinator wiring (also Phase 9) actually populates `conversation_history`
+before invoking Conversation Agent turn over turn.

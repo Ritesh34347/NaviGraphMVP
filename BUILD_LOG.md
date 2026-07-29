@@ -236,3 +236,69 @@ RiskLevel" resolves to `CUSTOMER_INFORMATION.CUSTOMERID`/`RISKLEVEL`.
 `ruff`, `mypy` (47 source files), and `pytest packages/` (99 passed, 2
 skipped) all clean across all six Python packages together; `pip-audit`
 clean.
+
+## 2026-07-30 — Phase 4: 5 remaining Understanding-domain agents, verified end-to-end against live Postgres + Neo4j
+
+Built the 5 remaining Understanding-domain agents (Conversation, Metadata
+Discovery, Ontology, Semantic Retrieval, Schema Mapping) via three
+parallel workstreams, following the exact contract pattern established by
+Intent Understanding. Only 3 of the now-6 Understanding agents call an
+LLM at all (Conversation, Intent Understanding, Semantic Retrieval); the
+other 3 are pure deterministic lookups/assembly over `navigraph_catalog`/
+`navigraph_kg` — no hallucination risk, no API cost, wherever a
+deterministic answer is actually available.
+
+**Integration work done directly (not by the parallel workstreams)**:
+wired all 5 new agents into `agent_runtime`'s `main.py`/`registry.py`
+(constructing a shared LLM client, a Postgres session factory, and a
+`Neo4jClient` at startup; adding one `POST /agents/understanding/<name>/invoke`
+route per agent via a new shared `_invoke_agent` helper, refactored out of
+what was previously Intent Understanding's one-off inline route body);
+added the missing `navigraph-metadata-catalog`/`navigraph-knowledge-graph`
+dependencies to `agent_runtime/pyproject.toml` (flagged by one of the
+parallel workstreams — it correctly didn't touch a file outside its scope);
+built a new `tests/integration/understanding_pipeline/test_pipeline_chain.py`
+chaining all 6 agents together for real.
+
+**Three real bugs found and fixed running the real integration test (not
+just unit tests)**:
+1. My own test first assumed `MARKETID` had an underscore (`MARKET_ID`) —
+   the real Snowflake column has none, matching `CUSTOMERID`'s naming.
+2. **A genuinely important, real discovery, not just a test bug**: the
+   real `STAGING.SCHEMA_ENRICHMENT` glossary only references
+   `staging_`-prefixed table names, so every business-concept mapping in
+   the graph resolves to the `STAGING` schema's copies (e.g.
+   `STAGING.STAGING_TRANSACTIONS.UNITS`), never the equivalent `FAR_TRANS`
+   column — even though both exist. The test's expectations were wrong
+   (assumed `FAR_TRANS`); fixed to match real behavior, and logged as
+   `LIMITATIONS.md` item 14 since whichever phase builds SQL Generation
+   needs to make a real decision about this, not inherit it by accident.
+3. `schema_mapping`'s independently-declared `TermMatch` contract (a
+   deliberate duplication of `semantic_retrieval`'s, per the
+   no-cross-package-imports design) was missing the `rationale` field the
+   real `semantic_retrieval.TermMatch` has — caught only because the
+   integration test actually wired the two agents' real outputs together,
+   exactly the kind of drift the "verify with a real integration test, not
+   just isolated unit tests" discipline exists to catch. Fixed by adding
+   the missing field; the other three duplicated contract pairs
+   (`ConceptResolution`, `RelationshipResolution`,
+   `CatalogColumnEntry`/`CatalogInventoryEntry`) were checked field-by-field
+   and found to already match exactly.
+
+**Real verification performed**: `ruff`, `mypy` (74 source files), and
+`pytest packages/` (134 passed, 4 skipped as designed) all clean across
+all six packages from a fresh install; the real cross-agent integration
+test passes end to end for the worked-example question ("What is the
+total transaction volume by market?") against live Postgres + Neo4j —
+Conversation short-circuits (no LLM call, first turn), Intent
+Understanding classifies (canned), Metadata Discovery reads the real
+catalog, Ontology resolves "units traded" for free via the real graph,
+Semantic Retrieval resolves "market" against the real candidate list (its
+hallucination-rejection path separately proven in unit tests), and Schema
+Mapping produces the correct final structure: `STAGING_TRANSACTIONS.UNITS`
+as a measure, `STAGING_TRANSACTIONS.MARKETID` as a dimension, zero
+unmapped terms. No `ANTHROPIC_API_KEY` was available in this environment,
+so the `llm_integration`-marked tests for Conversation and Semantic
+Retrieval were verified to skip cleanly, not run for real against the
+live Anthropic API — matches the existing graceful-degradation pattern and
+isn't required to consider this phase done.

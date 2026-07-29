@@ -24,6 +24,7 @@ import pytest
 from navigraph_catalog.api import (
     get_table,
     list_columns,
+    list_data_sources,
     list_glossary,
     list_tables,
     register_data_source,
@@ -87,6 +88,18 @@ class TestRegisterDataSource:
 
         session.flush.assert_called_once()
         assert result is added
+
+
+class TestListDataSources:
+    def test_list_data_sources_builds_expected_query_and_returns_scalars(self) -> None:
+        session = MagicMock()
+        expected = [MagicMock(spec=DataSource), MagicMock(spec=DataSource)]
+        session.execute.return_value.scalars.return_value = expected
+
+        result = list_data_sources(session, tenant_id="tenant-a")
+
+        assert result == expected
+        session.execute.assert_called_once()
 
 
 class TestUpsertSchemaTree:
