@@ -267,3 +267,55 @@ async def test_anomaly_derived_citations_validate_successfully() -> None:
     assert {c.column for c in output.result.citations} == {"z_score", "mean"}
     assert output.errors == []
     assert output.confidence == 1.0
+
+
+async def test_large_anomalies_list_is_capped_in_prompt_but_still_fully_validated() -> None:
+    """Real bug found live against a real model: an uncapped `anomalies`
+    list bloated the prompt enough to produce a malformed response for a
+    real, heavy-tailed result set (see LIMITATIONS.md item 63). Only the
+    top-20-by-|z_score| findings should appear in the prompt text, but
+    citation validation must still succeed against a finding OUTSIDE that
+    top 20 -- proving `_build_candidate_values` still uses the full list."""
+
+    many_anomalies = [
+        AnomalyFinding(
+            row_index=i,
+            group_value=f"Group{i}",
+            measure_value=float(i),
+            z_score=float(30 - i),  # row 0 has the highest |z_score| (30.0), row 29 the lowest (1.0)
+            mean=100.0,
+            stdev=10.0,
+        )
+        for i in range(30)
+    ]
+
+    fake_llm = FakeLLMClient(
+        response=json.dumps(
+            {
+                "narrative": "Group29 was also notable despite its modest z-score [1].",
+                "citations": [
+                    {
+                        "citation_id": 1,
+                        "row_index": 29,
+                        "column": "z_score",
+                        "cited_value": "1.0",
+                    },
+                ],
+            }
+        )
+    )
+    agent = GroundedNarrativeGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(_make_input(anomalies=many_anomalies))
+
+    # The out-of-top-20 citation still validates -- proves full-list validation.
+    assert len(output.result.citations) == 1
+    assert output.result.citations[0].row_index == 29
+    assert output.errors == []
+
+    prompt = fake_llm.calls[0]["messages"][0]["content"]
+    assert "showing top 20 of 30" in prompt
+    # The lowest-|z_score| finding (row 29, the 21st-30th most extreme) must
+    # not actually be rendered into the prompt text itself.
+    assert '"row_index": 29' not in prompt
+    assert '"row_index": 0' in prompt

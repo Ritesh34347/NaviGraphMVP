@@ -205,3 +205,37 @@ async def test_suggestion_referencing_ungrounded_concept_is_accepted() -> None:
     assert output.result.suggestions[0].question == "Did any single account drive this spike?"
     assert output.errors == []
     assert output.confidence == 1.0
+
+
+async def test_large_anomalies_list_is_capped_in_prompt() -> None:
+    """Real bug found live against a real model (same root cause as
+    `insight.grounded_narrative_generation`'s identical fix, see
+    LIMITATIONS.md item 63): an uncapped `anomalies` list could bloat this
+    agent's prompt too. Only the top-20-by-|z_score| findings should be
+    rendered into the prompt text."""
+
+    many_anomalies = [
+        AnomalyFinding(
+            row_index=i,
+            group_value=f"Group{i}",
+            measure_value=float(i),
+            z_score=float(30 - i),
+            mean=100.0,
+            stdev=10.0,
+        )
+        for i in range(30)
+    ]
+
+    fake_llm = FakeLLMClient(
+        response=json.dumps(
+            {"suggestions": [{"question": "Any follow-up?", "rationale": None}]}
+        )
+    )
+    agent = FollowUpSuggestionAgent(llm_client=fake_llm)
+
+    await agent.run(_make_input(anomalies=many_anomalies))
+
+    prompt = fake_llm.calls[0]["messages"][0]["content"]
+    assert "showing top 20 of 30" in prompt
+    assert '"row_index": 29' not in prompt
+    assert '"row_index": 0' in prompt

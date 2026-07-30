@@ -64,6 +64,18 @@ _PROMPT_PATH = Path(__file__).parent / "prompts" / "follow_up_suggestion.md"
 # asked" is not a fabrication or a malformed response, just excess to trim.
 _MAX_SUGGESTIONS = 3
 
+# REAL BUG, found live against a real model (same root cause as
+# `insight.grounded_narrative_generation`'s identical fix): `anomalies` had
+# no cap in the prompt at all -- a real, heavy-tailed result set can flag a
+# large fraction of its groups as z-score outliers regardless of row count,
+# bloating this agent's prompt enough to risk a malformed LLM response.
+# Capped to the top-N most extreme findings by `|z_score|`, stated
+# explicitly in the prompt rather than silently -- this agent has no
+# grounding/citation check on its own output (see the module docstring), so
+# there is no separate "full list" validation step to preserve here, unlike
+# narrative generation.
+_MAX_ANOMALIES_IN_PROMPT = 20
+
 _FIXED_EMPTY_RESULT_SUGGESTION = FollowUpQuestion(
     question="Would you like to try a broader or different question?",
     rationale=None,
@@ -75,13 +87,19 @@ def _load_system_prompt() -> str:
 
 
 def _build_user_message(payload: FollowUpSuggestionPayload) -> str:
+    anomalies_for_prompt = sorted(
+        payload.anomalies, key=lambda a: abs(a.z_score), reverse=True
+    )[:_MAX_ANOMALIES_IN_PROMPT]
+
     return (
         f'Original question: "{payload.original_question}"\n\n'
         f"Narrative already given to the user:\n{payload.narrative}\n\n"
         f"Result shape: {payload.final_row_count} row(s), "
         f"columns={json.dumps(payload.final_columns)}\n\n"
         f"Chart: {json.dumps(payload.chart.model_dump())}\n\n"
-        f"Anomalies: {json.dumps([a.model_dump() for a in payload.anomalies])}"
+        f"Anomalies (showing top {len(anomalies_for_prompt)} of "
+        f"{len(payload.anomalies)} by |z_score|): "
+        f"{json.dumps([a.model_dump() for a in anomalies_for_prompt])}"
     )
 
 

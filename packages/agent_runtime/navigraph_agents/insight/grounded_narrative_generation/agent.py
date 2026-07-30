@@ -63,6 +63,21 @@ _PROMPT_PATH = Path(__file__).parent / "prompts" / "narrative_generation.md"
 # validated correctly even though the LLM itself only ever saw rows 0-199.
 _MAX_ROWS_IN_PROMPT = 200
 
+# REAL BUG, found live against a real model: `anomalies` had no equivalent
+# cap at all (unlike `final_rows` above), even though
+# `insight.anomaly_outlier_highlighter` applies no limit of its own -- for
+# real, heavy-tailed financial data (transaction volumes, asset holdings),
+# a population z-score check can flag a large fraction of groups as
+# outliers regardless of the result set's row count (a 320-row result
+# produced this just as easily as a 10,000-row one), bloating the prompt
+# enough to make the real model's response come back malformed/empty. Same
+# treatment as `final_rows`: capped to the top-N most extreme findings by
+# `|z_score|` (the ones actually worth narrating), never silently -- the
+# prompt states "(top N of M anomalies)" -- and, same as `final_rows`,
+# citation validation below always checks against the FULL `anomalies` list,
+# never just this capped prompt view.
+_MAX_ANOMALIES_IN_PROMPT = 20
+
 # Tolerance for treating two numbers as "the same real value" -- accounts
 # for float/str round-tripping (e.g. `483920` vs `483920.0`), not for
 # genuine rounding differences.
@@ -258,6 +273,9 @@ class GroundedNarrativeGenerationAgent:
     @staticmethod
     def _build_user_message(payload: NarrativeGenerationPayload) -> str:
         rows_for_prompt = payload.final_rows[:_MAX_ROWS_IN_PROMPT]
+        anomalies_for_prompt = sorted(
+            payload.anomalies, key=lambda a: abs(a.z_score), reverse=True
+        )[:_MAX_ANOMALIES_IN_PROMPT]
 
         return (
             f'Question: "{payload.original_question}"\n\n'
@@ -266,7 +284,9 @@ class GroundedNarrativeGenerationAgent:
             f"columns: {json.dumps(payload.final_columns)}\n"
             f"rows: {json.dumps(rows_for_prompt, default=str)}\n\n"
             f"Chart: {json.dumps(payload.chart.model_dump())}\n\n"
-            f"Anomalies: {json.dumps([a.model_dump() for a in payload.anomalies])}"
+            f"Anomalies (showing top {len(anomalies_for_prompt)} of "
+            f"{len(payload.anomalies)} by |z_score|): "
+            f"{json.dumps([a.model_dump() for a in anomalies_for_prompt])}"
         )
 
     @staticmethod

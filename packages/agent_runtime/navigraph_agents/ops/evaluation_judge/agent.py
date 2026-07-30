@@ -74,6 +74,22 @@ _FALLBACK_RATIONALE = "judge response could not be parsed"
 
 _DIMENSION_KEYS = ("correctness", "groundedness", "narrative_quality")
 
+# REAL BUG, found live against a real model: both `final_rows` and
+# `anomalies` were rendered into the judge prompt fully uncapped -- for a
+# real 10,000-row result this alone was large enough to make the judge's
+# own response come back unparseable (`judge_response_malformed`, all
+# three dimensions falling back to score=1), which is a strictly worse
+# failure mode than a narrative-generation prompt bloat: it silently
+# degrades the eval harness's own signal rather than the user-facing
+# answer. Same treatment `insight.grounded_narrative_generation` already
+# applies to its own prompt: rows capped to the first N (stated explicitly,
+# never silently), anomalies capped to the top-N by `|z_score|`. This agent
+# does no grounding/citation check of its own (it only asks the model to
+# score an already-generated narrative), so there is no separate "full
+# list" to preserve for validation, unlike narrative generation.
+_MAX_ROWS_IN_PROMPT = 200
+_MAX_ANOMALIES_IN_PROMPT = 20
+
 
 def _load_system_prompt() -> str:
     return _PROMPT_PATH.read_text(encoding="utf-8")
@@ -198,14 +214,22 @@ class EvaluationJudgeAgent:
 
     @staticmethod
     def _build_user_message(payload: EvaluationJudgePayload) -> str:
+        rows_for_prompt = payload.final_rows[:_MAX_ROWS_IN_PROMPT]
+        anomalies_for_prompt = sorted(
+            payload.anomalies, key=lambda a: abs(a.z_score), reverse=True
+        )[:_MAX_ANOMALIES_IN_PROMPT]
+
         return (
             f'Question: "{payload.question}"\n\n'
             f"Narrative to evaluate: {json.dumps(payload.actual_narrative)}\n\n"
-            f"Final result set:\n"
+            f"Final result set (showing {len(rows_for_prompt)} of "
+            f"{len(payload.final_rows)} rows):\n"
             f"columns: {json.dumps(payload.final_columns)}\n"
-            f"rows: {json.dumps(payload.final_rows, default=str)}\n\n"
+            f"rows: {json.dumps(rows_for_prompt, default=str)}\n\n"
             f"Chart: {json.dumps(payload.chart.model_dump())}\n\n"
-            f"Anomalies: {json.dumps([a.model_dump() for a in payload.anomalies])}"
+            f"Anomalies (showing top {len(anomalies_for_prompt)} of "
+            f"{len(payload.anomalies)} by |z_score|): "
+            f"{json.dumps([a.model_dump() for a in anomalies_for_prompt])}"
         )
 
     @staticmethod

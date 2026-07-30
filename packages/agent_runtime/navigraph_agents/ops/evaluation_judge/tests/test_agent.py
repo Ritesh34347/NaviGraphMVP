@@ -57,6 +57,8 @@ def _make_input(
     actual_intent: IntentLabel = "comparison",
     question: str = "Which market had the highest transaction volume?",
     actual_narrative: str = "Southwest reached 483920.0 units, the highest of any market.",
+    final_rows: list[dict] | None = None,
+    anomalies: list[AnomalyFinding] | None = None,
 ) -> EvaluationJudgeInput:
     return EvaluationJudgeInput(
         request_context=RequestContext(
@@ -72,9 +74,9 @@ def _make_input(
             actual_intent=actual_intent,
             actual_narrative=actual_narrative,
             final_columns=_FINAL_COLUMNS,
-            final_rows=_FINAL_ROWS,
+            final_rows=_FINAL_ROWS if final_rows is None else final_rows,
             chart=_CHART,
-            anomalies=_ANOMALIES,
+            anomalies=_ANOMALIES if anomalies is None else anomalies,
         ),
     )
 
@@ -254,3 +256,40 @@ async def test_lineage_event_and_metadata_populated_in_happy_path() -> None:
     call = fake_llm.calls[0]
     assert "Southwest" in call["messages"][0]["content"]
     assert call["max_tokens"] == 1024
+
+
+async def test_large_result_set_and_anomalies_are_capped_in_prompt() -> None:
+    """Real bug found live against a real model (see LIMITATIONS.md item
+    63): both `final_rows` and `anomalies` were rendered into this agent's
+    own judge prompt fully uncapped -- for a real 10,000-row result this
+    alone was large enough to make the judge's own response come back
+    unparseable. Only the first 200 rows and the top-20-by-|z_score|
+    findings should be rendered into the prompt text."""
+
+    many_rows = [
+        {"MARKETID": f"Market{i}", "UNITS_TOTAL": float(i)} for i in range(300)
+    ]
+    many_anomalies = [
+        AnomalyFinding(
+            row_index=i,
+            group_value=f"Market{i}",
+            measure_value=float(i),
+            z_score=float(30 - i),
+            mean=100.0,
+            stdev=10.0,
+        )
+        for i in range(30)
+    ]
+
+    fake_llm = FakeLLMClient(response=json.dumps(_WELL_FORMED_RESPONSE))
+    agent = EvaluationJudgeAgent(llm_client=fake_llm)
+
+    await agent.run(_make_input(final_rows=many_rows, anomalies=many_anomalies))
+
+    prompt = fake_llm.calls[0]["messages"][0]["content"]
+    assert "showing 200 of 300 rows" in prompt
+    assert "showing top 20 of 30" in prompt
+    assert '"MARKETID": "Market299"' not in prompt
+    assert '"MARKETID": "Market0"' in prompt
+    assert '"row_index": 29' not in prompt
+    assert '"row_index": 0' in prompt
