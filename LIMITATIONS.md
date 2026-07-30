@@ -1450,7 +1450,7 @@ endpoint now reaches agent-runtime and returns a real, structured
 response (failing only on the separate, already-diagnosed Anthropic API
 quota exhaustion in item 63/eval harness -- not a network error).
 
-### 65. RESOLVED: CI had never actually run once, real since this repo's first-ever GitHub push -- five independent real bugs found and fixed
+### 65. RESOLVED: CI had never actually run once, real since this repo's first-ever GitHub push -- six independent real bugs found and fixed
 
 **What was found**: this repository was only pushed to GitHub for the
 first time during Phase 10b -- every workflow in `.github/workflows/` had
@@ -1458,8 +1458,9 @@ literally zero real executions before that (confirmed via
 `gh run list`, which showed every single historical run across all four
 workflows as `failure`). Root-causing each one for real (`gh run view
 --log-failed`, and, for the two that produced zero jobs at all, comparing
-the YAML against GitHub's actual context-availability rules) surfaced
-five distinct, independent bugs -- none of which any local
+the YAML against GitHub's actual context-availability rules) surfaced six
+distinct, independent bugs, found across three separate rounds of pushing
+a fix and re-checking the real run -- none of which any local
 `pytest packages/`/`npm test` run, `terraform validate`, or `kustomize
 build` had ever been positioned to catch, since none of those run against
 a clean CI checkout the way a real GitHub Actions runner does:
@@ -1518,14 +1519,33 @@ a clean CI checkout the way a real GitHub Actions runner does:
    `web/src/lib/env.ts` (every env var Next.js needs at build/runtime
    already has a permissive fallback, so a bare `next dev` boots cleanly
    with zero configuration).
+6. **`mypy packages/` failed with a real `Duplicate module named "tests"`
+   error**, only visible once every package that has its own
+   `tests/__init__.py` (`connector_sdk`, `federation`, `knowledge_graph`,
+   `lineage`, `metadata_catalog`) was swept in one `mypy` invocation --
+   none of them has a root `__init__.py`, so mypy's module-name inference
+   (walk up to the nearest ancestor lacking `__init__.py`) collapses every
+   one of those `tests/` packages to the bare, colliding module name
+   `"tests"`. Fixing that one collision surfaced a second, identically-
+   shaped one: `metadata_catalog` and `lineage` each have their own
+   `migrations/versions/0001_initial_schema.py` (same revision filename,
+   independent Alembic chains -- see `DECISIONS.md`), which collide the
+   same way. Reproduced and fixed locally first (`mypy packages/`, then
+   confirmed clean with the fix) before touching CI. Fixed by excluding
+   both directory patterns from this one repo-wide sweep
+   (`mypy --exclude '(^|[\\/])(tests|migrations)([\\/]|$)' packages/`) --
+   each package's own tests are still fully exercised by the very next
+   step (`pytest packages/`), and Alembic migration scripts are
+   standalone, alembic-run files never meant to be cross-checked against
+   sibling packages' revisions.
 
-**Why this is logged as a single item**: all five were discovered by the
+**Why this is logged as a single item**: all six were discovered by the
 same event (this repo's first real push to GitHub, and the resulting
 first real CI executions) and root-caused together across one
 investigation -- logging them individually would fragment one coherent
 finding, the same reasoning already used for items 38/44.
 
-**What full version requires**: nothing further planned -- all five are
+**What full version requires**: nothing further planned -- all six are
 real, fixed bugs, not deferred scope. The one remaining open action is
 confirming (not yet done as of this writing) that the fixes actually
 turn CI/`terraform-plan`/`cloud-security-tests` green on a real run,

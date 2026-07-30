@@ -52,7 +52,24 @@ jobs:
         run: ruff check .
 
       - name: Type-check (mypy)
-        run: mypy packages/
+        # REAL BUG, found live on this repo's first real GitHub Actions run
+        # (reproduced locally too): mypy computes each file's module name by
+        # walking up to the nearest ancestor directory *without*
+        # `__init__.py`. None of the packages/ subpackages (connector_sdk,
+        # federation, knowledge_graph, lineage, metadata_catalog) have a
+        # root `__init__.py`, so their `tests/__init__.py` files all resolve
+        # to the bare module name "tests" and collide; the same thing
+        # happens to `migrations/versions/0001_initial_schema.py` (both
+        # `metadata_catalog` and `lineage` have one, same revision-file
+        # name). This was never hit locally because no single `mypy
+        # packages/` run had previously swept every colliding package
+        # together. Excluding `tests/`/`migrations/` from this repo-wide
+        # type-check sweep resolves it -- each package's own tests are
+        # still fully exercised by the very next step (`pytest packages/`),
+        # and Alembic migration scripts are plain, standalone, alembic-run
+        # files that were never meant to be cross-checked against sibling
+        # packages' revisions anyway.
+        run: mypy --exclude '(^|[\\/])(tests|migrations)([\\/]|$)' packages/
 
       - name: Test (pytest)
         run: pytest packages/
