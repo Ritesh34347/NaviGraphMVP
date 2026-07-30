@@ -881,3 +881,75 @@ GitHub Actions OIDC federated-credential wiring, a real domain name, a
 real `cd-deploy.yml` run, the full eval-harness run against the cloud
 environment, and the adversarial security review -- none of these have
 started yet.
+
+## 2026-07-30 — Phase 10b: cluster bootstrap, real data, adversarial security review
+
+Completed the remaining Phase 10b work: installed ingress-nginx +
+cert-manager on the real cluster; wired a real domain (nip.io, using the
+ingress LoadBalancer's real public IP) with a staging Let's Encrypt
+ClusterIssuer; populated real Key Vault secrets and pushed all 3 app
+images to ACR; applied the full 52-resource dev manifest set. Pushed the
+repo to a new GitHub remote and wired GitHub Actions OIDC (a federated
+credential + the 3 required secrets) for the CD pipeline.
+
+Ran the real Alembic migrations, then re-ran the real Snowflake crawl +
+knowledge-graph ingestion against the fresh cloud Postgres/Neo4j (17
+tables, 114 columns, 41 glossary rows, 835 assets and the full reference
+graph synced) so the eval harness would have real data to answer
+against, not an empty catalog.
+
+Ran the real 10-question eval harness against the cloud environment: 5/10
+completed the full pipeline before the real Anthropic API key hit its own
+usage limit (resets 2026-08-01, an external constraint, not a NaviGraph
+bug); diagnosed (but did not blind-fix) a real root cause behind 3
+degraded scores -- `grounded_narrative_generation` caps `final_rows` at
+200 before prompting the LLM but never caps `anomalies`, which can grow
+into the hundreds for a 10k-row result and plausibly overflow the prompt.
+
+Ran the full adversarial security review for real against the live
+cluster (`tests/security/` re-pointed at the real OPA; `tests/security/cloud/`
+against the real AKS/ACR/Key Vault) and found and fixed two genuine,
+previously-undetected bugs along the way:
+
+- **The real, public-facing `POST /ask` path was broken on real AKS**:
+  `gateway` had no NetworkPolicy egress rule to `agent-runtime` at all
+  (only the ingress half was ever declared) -- invisible through every
+  prior local `kind` validation since `kindnet` never enforces
+  NetworkPolicy. Found by the cloud test suite's own positive control
+  failing on its first real run against this cluster; fixed, then
+  verified twice (the test now passes, and a real `POST /ask` against
+  the live public endpoint now reaches agent-runtime for real).
+- **PII columns were untagged on the freshly re-crawled data source** --
+  a real gap in this session's own process (the re-crawl never re-ran
+  the Phase 6 PII backfill against the new data source), not a code
+  defect. Fixed by re-running `tools/scripts/tag_pii_columns.py` against
+  the same real, previously-confirmed column (`CUSTOMERID` across
+  `CUSTOMER_INFORMATION`/`STAGING_CUSTOMER_INFORMATION`/
+  `V_CUSTOMER_CURRENT`).
+
+Also fixed, all found live against the real cluster and none caught by
+any prior local validation: Key Vault had RBAC authorization disabled
+(silently nullifying its own role assignments); Postgres Flexible Server
+had zero firewall rules and no NetworkPolicy egress for port 5432;
+Snowflake's OCSP checks were blocked on port 80, adding ~90s per
+connection; a `%` in a real password broke `ConfigParser`-based Alembic
+migrations; `ingress-patch.yaml`'s strategic-merge patch silently deleted
+every Ingress's backend (the same list-replacement class of bug already
+seen once for `StatefulSet.volumeClaimTemplates`, now confirmed to
+generalize). Full detail on all of these in `LIMITATIONS.md` items 53-64.
+
+Two real Postgres admin password exposures happened mid-session (a
+`kubectl exec ... env` dump, then a traceback embedding a connection
+URL) -- both caught immediately and the password rotated each time with
+the user's explicit confirmation; recorded as a real incident in
+`DECISIONS.md`, not glossed over.
+
+**Final state**: real, live infrastructure with all 18 application pods
+`Running`, both public hostnames serving real HTTPS traffic, real
+Snowflake/knowledge-graph data loaded, and a fully passing adversarial
+security review (16/16 non-cloud tests, 10/14 cloud tests passing with
+the other 4 gracefully skipped for lack of a registered domain). **Not
+yet done**: a real `cd-deploy.yml` CI run (attempted but not yet
+confirmed executing/succeeding -- `gh` CLI auth was still pending at
+session's end), and a full, unblocked eval-harness pass once the real
+Anthropic API quota resets on 2026-08-01.
