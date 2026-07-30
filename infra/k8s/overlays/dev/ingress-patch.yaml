@@ -6,6 +6,18 @@
 # ingress-nginx-controller`). cert-manager's letsencrypt-prod ClusterIssuer
 # (see cluster-issuer.yaml) can now issue real certs against this stable
 # hostname via the HTTP01 challenge.
+#
+# REAL BUG, found live: `spec.rules` has no Kubernetes-defined patch merge
+# key, so a strategic-merge patch supplying only `host` REPLACES THE WHOLE
+# rules ARRAY -- silently deleting each base Ingress's `http.paths.backend`
+# entirely (the exact same list-replacement gotcha already hit once in this
+# project for StatefulSet volumeClaimTemplates, see LIMITATIONS.md). This
+# went undetected because Phase 10a's kind validation never exercised this
+# dev-only patch. The symptom was severe: nginx's admission webhook panics
+# (nil pointer in mergeAlternativeBackends) trying to validate an Ingress
+# with zero backends, taking down every `kubectl apply` touching Ingress
+# objects. Fixed by repeating the FULL rules block (path + backend) here,
+# not just the changed field.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -21,6 +33,15 @@ spec:
       secretName: web-tls
   rules:
     - host: app.navigraph.51-8-46-125.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-stable
+                port:
+                  number: 3000
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -36,6 +57,15 @@ spec:
       secretName: web-tls
   rules:
     - host: app.navigraph.51-8-46-125.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-canary
+                port:
+                  number: 3000
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -52,6 +82,15 @@ spec:
       secretName: gateway-tls
   rules:
     - host: api.navigraph.51-8-46-125.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-stable
+                port:
+                  number: 8000
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -67,3 +106,12 @@ spec:
       secretName: gateway-tls
   rules:
     - host: api.navigraph.51-8-46-125.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-canary
+                port:
+                  number: 8000

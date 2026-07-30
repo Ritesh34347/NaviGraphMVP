@@ -17,6 +17,14 @@ spec:
       labels:
         app: grafana
     spec:
+      # Real bug found via a live Azure Disk-backed PVC (kind's local-path
+      # storage class didn't surface this): the official image runs as
+      # UID/GID 472, but Kubernetes doesn't chown a freshly attached
+      # volume to match a non-root container user without an explicit
+      # fsGroup -- without it, "/var/lib/grafana is not writable" /
+      # CrashLoopBackOff.
+      securityContext:
+        fsGroup: 472
       containers:
         - name: grafana
           image: grafana/grafana:latest

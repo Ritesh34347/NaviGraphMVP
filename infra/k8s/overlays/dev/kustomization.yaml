@@ -13,7 +13,13 @@ resources:
   - secretproviderclass-agent-runtime.yaml
   - secretproviderclass-neo4j.yaml
   - secretproviderclass-grafana.yaml
-  - cluster-issuer.yaml
+
+# cluster-issuer.yaml is deliberately NOT listed here. Kustomize's
+# `namespace:` transformer above doesn't recognize cert-manager's
+# ClusterIssuer CRD as cluster-scoped (confirmed live: it injected a
+# stray `namespace: navigraph` into it), which is invalid for a
+# genuinely cluster-scoped resource. Apply it directly instead:
+#   kubectl apply -f infra/k8s/overlays/dev/cluster-issuer.yaml
 
 patches:
   - path: configmap-postgres-patch.yaml

@@ -1212,3 +1212,69 @@ subscription-level Owner does **not** automatically resolve as Key Vault
 data-plane access even once RBAC mode is on (a real `ForbiddenByRbac`
 persisted); a direct `Key Vault Secrets Officer` role assignment scoped
 to the vault was required for the human operator to populate secrets.
+
+### 56. RESOLVED: AKS had no ACR pull access, only the CI principal had push access
+
+**What was found**: every application pod (`gateway`, `agent-runtime`,
+`web`, all canary tracks) failed with `ImagePullBackOff` on the real
+first deploy. Terraform's `ci_acr_push` role assignment only grants the
+`navigraph-cd` CI service principal push rights -- it says nothing about
+the AKS cluster's own kubelet identity actually being able to *pull*
+images at runtime, which is a separate, required grant.
+
+**Resolution**: `az aks update --attach-acr navigraphdevacr` (the
+standard AKS/ACR integration command, which grants the cluster's kubelet
+identity `AcrPull` on the registry). Not yet ported into Terraform as a
+declarative `azurerm_role_assignment` -- currently a manual, imperative
+step; a future pass should add this to `environments/dev/main.tf` so a
+fresh `terraform apply` doesn't silently omit it again.
+
+### 57. RESOLVED: Grafana and Prometheus crashed on real Azure Disk-backed PVCs (missing `fsGroup`)
+
+**What was found**: both crashed on first real deploy --
+`GF_PATHS_DATA='/var/lib/grafana' is not writable` (Grafana) and `open
+/prometheus/queries.active: permission denied` (Prometheus). Neither
+`infra/k8s/base/grafana/deployment.yaml` nor
+`infra/k8s/base/prometheus/deployment.yaml` set a Pod `securityContext`,
+so Kubernetes never chowned the freshly attached Azure Disk volume to
+match each image's non-root container user (Grafana: UID/GID 472;
+Prometheus: UID/GID 65534). This went undetected in every prior local
+`kind` validation because `kind`'s local-path storage class behaves more
+permissively than a real formatted block device.
+
+**Resolution**: added `securityContext.fsGroup` (472 for Grafana, 65534
+for Prometheus) to both base Deployments -- a base-manifest fix, so it
+applies to any future environment using real (non-`kind`) persistent
+storage, not just this one.
+
+### 58. RESOLVED: `ingress-patch.yaml`'s strategic-merge patch silently deleted every Ingress's backend
+
+**What was found**: after the two fixes above, applying the dev overlay
+still failed -- nginx's admission webhook panicked (nil pointer in
+`mergeAlternativeBackends`) on every Ingress create/update, taking down
+the whole `kubectl apply`. Inspecting the actual rendered manifest (not
+just the patch source) revealed the real cause:
+`Ingress.spec.rules` has no Kubernetes-defined patch merge key, so
+`ingress-patch.yaml`'s partial patch (only supplying `host`) replaced
+the ENTIRE `rules` array rather than merging into it -- silently
+deleting each base Ingress's `http.paths.backend` entirely. The result
+was a structurally invalid Ingress (a host with no backend at all),
+which crashed nginx's canary-merge logic rather than failing with a
+clear validation error. This is the exact same list-replacement gotcha
+already hit once in this project for `StatefulSet.spec.volumeClaimTemplates`
+(item 48 #6) -- now confirmed to generalize to any Kubernetes list field
+without a merge key, not just that one case.
+
+This went undetected through all of Phase 10a's local `kind` validation
+because that runbook only ever exercised the `kind` overlay, which has
+no `ingress-patch.yaml` of its own -- this patch is dev-overlay-only and
+had never actually been applied to a real cluster until this session.
+
+**Resolution**: rewrote `ingress-patch.yaml` to repeat the FULL `rules`
+block (host + complete `http.paths.backend`) for all four Ingress
+objects, not just the changed `host` field. **Generalized takeaway for
+this codebase**: any strategic-merge Kustomize patch touching a list
+field must repeat the full list item, never just the changed field --
+true for `volumeClaimTemplates`, `rules`, and likely any other bare list
+in this manifest tree that isn't explicitly reviewed against this
+pattern.

@@ -17,6 +17,14 @@ spec:
       labels:
         app: prometheus
     spec:
+      # Real bug found via a live Azure Disk-backed PVC (kind's local-path
+      # storage class didn't surface this): the official image runs as
+      # UID/GID 65534 (nobody), but Kubernetes doesn't chown a freshly
+      # attached volume to match a non-root container user without an
+      # explicit fsGroup -- without it, "/prometheus/queries.active:
+      # permission denied" on every startup.
+      securityContext:
+        fsGroup: 65534
       containers:
         - name: prometheus
           image: prom/prometheus:latest
