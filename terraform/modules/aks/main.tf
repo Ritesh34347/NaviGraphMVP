@@ -24,6 +24,13 @@ resource "azurerm_kubernetes_cluster" "this" {
     type = "SystemAssigned"
   }
 
+  # AKS enabled the OIDC issuer by default on the real cluster even though
+  # this module never requested it, and Azure's API rejects any attempt to
+  # disable it once on ("OIDCIssuerFeatureCannotBeDisabled") -- declaring it
+  # explicitly here matches the real cluster's actual state instead of
+  # Terraform trying to revert it to an unset/default value every plan.
+  oidc_issuer_enabled = true
+
   # Phase 10: the Azure Key Vault Provider for Secrets Store CSI Driver
   # addon. Enabling this creates a real, AKS-managed user-assigned identity
   # (exposed below as key_vault_secrets_provider_client_id/_object_id) that

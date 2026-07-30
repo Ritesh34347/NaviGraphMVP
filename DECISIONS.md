@@ -755,3 +755,45 @@ design faithfully would have produced a genuine security gap; see
 `LIMITATIONS.md` item 50 for the full reasoning and the one real,
 still-open caveat (one shared AKS addon identity across all
 `SecretProviderClass` resources, not per-pod Azure Workload Identity).
+
+## 2026-07-30 — Phase 10b: switched Azure subscriptions rather than wait on an org admin grant
+
+The originally intended subscription (`navikenz.com`'s "Dev subscription")
+turned out to lack the Contributor role needed for `terraform apply` —
+`az login`/`plan` don't require it, so this only surfaced at `apply`
+time. Rather than block Phase 10b on an org admin granting a role, the
+user provided a different, real Azure subscription (a personal account,
+automatically Owner on its own subscription) and we moved the whole
+environment there. The `navigraph-cd` app registration + service
+principal created in navikenz.com's tenant during the first attempt was
+left in place, unused — deleting it wasn't necessary (zero cost, zero
+attack surface beyond the tenant it lives in) and this session has no
+standing reason to make destructive changes in a tenant we've since
+moved away from.
+
+## 2026-07-30 — Phase 10b: Postgres Flexible Server split into its own region, separate from the rest of the environment
+
+The chosen subscription is offer-restricted from provisioning Postgres
+Flexible Server in `eastus` (the region everything else uses) *and*
+`eastus2` — confirmed via two real `LocationIsOfferRestricted` errors,
+not assumed. Rather than move the entire environment to a different
+region to accommodate one service, we added a separate
+`postgres_region` Terraform variable (defaulting to `centralus`, one of
+four regions confirmed available via real, immediately-deleted probe
+deployments) used only by the `postgres-flexible-server` module. A
+resource group is just a management container — Azure has never required
+every resource inside one to share its nominal region — so this is a
+structurally normal split, not a workaround grafted onto the design.
+
+## 2026-07-30 — Phase 10b: declared `oidc_issuer_enabled = true` explicitly on the AKS module
+
+Azure enables the OIDC issuer by default on new AKS clusters regardless
+of what Terraform requests, and its API permanently rejects any attempt
+to disable it once on (`OIDCIssuerFeatureCannotBeDisabled`). The module
+had never declared this argument at all, so every `plan` after the
+cluster's first real creation computed a diff trying to unset it back to
+Terraform's absent/default value — and one `apply` attempt actually
+failed while trying to enforce that diff. Declaring
+`oidc_issuer_enabled = true` explicitly makes the module's declared state
+match the real cluster's actual (and unchangeable) state, rather than
+fighting it every plan.

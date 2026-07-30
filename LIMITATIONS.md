@@ -1089,11 +1089,84 @@ dev/testing of the route itself.
 been decided yet — `overlays/dev/ingress-patch.yaml` uses a
 `REPLACE_AFTER_APPLY_DOMAIN` placeholder, and cert-manager/Let's Encrypt
 setup is deferred until a real, DNS-resolvable hostname exists (Let's
-Encrypt's HTTP01 challenge cannot validate a placeholder domain). AKS node
-sizing/region are kept at the existing Terraform defaults (2×
-`Standard_D2s_v5`, `eastus`) pending explicit confirmation before Phase
-10b's real `terraform apply`.
+Encrypt's HTTP01 challenge cannot validate a placeholder domain).
+
+**UPDATE 2026-07-30**: AKS node sizing/region are no longer the original
+defaults — see item 53 for what changed and why, discovered during the
+real Phase 10b `terraform apply`.
 
 **What full version requires**: the user supplying a real domain (or
-confirming a temporary `nip.io`-style scheme is acceptable) and confirming
-node sizing/region, both before Phase 10b's cluster bootstrap step.
+confirming a temporary `nip.io`-style scheme is acceptable) before Phase
+10b's cluster bootstrap step.
+
+### 53. Real Phase 10b `terraform apply` required several subscription-specific fixes not knowable from `plan` alone
+
+**What happened**: the first real subscription (`navikenz.com`'s "Dev
+subscription") turned out to lack the Contributor role needed for
+`terraform apply` at all (`az login` and `plan` don't require it, so this
+only surfaced at `apply` time) — resolved by switching to a different,
+real Azure subscription (a personal account, auto-Owner on its own
+subscription) the user provided, rather than waiting on an org admin
+grant. A fresh `navigraph-cd` app registration + service principal had to
+be recreated in the new tenant (the one created in navikenz.com's tenant
+is now orphaned there — harmless, zero cost, not cleaned up since this
+session has no reason to delete resources in a tenant we've moved away
+from).
+
+Once pointed at the new (freshly created, "Azure subscription 1")
+subscription, three more real, subscription-specific restrictions
+surfaced only during `apply`, none visible from `plan` or `validate`:
+
+1. **AKS**: `Standard_D2s_v5` (the original default) is not in this
+   subscription's allowed VM size list for `eastus` — Azure returned the
+   real allowed list in the error; `Standard_D2s_v7` (closest general-
+   purpose equivalent) is on it. `terraform/environments/dev/main.tf`'s
+   `vm_size` was changed accordingly.
+2. **Postgres Flexible Server**: this subscription is offer-restricted
+   from provisioning that service in `eastus` *and* `eastus2` (both
+   confirmed via real `LocationIsOfferRestricted` errors). A real,
+   immediately-cleaned-up probe deployment across 7 candidate regions
+   confirmed `centralus`/`northeurope`/`uksouth`/`australiaeast` all work
+   on this subscription; `centralus` was chosen (closest to the rest of
+   the environment's `eastus` resources) via a new `postgres_region`
+   Terraform variable, separate from the shared `region` variable — a
+   resource group is just a management container, so this is a
+   structurally normal split, not a workaround.
+3. **AKS OIDC issuer**: Azure enables the OIDC issuer by default on new
+   AKS clusters regardless of what's requested, and its API rejects any
+   attempt to disable it once on. The module never declared
+   `oidc_issuer_enabled` at all, so every subsequent `plan` tried (and
+   the first retry attempt actually failed while trying) to turn it off.
+   Fixed by declaring `oidc_issuer_enabled = true` explicitly in
+   `terraform/modules/aks/main.tf`, matching the real cluster's actual
+   state.
+
+Additionally, the azurerm provider's default behavior of trying to
+auto-register ~200+ resource providers (including ones this config never
+uses, e.g. `Microsoft.DataMigration`) timed out on this fresh subscription
+mid-`plan`. Fixed by setting `skip_provider_registration = true` on the
+provider block and registering only the 8 providers this config's
+modules actually reference (`az provider register`, done once, out of
+band) — see `terraform/environments/dev/providers.tf`'s comment for the
+full list and rationale.
+
+**Why this matters going forward**: none of these four issues were
+visible in `terraform validate`, `terraform fmt`, or even `terraform
+plan` — they only surfaced when `apply` actually tried to create
+resources against this specific subscription's real, non-obvious
+restrictions. A different Azure subscription (a paid enterprise
+subscription, for instance) may not hit any of these and may have
+entirely different restrictions of its own. This is not something to
+generalize into "the Terraform is now portable to any subscription" —
+it's evidence that `plan`'s cleanliness does not guarantee `apply`
+succeeds unmodified on a fresh subscription, and any future subscription
+change should expect to re-discover a similar set of subscription-
+specific quirks.
+
+**Real, live infrastructure now exists** as of 2026-07-30 in Azure
+subscription `1ddb263f-0966-4ffa-9ce5-1b4aa7b01598` ("Azure subscription
+1"): resource group, VNet/subnet, ACR, AKS (2 nodes, confirmed `Ready`
+via a real `kubectl get nodes`), Key Vault, Postgres Flexible Server +
+database, an Entra app registration + service principal, and 3 role
+assignments. This is genuinely billable infrastructure, not a plan
+preview.

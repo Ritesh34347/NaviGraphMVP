@@ -19,6 +19,12 @@ variable "region" {
   default     = "eastus"
 }
 
+variable "postgres_region" {
+  description = "Azure region for the Postgres Flexible Server specifically. Separate from `region` because this subscription is offer-restricted from provisioning that service in eastus AND eastus2 (both confirmed via real LocationIsOfferRestricted errors) -- a resource group is just a management container, so Postgres can live in a different region than the rest of the environment. centralus, northeurope, uksouth, and australiaeast were all confirmed available via real (immediately deleted) probe deployments; centralus is used as the closest region to the rest of this environment's eastus resources."
+  type        = string
+  default     = "centralus"
+}
+
 variable "resource_group_name" {
   description = "Name of the resource group all dev-environment resources are created in."
   type        = string

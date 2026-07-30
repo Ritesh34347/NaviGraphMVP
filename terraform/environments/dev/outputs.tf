@@ -11,6 +11,10 @@ output "aks_cluster_id" {
 output "aks_kube_config_host" {
   description = "API server endpoint for the dev AKS cluster."
   value       = module.aks.host
+  # Derived from the AKS resource's kube_config attribute, which the
+  # azurerm provider marks sensitive as a whole -- Terraform propagates
+  # that even though a bare hostname isn't itself secret.
+  sensitive = true
 }
 
 output "aks_kube_config_raw" {

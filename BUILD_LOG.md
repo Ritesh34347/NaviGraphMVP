@@ -835,3 +835,49 @@ genuine improvement, not a compromise, logged in `DECISIONS.md` and
 explicitly provide real Azure credentials first, per this project's
 established discipline (Snowflake/Anthropic credentials were always
 provided directly in chat, never guessed).
+
+## 2026-07-30 — Phase 10b: real Azure infrastructure created
+
+The user provided real Azure credentials and, after the first candidate
+subscription turned out to lack the Contributor role needed for `apply`,
+provided a second, working subscription. `terraform.tfvars` was written
+(gitignored, real subscription/tenant IDs, a freshly generated Postgres
+password, never committed or echoed back) and a real `navigraph-cd` app
+registration + service principal created for CI use.
+
+A real `terraform plan` (13 resources: resource group, VNet/subnet, ACR,
+AKS, Key Vault, Postgres Flexible Server + database, Entra app
+registration + service principal, 3 role assignments) was shown to the
+user, who gave explicit, separate go-ahead specifically on that plan
+before any `apply` ran.
+
+`terraform apply` then surfaced four real, subscription-specific issues
+invisible at `plan`/`validate` time -- none were code bugs, all were this
+particular subscription's own restrictions -- each found, fixed, and
+re-applied in turn: the azurerm provider's default attempt to
+auto-register ~200+ resource providers timed out (fixed via
+`skip_provider_registration = true` + registering only the 8 providers
+this config actually uses); the default AKS VM size
+(`Standard_D2s_v5`) isn't in this subscription's allowed list for
+`eastus` (fixed via `Standard_D2s_v7`, confirmed from Azure's own real
+error-returned allow-list); Postgres Flexible Server is offer-restricted
+in both `eastus` and `eastus2` on this subscription (fixed via a new
+`postgres_region` variable set to `centralus`, confirmed available via
+real, immediately-deleted probe deployments across 7 candidate regions);
+and AKS's OIDC issuer -- enabled by Azure by default and permanently
+non-disablable -- needed explicit declaration
+(`oidc_issuer_enabled = true`) to stop Terraform re-diffing it every
+plan. Full reasoning for all four in `LIMITATIONS.md` item 53 and
+`DECISIONS.md`.
+
+**Real, live infrastructure now exists**: a resource group, VNet/subnet,
+ACR, a 2-node AKS cluster (confirmed `Ready` via a real
+`kubectl get nodes`), Key Vault, Postgres Flexible Server + database, and
+an Entra app registration -- all created for real, verified via
+`terraform state list` matching the reviewed plan exactly, no drift.
+
+**Still pending**: cluster bootstrap (ingress-nginx, cert-manager),
+GitHub Actions OIDC federated-credential wiring, a real domain name, a
+real `cd-deploy.yml` run, the full eval-harness run against the cloud
+environment, and the adversarial security review -- none of these have
+started yet.

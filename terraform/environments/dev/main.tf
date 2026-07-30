@@ -50,16 +50,30 @@ module "aks" {
   resource_group_name = module.resource_group.name
   dns_prefix          = "navigraph-${var.environment}"
   node_count          = 2
-  vm_size             = "Standard_D2s_v5"
-  subnet_id           = module.networking.subnet_id
-  tags                = var.tags
+  # Standard_D2s_v5 is not in this subscription's allowed VM size list for
+  # eastus (confirmed via a real 400 from AKS create: "The VM size of
+  # Standard_D2s_v5 is not allowed in your subscription in location
+  # 'eastus'"); Standard_D2s_v7 is the closest equivalent (2 vCPU, general
+  # purpose) that IS on the real allowed list for this subscription.
+  vm_size   = "Standard_D2s_v7"
+  subnet_id = module.networking.subnet_id
+  tags      = var.tags
 }
 
 module "postgres_flexible_server" {
   source = "../../modules/postgres-flexible-server"
 
-  name                   = "navigraph-${var.environment}-pg"
-  location               = var.region
+  # This subscription is offer-restricted from provisioning Postgres
+  # Flexible Server in eastus AND eastus2 (both confirmed via real
+  # "LocationIsOfferRestricted" errors), so Postgres alone uses a separate
+  # region (see postgres_region) -- a resource group is just a management
+  # container, resources inside it are not required to share its nominal
+  # location. The name is unique to this attempt (never tried in eastus or
+  # eastus2) because a failed create there left a transient ARM name-lock
+  # blocking reuse elsewhere even though `az resource show` confirmed no
+  # such resource actually existed -- a fresh name sidesteps that entirely.
+  name                   = "navigraph-${var.environment}-pg-cus"
+  location               = var.postgres_region
   resource_group_name    = module.resource_group.name
   administrator_login    = "navigraphadmin"
   administrator_password = var.postgres_administrator_password

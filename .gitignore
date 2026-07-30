@@ -34,6 +34,14 @@ crash.log
 crash.*.log
 override.tf
 override.tf.json
+# Real Azure credentials (subscription/tenant IDs, generated passwords) are
+# written only to these -- never committed, mirroring how .env is handled.
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+# Saved plan files (`terraform plan -out=...`) embed real planned resource
+# attribute values, some in plaintext -- never committed, same as tfstate.
+*.tfplan
 *_override.tf
 *_override.tf.json
 # NOTE: .terraform.lock.hcl is intentionally NOT ignored — it should be committed
