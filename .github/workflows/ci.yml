@@ -27,7 +27,25 @@ jobs:
       - name: Install workspace packages
         run: |
           python -m pip install --upgrade pip
-          pip install -e packages/shared -e packages/gateway -e packages/agent_runtime
+          # REAL BUG, found live on this repo's very first real GitHub Actions
+          # run (this workflow had never actually executed before -- the repo
+          # was only pushed to GitHub in Phase 10b): this list only ever
+          # covered Phase 1's three original packages. Phases 4/5/8 added
+          # agent_runtime dependencies on connector_sdk/metadata_catalog/
+          # knowledge_graph/federation/lineage, none of which were ever added
+          # here, so `pip install -e packages/agent_runtime` always failed to
+          # resolve. Local `pytest packages/` runs never caught this because
+          # they run against an already-populated dev environment, not a
+          # clean pip install. Order matches packages/agent_runtime/Dockerfile's
+          # real, already-correct dependency order exactly.
+          pip install -e packages/shared
+          pip install -e packages/connector_sdk
+          pip install -e packages/metadata_catalog
+          pip install -e packages/knowledge_graph
+          pip install -e packages/federation
+          pip install -e packages/lineage
+          pip install -e packages/gateway
+          pip install -e packages/agent_runtime
           pip install ruff mypy pytest
 
       - name: Lint (ruff)
@@ -64,6 +82,15 @@ jobs:
 
       - name: Type-check
         run: npm run typecheck
+
+      - name: Install Playwright browsers
+        # REAL BUG, found live on this repo's very first real GitHub Actions
+        # run: `npm run test` (playwright test) failed immediately with
+        # "Executable doesn't exist" because the Playwright browser binary
+        # is a separate download from `npm ci` and was never fetched here.
+        # Never caught before this because the workflow had never actually
+        # run against a real GitHub Actions runner until Phase 10b.
+        run: npx playwright install --with-deps chromium
 
       - name: Test
         run: |
