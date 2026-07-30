@@ -1449,3 +1449,86 @@ independently: (1) the positive-control test now passes, and (2) a real
 endpoint now reaches agent-runtime and returns a real, structured
 response (failing only on the separate, already-diagnosed Anthropic API
 quota exhaustion in item 63/eval harness -- not a network error).
+
+### 65. RESOLVED: CI had never actually run once, real since this repo's first-ever GitHub push -- five independent real bugs found and fixed
+
+**What was found**: this repository was only pushed to GitHub for the
+first time during Phase 10b -- every workflow in `.github/workflows/` had
+literally zero real executions before that (confirmed via
+`gh run list`, which showed every single historical run across all four
+workflows as `failure`). Root-causing each one for real (`gh run view
+--log-failed`, and, for the two that produced zero jobs at all, comparing
+the YAML against GitHub's actual context-availability rules) surfaced
+five distinct, independent bugs -- none of which any local
+`pytest packages/`/`npm test` run, `terraform validate`, or `kustomize
+build` had ever been positioned to catch, since none of those run against
+a clean CI checkout the way a real GitHub Actions runner does:
+
+1. **`ci.yml`'s Python job never installed `agent_runtime`'s real
+   dependencies.** The "Install workspace packages" step only ever listed
+   Phase 1's original three packages (`shared`, `gateway`,
+   `agent_runtime`) -- Phases 4/5/8 added real `agent_runtime` dependencies
+   on `connector_sdk`/`metadata_catalog`/`knowledge_graph`/`federation`/
+   `lineage`, none of which were ever added to this list, so
+   `pip install -e packages/agent_runtime` always failed to resolve on a
+   clean install. Fixed by installing all 8 packages in the exact
+   dependency order already proven correct in
+   `packages/agent_runtime/Dockerfile`.
+2. **`ci.yml`'s Node job never installed the Playwright browser
+   binary.** `npx playwright install` is a separate download from `npm
+   ci`, never run anywhere in the workflow, so `npm run test` (`playwright
+   test`) failed immediately with "Executable doesn't exist ... 
+   chrome-headless-shell". Fixed by adding an explicit
+   `npx playwright install --with-deps chromium` step before `npm run
+   test`.
+3. **`terraform-plan.yml`'s `plan` job and `cloud-security-tests.yml`'s
+   `adversarial-tests` job both referenced `secrets.AZURE_CLIENT_ID`
+   directly inside a job-level `if:`.** GitHub does not allow the
+   `secrets` context in `jobs.<job_id>.if` at all (only `github`/`needs`/
+   `vars`/`inputs` are permitted there -- `secrets` is only readable inside
+   a step's own `env`/`run`/`with`); this made both workflow FILES
+   themselves invalid, so GitHub rejected them outright with zero jobs
+   ever scheduled on ANY trigger (`gh run view` reported "This run likely
+   failed because of a workflow file issue" and 0 jobs, confirmed via
+   `gh api .../actions/runs/{id}/jobs` returning `{"jobs": []}`) --
+   completely independent of whichever event actually triggered the
+   attempt. Fixed in both files by moving the secret check into a new,
+   preliminary `check-azure-creds` job (a step reads
+   `secrets.AZURE_CLIENT_ID` into an output there, where `secrets` IS
+   allowed), and having the downstream job's `if:` reference
+   `needs.check-azure-creds.outputs.configured` instead (`needs` IS
+   allowed at the job level).
+4. **`ruff check .` failed on 3 real `EXE001` violations**
+   (`tools/scripts/canary_gate.py`, `tools/scripts/new-agent.py`,
+   `tools/scripts/tag_pii_columns.py` -- each has a real `#!/usr/bin/env
+   python3` shebang but was never marked executable in git). This was
+   invisible on this Windows dev machine (NTFS has no POSIX executable
+   bit for `ruff` to check locally in the same way), only surfacing on a
+   real Linux CI runner. Fixed via `git update-index --chmod=+x` on all
+   three files (a real, git-tracked mode change, not a filesystem-only
+   `chmod` that Windows would just silently drop again).
+5. **`web/playwright.config.ts` had no `webServer` block at all**, so
+   `playwright test` on a clean CI runner (nothing else started) failed
+   immediately with `ERR_CONNECTION_REFUSED` at `localhost:3000`. This
+   test had only ever been run locally against an already-running
+   docker-compose `web` service or a manually-started `next dev` --
+   never against a genuinely clean environment. Fixed by adding a real
+   `webServer: { command: "npm run dev", url: baseURL, reuseExistingServer:
+   !process.env.CI, timeout: 120_000 }` block, confirmed safe against
+   `web/src/lib/env.ts` (every env var Next.js needs at build/runtime
+   already has a permissive fallback, so a bare `next dev` boots cleanly
+   with zero configuration).
+
+**Why this is logged as a single item**: all five were discovered by the
+same event (this repo's first real push to GitHub, and the resulting
+first real CI executions) and root-caused together across one
+investigation -- logging them individually would fragment one coherent
+finding, the same reasoning already used for items 38/44.
+
+**What full version requires**: nothing further planned -- all five are
+real, fixed bugs, not deferred scope. The one remaining open action is
+confirming (not yet done as of this writing) that the fixes actually
+turn CI/`terraform-plan`/`cloud-security-tests` green on a real run,
+since a fix that looks correct by inspection is not the same as one
+proven against the real GitHub Actions runner -- exactly the standard
+this whole item's discovery already demonstrated is necessary.

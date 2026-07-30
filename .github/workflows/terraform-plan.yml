@@ -48,11 +48,37 @@ jobs:
             terraform -chdir="$dir" validate
           done
 
+  # REAL BUG, found live via `gh run list`/`gh run view`: this whole workflow
+  # was being rejected outright by GitHub as an "invalid workflow file" on
+  # every single push/PR (0 jobs ever scheduled) -- the `secrets` context is
+  # not allowed in a job-level `if:` (only `github`/`needs`/`vars`/`inputs`
+  # are: https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/accessing-contextual-information-about-workflow-runs).
+  # `secrets` is only readable inside a step (env/run/with), so the
+  # credential check is moved into its own job's step here, and `plan`
+  # instead checks that job's `needs.*.outputs` (which IS allowed at the job
+  # level).
+  check-azure-creds:
+    name: Check whether Azure credentials are configured
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check for AZURE_CLIENT_ID secret
+        id: check
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          if [ -n "$AZURE_CLIENT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
   plan:
     name: terraform plan (dev) — only if Azure credentials are configured
-    needs: fmt-and-validate
+    needs: [fmt-and-validate, check-azure-creds]
     runs-on: ubuntu-latest
-    if: ${{ secrets.AZURE_CLIENT_ID != '' }}
+    if: needs.check-azure-creds.outputs.configured == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
