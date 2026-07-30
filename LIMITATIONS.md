@@ -1778,3 +1778,42 @@ navigraph -o jsonpath='{...image}'` confirmed the live cluster is running
 the exact SHA this investigation's own commits produced -- closing the
 loop on items 66 through 70 with real, observed proof at every step
 rather than an assumption that the fixes "should" work.
+
+### 71. `cd-deploy.yml` -- the first genuinely clean, fully automatic, zero-manual-intervention real run
+
+**What was found**: pushing item 70's fix (`e101524`, which touches
+`infra/k8s/**`, one of `cd-deploy.yml`'s `push` path filters)
+auto-triggered a real `push`-event CD run
+(`https://github.com/Ritesh34347/NaviGraphMVP/actions/runs/30565723435`)
+moments before a manual `workflow_dispatch` re-verification run was also
+started on the same commit. Both share the `cd-deploy-dev` concurrency
+group (correctly serialized, never running jobs in parallel), but since
+both were building/deploying the *same* commit, the manually-dispatched
+run's own `promote` job later tried to push an identical
+"cd: promote e101524..." commit and was rejected (`! [rejected] ...
+fetch first`) because the auto-triggered run's `promote` had already
+pushed the equivalent commit moments earlier. This is a benign
+redundant-trigger artifact of manually re-verifying right after a
+push-triggering change, not a deployment-correctness bug -- the
+concurrency group did its real job (no two rollouts ever touched the
+cluster simultaneously), and the underlying push-triggered run itself
+completed with every single job `success`, zero manual intervention,
+confirmed both via the GitHub Actions run and directly against the live
+cluster (`kubectl get deployment .../{gateway-stable,web-stable,
+agent-runtime}` all showing the identical, correct
+`e1015240b396bdfe7b937759ac7a0a1cc5790f1e` image).
+
+**What full version requires**: nothing blocking -- if a real,
+non-testing scenario ever manually re-dispatches a commit that a push
+already triggered a deploy for, `promote`'s bot-commit step could
+optionally `git pull --rebase` immediately before pushing to absorb a
+concurrent identical promotion gracefully instead of failing loudly.
+Not implemented here since the underlying scenario is a testing
+artifact of this investigation, not a real operational pattern.
+
+**This closes the full arc of Phase 10b's `cd-deploy.yml` verification**
+(items 66-71): from zero real GitHub secrets, through a missing OIDC
+permission, a stale federated-credential subject format, a
+never-actually-redeployed `agent-runtime`, and a real node-capacity
+rollout hang -- to a fully real, fully automatic, fully verified CD
+pipeline, proven end to end against live Azure infrastructure.
