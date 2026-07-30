@@ -1,0 +1,25 @@
+# See patch-agent-runtime-csi-volume.yaml's comment -- same mechanism,
+# triggering grafana-kv's sync into the real grafana-secrets Secret that
+# base/grafana/deployment.yaml's GF_SECURITY_ADMIN_PASSWORD env var
+# already references.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: navigraph
+spec:
+  template:
+    spec:
+      containers:
+        - name: grafana
+          volumeMounts:
+            - name: grafana-kv
+              mountPath: /mnt/secrets-store
+              readOnly: true
+      volumes:
+        - name: grafana-kv
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: grafana-kv

@@ -1,0 +1,31 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: navigraph
+spec:
+  # Applies to every pod in the namespace (empty podSelector). Requires
+  # module.aks's network_profile { network_policy = "azure" } (Terraform,
+  # Phase 10) to actually be enforced -- without it, AKS accepts this
+  # object without complaint but never restricts anything, which is
+  # exactly why tests/security/cloud/test_network_policy_isolation.py
+  # exists: to prove enforcement is real, not just declared.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    # DNS is the one default-allowed egress path -- every pod needs it
+    # regardless of its own traffic pattern, and CoreDNS lives in
+    # kube-system, a namespace this policy doesn't otherwise reach.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+  # No default ingress/egress rules beyond DNS -- every other real traffic
+  # path is an explicit allow in networkpolicy-allow.yaml.

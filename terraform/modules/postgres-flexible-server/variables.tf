@@ -47,3 +47,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "database_name" {
+  description = "Name of the real application database created on this server (navigraph_catalog and navigraph_lineage both connect to this one database -- see LineageSettings' module docstring on sharing one physical instance). Phase 10: this module previously created only the server itself, leaving just its default 'postgres' database -- a real gap, since every service's POSTGRES_DB setting expects a database with this name to actually exist."
+  type        = string
+  default     = "navigraph"
+}

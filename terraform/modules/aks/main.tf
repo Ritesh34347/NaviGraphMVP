@@ -24,5 +24,27 @@ resource "azurerm_kubernetes_cluster" "this" {
     type = "SystemAssigned"
   }
 
+  # Phase 10: the Azure Key Vault Provider for Secrets Store CSI Driver
+  # addon. Enabling this creates a real, AKS-managed user-assigned identity
+  # (exposed below as key_vault_secrets_provider_client_id/_object_id) that
+  # infra/k8s/overlays/dev's SecretProviderClass resources reference to sync
+  # real Key Vault secrets into the cluster — see LIMITATIONS.md's new item
+  # on this addon using one shared identity rather than per-pod Azure
+  # Workload Identity federation.
+  key_vault_secrets_provider {
+    secret_rotation_enabled  = true
+    secret_rotation_interval = "2m"
+  }
+
+  # Phase 10: Azure CNI networking with NetworkPolicy enforcement. Without
+  # this block, real Kubernetes NetworkPolicy objects (see
+  # infra/k8s/base/*/networkpolicy.yaml) would be silently unenforced —
+  # the cluster would accept them without complaint but never actually
+  # restrict traffic.
+  network_profile {
+    network_plugin = "azure"
+    network_policy = "azure"
+  }
+
   tags = var.tags
 }

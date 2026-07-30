@@ -1,0 +1,283 @@
+# Explicit allows layered on top of networkpolicy-default-deny.yaml's
+# default-deny-all -- every real traffic path this codebase actually uses
+# gets one policy; nothing else is reachable. NetworkPolicy objects are
+# additive (multiple objects selecting the same pod OR together), so each
+# of these only needs to describe ITS OWN real, necessary path.
+#
+# ingress-nginx lives in a separate `ingress-nginx` namespace (installed
+# once as cluster infrastructure, not part of this Kustomize tree -- see
+# docs/runbooks/k8s-local-validation.md). Kubernetes automatically labels
+# every namespace with the immutable kubernetes.io/metadata.name label, so
+# namespaceSelector below needs no manual labelling step.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-nginx-to-gateway
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-nginx-to-web
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# web's server-side code calls gateway-stable directly (see
+# base/web/deployment-stable.yaml's GATEWAY_URL comment) -- both web
+# tracks need this egress regardless of which track is serving a request.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-to-gateway
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# Gateway's only real backend call (POST /agents/orchestrator/request_orchestrator/invoke
+# and friends) is to agent-runtime -- see packages/gateway/navigraph_gateway/main.py.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-to-agent-runtime
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: agent-runtime
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 8001
+---
+# agent-runtime is the one real caller of neo4j, redis, and opa -- see
+# packages/agent_runtime/navigraph_agents/main.py's lifespan() wiring.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agent-runtime-to-datastores
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: agent-runtime
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: neo4j
+      ports:
+        - protocol: TCP
+          port: 7687
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: opa
+      ports:
+        - protocol: TCP
+          port: 8181
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
+    # overlays/kind's ephemeral in-cluster postgres (overlays/dev's real
+    # Azure Postgres Flexible Server is outside the cluster -- covered by
+    # allow-agent-runtime-external-https below instead, since it's reached
+    # over the public/private endpoint, not a cluster-local pod IP).
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-neo4j-redis-opa-ingress-from-agent-runtime
+  namespace: navigraph
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["neo4j", "redis", "opa"]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agent-runtime
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-otel-collector-ingress
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: otel-collector
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: agent-runtime
+        - podSelector:
+            matchLabels:
+              app: gateway
+---
+# agent-runtime is the one real caller of Snowflake and Anthropic (both
+# real external HTTPS SaaS APIs, not cluster-internal) -- see
+# packages/connector_sdk/navigraph_connectors/snowflake and
+# packages/shared/navigraph_shared/llm/client.py. NetworkPolicy can't
+# name arbitrary internet endpoints by DNS name, only by IP block/port, so
+# this is a real, honestly-scoped compromise: broad HTTPS egress, not a
+# narrowly-pinned allowlist of Snowflake/Anthropic's actual IP ranges
+# (which rotate and aren't published as a stable CIDR block by either
+# vendor) -- see LIMITATIONS.md's new item on this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agent-runtime-external-https
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: agent-runtime
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Prometheus scrapes every app's /metrics plus the ingress-nginx
+# controller's own metrics (see infra/prometheus/prometheus.k8s.yml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: prometheus
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+        - protocol: TCP
+          port: 8000
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agent-runtime
+      ports:
+        - protocol: TCP
+          port: 8001
+    - to:
+        - podSelector:
+            matchLabels:
+              app: otel-collector
+      ports:
+        - protocol: TCP
+          port: 8889
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 10254
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-grafana-to-prometheus
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: grafana
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090

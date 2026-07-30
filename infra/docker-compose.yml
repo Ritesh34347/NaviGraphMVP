@@ -305,7 +305,11 @@ services:
     env_file:
       - .env
     environment:
-      AGENT_RUNTIME_URL: http://agent-runtime:8001
+      # Real bug found live during Phase 10: GatewaySettings.agent_runtime_base_url
+      # maps to AGENT_RUNTIME_BASE_URL (pydantic-settings uppercases the field
+      # name), not AGENT_RUNTIME_URL -- this was silently a dead env var since
+      # Phase 1, only "working" because its default happens to equal this value.
+      AGENT_RUNTIME_BASE_URL: http://agent-runtime:8001
       REDIS_URL: redis://redis:6379
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     ports:

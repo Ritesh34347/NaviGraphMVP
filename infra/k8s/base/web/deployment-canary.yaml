@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-canary
+  namespace: navigraph
+  labels:
+    app: web
+    track: canary
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+      track: canary
+  template:
+    metadata:
+      labels:
+        app: web
+        track: canary
+    spec:
+      containers:
+        - name: web
+          # Never git-tracked -- set imperatively per-run by
+          # .github/workflows/cd-deploy.yml, same convention as
+          # gateway-canary.
+          image: navigraph-web:unset
+          ports:
+            - containerPort: 3000
+          env:
+            # Same deliberate stable-only pinning as web-stable -- see that
+            # manifest's comment. The canary track's own
+            # NEXT_PUBLIC_GATEWAY_URL is still baked in at build time and
+            # still points at the real public hostname, so browser-side
+            # calls from a canary-served page still reach the (possibly
+            # also-canary) gateway via the ingress's own weighting.
+            - name: GATEWAY_URL
+              value: http://gateway-stable.navigraph.svc.cluster.local:8000
+          # See deployment-stable.yaml's comment -- same real bug, same fix:
+          # timeoutSeconds must comfortably exceed page.tsx's own internal
+          # 3000ms gateway-fetch timeout.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

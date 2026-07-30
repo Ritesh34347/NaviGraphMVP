@@ -3,5 +3,16 @@ apiVersion: kind.x-k8s.io/v1alpha4
 name: navigraph-dev
 nodes:
   - role: control-plane
+    # Phase 10: without these, nothing running inside this cluster is
+    # reachable from the host at all -- ingress-nginx's kind-specific
+    # install manifest (see docs/runbooks/k8s-local-validation.md) binds
+    # to these hostPorts on the control-plane node specifically.
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        protocol: TCP
   - role: worker
   - role: worker

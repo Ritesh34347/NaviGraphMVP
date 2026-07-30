@@ -1,0 +1,82 @@
+# Real adversarial security verification against the real, deployed AKS
+# cluster -- re-points tests/security/'s existing OPA suite at the real
+# live OPA (via port-forward) AND runs the new tests/security/cloud/ suite
+# (network policy isolation, secret scoping, RBAC, API server exposure,
+# ACR privacy, ingress TLS) against the real infrastructure Phase 10b's
+# terraform apply created.
+#
+# Gated the same way terraform-plan.yml's `plan` job already is -- never on
+# ordinary PRs, since this needs a live AKS cluster that only exists after
+# a human has actually applied Terraform.
+name: Cloud Security Tests
+
+on:
+  workflow_run:
+    workflows: ["CD Deploy"]
+    types: [completed]
+  workflow_dispatch:
+
+env:
+  AKS_RESOURCE_GROUP: navigraph-dev-rg
+  AKS_CLUSTER_NAME: navigraph-dev-aks
+
+jobs:
+  adversarial-tests:
+    name: real adversarial tests against live AKS
+    if: >
+      ${{ secrets.AZURE_CLIENT_ID != '' &&
+          (github.event_name == 'workflow_dispatch' ||
+           github.event.workflow_run.conclusion == 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: pip install pytest pytest-asyncio
+
+      - name: Install shared + agent-runtime packages (for the re-pointed OPA suite)
+        run: |
+          pip install -e packages/shared -e packages/agent_runtime
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group ${{ env.AKS_RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER_NAME }} --overwrite-existing
+
+      - name: Port-forward the real, deployed OPA
+        run: |
+          kubectl port-forward svc/opa 8181:8181 -n navigraph &
+          echo "OPA_PORT_FORWARD_PID=$!" >> "$GITHUB_ENV"
+          sleep 3
+
+      - name: Re-run the existing tests/security/ OPA suite against the real deployed OPA
+        env:
+          OPA_URL: http://localhost:8181
+        run: pytest tests/security/ -v --tb=short -m opa_integration
+
+      - name: Stop OPA port-forward
+        if: always()
+        run: kill "$OPA_PORT_FORWARD_PID" 2>/dev/null || true
+
+      - name: Run the real tests/security/cloud/ suite
+        env:
+          NAVIGRAPH_DOMAIN: ${{ vars.NAVIGRAPH_DOMAIN }}
+        run: pytest tests/security/cloud/ -v --tb=short -m cloud_integration
+
+      - name: Report findings
+        if: always()
+        run: |
+          echo "See the test output above for the full, real adversarial findings -- \
+          honestly reported, including the already-documented RBAC and \
+          secret-scoping expectations (see LIMITATIONS.md)."

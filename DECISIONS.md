@@ -662,3 +662,96 @@ two tables that coincidentally share a generically-named column). See
 `LIMITATIONS.md` item 15 for the full root-cause, fix, and verification
 detail, and item 44 for the real, live proof this fix produced (`gq_007`
 now answers correctly end-to-end where it previously hard-failed).
+
+## 2026-07-30 — Phase 10 is split into two hard-gated sub-phases: build/prove locally first, real Azure only after explicit credentials
+
+Phase 10 ("real AKS deployment, GitOps CD, canary rollout, security
+review") is the first phase to require real, billable Azure
+infrastructure. We split it into **10a** (100% buildable and verifiable
+with zero Azure cost/credentials — every manifest, the CD workflow, the
+canary mechanism, and the new adversarial tests, all proven for real
+against a local `kind` cluster) and **10b** (real Azure — requires the
+user to explicitly provide real credentials first, mirroring exactly how
+Snowflake/Anthropic credentials were always provided directly in chat and
+written only to gitignored files in every prior phase). We considered
+building both halves together and rejected it: this project's own
+established discipline never fabricates or proceeds with guessed
+credentials, and 10a's real, substantial value (proving every mechanism
+works) does not require touching Azure at all — collapsing the two would
+have either blocked on credentials that don't exist yet in this
+conversation, or tempted skipping real local verification in favor of
+assuming the cloud deployment would "just work."
+
+## 2026-07-30 — Four Phase 10 architecture forks, resolved with the user before implementation
+
+Confirmed via `AskUserQuestion` before writing any manifests:
+- **Kustomize, not Helm**, for `infra/k8s/` — `kubectl apply -k` is a
+  built-in `kubectl` feature, no templating engine or chart repository to
+  operate.
+- **Push-based CD** (`.github/workflows/cd-deploy.yml` builds/pushes
+  images and applies manifests directly), not a real ArgoCD/Flux GitOps
+  controller — no new cluster-side operational surface, reusing the exact
+  same Azure OIDC auth pattern `terraform-plan.yml`'s `plan` job already
+  established.
+- **NGINX Ingress Controller's built-in canary annotations** for the
+  weighted rollout, not a service mesh (Istio/Linkerd) or a
+  progressive-delivery controller (Flagger/Argo Rollouts) — real,
+  percentage-based L7 traffic splitting with no new tooling beyond an
+  ingress controller this design already needed.
+- **Trino excluded from the cloud deployment entirely**; **Redis stays
+  self-hosted in AKS**, no new Azure Cache for Redis module. Both keep
+  Phase 10's scope to what's already justified by existing decisions
+  (Trino's route is still non-default, per items 3/19; session/cache data
+  is short-lived and TTL-bounded by design, per item 40).
+
+Real Azure AD JWT verification (`LIMITATIONS.md` item 23) was confirmed
+to stay deferred again — Phase 10 is deployment plumbing, not the
+identity-verification phase, even though this phase's Terraform creates
+one of that item's named prerequisites (a real app registration).
+
+## 2026-07-30 — Real Kubernetes manifest bugs, found only by actually deploying to a live `kind` cluster, fixed rather than left for Phase 10b to discover
+
+Six genuine bugs (PVC `storageClassName` mismatch, `configMapGenerator`
+resources landing in the wrong namespace, OPA's ConfigMap-symlink
+directory-scan collision, a `web` probe-timeout race against the app's own
+internal fetch timeout, the official neo4j image mistranslating a plain
+`NEO4J_PASSWORD` env var into an invalid config setting, and a Kustomize
+patch silently dropping required PVC fields) were found and fixed by
+following `docs/runbooks/k8s-local-validation.md`'s sequence for real, not
+by reading the YAML or running `kustomize build`/`terraform validate`
+alone. We fixed each immediately rather than deferring any of them to
+Phase 10b, on the same "fix real bugs found, don't paper over them"
+discipline this project has followed since Phase 1 — deferring any of
+these to the real cloud deployment would have meant discovering them
+against real, billable infrastructure instead of a free local cluster.
+
+One local-only finding — `agent-runtime` becoming briefly unreachable
+from other pods over `kind`'s own network, while an architecturally
+identical path (`ingress-nginx` → `gateway`) worked fine at the same time
+— was investigated thoroughly enough to confirm it was not an application
+or manifest bug (the app responded correctly on `localhost`; kubelet's own
+probes succeeded continuously) before being logged as a
+`kind`/Docker-Desktop-specific environment quirk (`LIMITATIONS.md` item
+49) rather than chased indefinitely — real AKS uses an entirely different
+networking stack (Azure CNI on real Linux nodes), so continuing to debug
+a local-only flake would not have improved the actual deliverable.
+
+## 2026-07-30 — Per-service Secret names, not one shared Secret, for real (not just apparent) secret scoping
+
+The original Phase 10 technical design proposed one shared
+`navigraph-app-secrets` Kubernetes `Secret` name, synced by every
+service's `SecretProviderClass`. We deviated from that during
+implementation: multiple `SecretProviderClass` resources all targeting
+the same Secret *name* would stomp on each other's synced content
+depending on pod-start ordering, and any pod reading that one Secret could
+see every other service's values regardless of what it actually needed.
+We gave each service its own Secret name instead
+(`agent-runtime-secrets`, `neo4j-secrets`, `grafana-secrets`), and
+`gateway`/`web` (needing zero secret values) get no `SecretProviderClass`
+or CSI volume at all — least privilege by construction, not just by
+convention. This is a real, deliberate improvement over the originally
+approved plan's literal wording, made because implementing the original
+design faithfully would have produced a genuine security gap; see
+`LIMITATIONS.md` item 50 for the full reasoning and the one real,
+still-open caveat (one shared AKS addon identity across all
+`SecretProviderClass` resources, not per-pod Azure Workload Identity).

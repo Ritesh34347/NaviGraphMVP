@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: navigraph
+  labels:
+    app: postgres
+spec:
+  # kind-only: a real Azure Postgres Flexible Server (via Terraform) stands
+  # in for this in overlays/dev -- this ephemeral, no-PVC Postgres exists
+  # purely so the FULL topology (including a real DB-backed /ask round
+  # trip) is exercisable with zero cloud dependency. Data is lost on pod
+  # restart -- acceptable for a throwaway local validation cluster.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: navigraph
+            - name: POSTGRES_PASSWORD
+              value: navigraph-kind-local
+            - name: POSTGRES_DB
+              value: navigraph
+          volumeMounts:
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "navigraph", "-d", "navigraph"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "navigraph", "-d", "navigraph"]
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: postgres-init
+          configMap:
+            name: postgres-init
+

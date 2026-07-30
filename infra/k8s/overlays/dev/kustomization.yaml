@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# See base/kustomization.yaml's comment on this same field and
+# overlays/kind/kustomization.yaml's identical note -- defense in depth
+# for this overlay's own directly-declared resources (the
+# SecretProviderClass files below already set namespace: navigraph
+# explicitly, but this transformer is the belt to that suspenders).
+namespace: navigraph
+
+resources:
+  - ../../base
+  - secretproviderclass-agent-runtime.yaml
+  - secretproviderclass-neo4j.yaml
+  - secretproviderclass-grafana.yaml
+
+patches:
+  - path: configmap-postgres-patch.yaml
+  - path: ingress-patch.yaml
+  - path: patch-agent-runtime-csi-volume.yaml
+  - path: patch-neo4j-csi-volume.yaml
+  - path: patch-grafana-csi-volume.yaml
+
+# REPLACE_AFTER_APPLY: navigraphdevacr.azurecr.io below matches
+# terraform/environments/dev/main.tf's real ACR naming
+# ("navigraph${var.environment}acr" -> "navigraphdevacr"), confirmed
+# against terraform output acr_login_server after Phase 10b's real apply.
+# The *-stable tags here are the one piece of canary-related state that IS
+# git-tracked (see the Phase 10 plan's canary design) -- promoted here by
+# .github/workflows/cd-deploy.yml's `promote` job after a successful
+# rollout. The *-canary track's tag is never git-tracked; it's set
+# imperatively per-run via `kubectl set image`.
+images:
+  - name: navigraph-gateway
+    newName: navigraphdevacr.azurecr.io/navigraph-gateway
+    newTag: unreleased
+  - name: navigraph-agent-runtime
+    newName: navigraphdevacr.azurecr.io/navigraph-agent-runtime
+    newTag: unreleased
+  - name: navigraph-web
+    newName: navigraphdevacr.azurecr.io/navigraph-web
+    newTag: unreleased

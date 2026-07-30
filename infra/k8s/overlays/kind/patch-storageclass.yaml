@@ -1,0 +1,44 @@
+# Real gap found live during Phase 10a's own kind validation: base's PVCs
+# hardcode storageClassName: managed-csi (AKS's real default CSI storage
+# class name in overlays/dev) -- kind has no such class (its own default is
+# "standard", provisioner rancher.io/local-path), so those PVCs stayed
+# Pending forever with zero error message, silently blocking every pod
+# that mounted one (neo4j, prometheus, grafana).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: navigraph
+spec:
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: navigraph
+spec:
+  storageClassName: standard
+---
+# volumeClaimTemplates entries don't get the same field-level strategic
+# merge as containers/volumes -- a patch specifying only storageClassName
+# here REPLACED the whole PVC spec, silently dropping accessModes/resources
+# (found live: the StatefulSet controller then failed to create the PVC at
+# all with "accessModes: Required value, resources[storage]: Required
+# value", and neo4j-0 never even got scheduled). The full spec must be
+# repeated here, not just the one field being overridden.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neo4j
+  namespace: navigraph
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: neo4j-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi

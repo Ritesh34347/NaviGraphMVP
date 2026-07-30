@@ -8,6 +8,11 @@ variable "tenant_id" {
   type        = string
 }
 
+variable "ci_service_principal_object_id" {
+  description = "Object ID of the existing CI service principal (the same identity already used by .github/workflows/terraform-plan.yml's OIDC login). Phase 10 grants it AcrPush on the container registry and Azure Kubernetes Service Cluster User Role on the AKS cluster, so .github/workflows/cd-deploy.yml can push images and deploy. No default — must be supplied once real Azure credentials exist (see terraform/README.md and DECISIONS.md's Phase 10 entry)."
+  type        = string
+}
+
 variable "region" {
   description = "Azure region to deploy resources into."
   type        = string

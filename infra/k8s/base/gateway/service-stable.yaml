@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-stable
+  namespace: navigraph
+  labels:
+    app: gateway
+    track: stable
+spec:
+  selector:
+    app: gateway
+    track: stable
+  ports:
+    - port: 8000
+      targetPort: 8000

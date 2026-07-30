@@ -1,0 +1,24 @@
+# See patch-agent-runtime-csi-volume.yaml's comment -- same mechanism,
+# triggering neo4j-kv's sync into the real neo4j-secrets Secret that
+# base/neo4j/statefulset.yaml's NEO4J_PASSWORD env var already references.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neo4j
+  namespace: navigraph
+spec:
+  template:
+    spec:
+      containers:
+        - name: neo4j
+          volumeMounts:
+            - name: neo4j-kv
+              mountPath: /mnt/secrets-store
+              readOnly: true
+      volumes:
+        - name: neo4j-kv
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: neo4j-kv

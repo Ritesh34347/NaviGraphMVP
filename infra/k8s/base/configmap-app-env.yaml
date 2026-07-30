@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: navigraph-app-env
+  namespace: navigraph
+data:
+  # Non-secret config shared across agent-runtime and gateway. Real secret
+  # values (ANTHROPIC_API_KEY, SNOWFLAKE_PASSWORD, POSTGRES_PASSWORD,
+  # NEO4J_PASSWORD) come from a per-service Secret, never from here -- see
+  # overlays/dev/secretproviderclass-*.yaml and overlays/kind/secret-instructions.md.
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  REDIS_URL: redis://redis:6379
+  NEO4J_URI: bolt://neo4j:7687
+  OPA_URL: http://opa:8181
+  ANTHROPIC_MODEL: claude-sonnet-5
+
+  # Postgres connection details (non-secret half). POSTGRES_HOST is
+  # overlay-specific -- overlays/kind points at the in-cluster ephemeral
+  # postgres Deployment; overlays/dev points at the real Azure Postgres
+  # Flexible Server FQDN. Both overlays patch this ConfigMap's POSTGRES_HOST
+  # key rather than redefining the whole map.
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: navigraph
+  POSTGRES_DB: navigraph
+
+  # Snowflake connection details (non-secret half) -- overlays/dev's
+  # SecretProviderClass supplies SNOWFLAKE_PASSWORD separately.
+  SNOWFLAKE_ACCOUNT: ""
+  SNOWFLAKE_USER: ""
+  SNOWFLAKE_WAREHOUSE: ""
+  SNOWFLAKE_DATABASE: ""
+  SNOWFLAKE_ROLE: ""
+  SNOWFLAKE_AUTH_METHOD: password
+
+  # Gateway-only, harmless for agent-runtime to also receive since it's
+  # unused there.
+  AGENT_RUNTIME_BASE_URL: http://agent-runtime:8001

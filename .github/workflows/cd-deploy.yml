@@ -1,0 +1,270 @@
+# Real push-based CD: builds and pushes the 3 real app images to the real
+# ACR, then deploys to the real AKS cluster via a real, weighted-canary
+# rollout (10% -> 50% -> 100%), gated by tools/scripts/canary_gate.py
+# reading the real ingress-nginx controller's own Prometheus metrics.
+#
+# This workflow CANNOT run for real until Phase 10b's real terraform apply
+# has created the real AKS/ACR/Key Vault infrastructure and a human has
+# added a second federated-credential subject for THIS workflow file on the
+# existing CI service principal (see docs/runbooks/k8s-local-validation.md
+# and the Phase 10 plan) -- it reuses the exact same
+# AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_SUBSCRIPTION_ID OIDC pattern
+# .github/workflows/terraform-plan.yml's `plan` job already uses, no new
+# secret scheme.
+name: CD Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/**"
+      - "web/**"
+      - "infra/k8s/**"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Normal run (deploy) or an explicit manual rollback"
+        required: true
+        default: deploy
+        type: choice
+        options:
+          - deploy
+          - rollback
+      rollback_to_sha:
+        description: "Git SHA to roll *-stable back to (only used when action=rollback)"
+        required: false
+        type: string
+
+# Never cancel a live rollout mid-flight -- queue the next run instead of
+# leaving the cluster in a half-promoted, half-rolled-back state.
+concurrency:
+  group: cd-deploy-dev
+  cancel-in-progress: false
+
+env:
+  ACR_NAME: navigraphdevacr
+  AKS_RESOURCE_GROUP: navigraph-dev-rg
+  AKS_CLUSTER_NAME: navigraph-dev-aks
+  KUSTOMIZE_VERSION: "5.8.1"
+
+jobs:
+  build-and-push:
+    name: build + push ${{ matrix.image }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: navigraph-gateway
+            context: packages
+            dockerfile: gateway/Dockerfile
+          - image: navigraph-agent-runtime
+            context: packages
+            dockerfile: agent_runtime/Dockerfile
+          - image: navigraph-web
+            context: web
+            dockerfile: Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          BUILD_ARGS=""
+          if [ "${{ matrix.image }}" = "navigraph-web" ]; then
+            BUILD_ARGS="--build-arg NEXT_PUBLIC_GATEWAY_URL=https://api.navigraph.${{ vars.NAVIGRAPH_DOMAIN }}"
+          fi
+          docker build $BUILD_ARGS \
+            -f "${{ matrix.context }}/${{ matrix.dockerfile }}" \
+            -t "${{ env.ACR_NAME }}.azurecr.io/${{ matrix.image }}:${{ github.sha }}" \
+            "${{ matrix.context }}"
+          docker push "${{ env.ACR_NAME }}.azurecr.io/${{ matrix.image }}:${{ github.sha }}"
+
+  deploy-canary:
+    name: deploy canary at 0% weight
+    needs: build-and-push
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group ${{ env.AKS_RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER_NAME }} --overwrite-existing
+
+      - name: Install standalone kustomize (needed for --load-restrictor, kubectl's embedded kustomize can't do this)
+        run: |
+          curl -sL -o kustomize.tar.gz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${{ env.KUSTOMIZE_VERSION }}/kustomize_v${{ env.KUSTOMIZE_VERSION }}_linux_amd64.tar.gz"
+          tar xzf kustomize.tar.gz
+          chmod +x kustomize
+          sudo mv kustomize /usr/local/bin/kustomize
+
+      - name: Apply base manifests (everything except the canary tracks' own images)
+        run: kustomize build infra/k8s/overlays/dev --load-restrictor LoadRestrictionsNone | kubectl apply -f -
+
+      - name: Point the canary tracks at the new SHA
+        run: |
+          kubectl set image deployment/gateway-canary gateway="${{ env.ACR_NAME }}.azurecr.io/navigraph-gateway:${{ github.sha }}" -n navigraph
+          kubectl set image deployment/web-canary web="${{ env.ACR_NAME }}.azurecr.io/navigraph-web:${{ github.sha }}" -n navigraph
+          kubectl rollout status deployment/gateway-canary -n navigraph --timeout=180s
+          kubectl rollout status deployment/web-canary -n navigraph --timeout=180s
+          kubectl rollout status deployment/agent-runtime -n navigraph --timeout=180s
+
+  canary-bake:
+    name: canary bake at ${{ matrix.weight }}%
+    needs: deploy-canary
+    runs-on: ubuntu-latest
+    strategy:
+      # Sequential, not parallel -- each weight step must fully bake and
+      # pass before the next one raises real traffic exposure further.
+      max-parallel: 1
+      matrix:
+        weight: [10, 50, 100]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group ${{ env.AKS_RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER_NAME }} --overwrite-existing
+
+      - name: Set canary weight
+        run: |
+          kubectl patch ingress gateway-canary -n navigraph --type=merge \
+            -p '{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"${{ matrix.weight }}"}}}'
+          kubectl patch ingress web-canary -n navigraph --type=merge \
+            -p '{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"${{ matrix.weight }}"}}}'
+
+      - name: Port-forward Prometheus
+        run: |
+          kubectl port-forward svc/prometheus 9090:9090 -n navigraph &
+          echo "PORT_FORWARD_PID=$!" >> "$GITHUB_ENV"
+          sleep 3
+
+      - name: Bake window -- poll the real gate every 30s, up to 5 minutes, fail fast on a clear failure
+        run: |
+          set -e
+          END=$((SECONDS + 300))
+          while [ $SECONDS -lt $END ]; do
+            python3 tools/scripts/canary_gate.py --service gateway --prometheus-url http://localhost:9090
+            python3 tools/scripts/canary_gate.py --service web --prometheus-url http://localhost:9090
+            sleep 30
+          done
+
+      - name: Stop port-forward
+        if: always()
+        run: kill "$PORT_FORWARD_PID" 2>/dev/null || true
+
+      - name: Roll back on failure (weight -> 0, canary replicas -> 0)
+        if: failure()
+        run: |
+          kubectl patch ingress gateway-canary -n navigraph --type=merge -p '{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"0"}}}'
+          kubectl patch ingress web-canary -n navigraph --type=merge -p '{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"0"}}}'
+          kubectl scale deployment/gateway-canary --replicas=0 -n navigraph
+          kubectl scale deployment/web-canary --replicas=0 -n navigraph
+
+  promote:
+    name: promote canary to stable
+    needs: canary-bake
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group ${{ env.AKS_RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER_NAME }} --overwrite-existing
+
+      - name: Point *-stable at the new SHA, wait for rollout
+        run: |
+          kubectl set image deployment/gateway-stable gateway="${{ env.ACR_NAME }}.azurecr.io/navigraph-gateway:${{ github.sha }}" -n navigraph
+          kubectl set image deployment/web-stable web="${{ env.ACR_NAME }}.azurecr.io/navigraph-web:${{ github.sha }}" -n navigraph
+          kubectl rollout status deployment/gateway-stable -n navigraph --timeout=180s
+          kubectl rollout status deployment/web-stable -n navigraph --timeout=180s
+
+      - name: Return to a clean single-track steady state
+        run: |
+          kubectl scale deployment/gateway-canary --replicas=0 -n navigraph
+          kubectl scale deployment/web-canary --replicas=0 -n navigraph
+          kubectl patch ingress gateway-canary -n navigraph --type=merge -p '{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"0"}}}'
+          kubectl patch ingress web-canary -n navigraph --type=merge -p '{"metadata":{"annotations":{"nginx.ingress.kubernetes.io/canary-weight":"0"}}}'
+
+      - name: Commit the promoted SHA into overlays/dev/kustomization.yaml
+        run: |
+          set -euo pipefail
+          python3 - "$GITHUB_SHA" <<'EOF'
+          import sys
+          import re
+          from pathlib import Path
+
+          sha = sys.argv[1]
+          path = Path("infra/k8s/overlays/dev/kustomization.yaml")
+          text = path.read_text()
+          # Replace each image's newTag (currently "unreleased" or a prior
+          # promoted SHA) with the SHA just promoted -- gateway/web/agent-runtime
+          # share the same tagging scheme.
+          text = re.sub(r"(newTag:\s*).*", rf"\g<1>{sha}", text)
+          path.write_text(text)
+          EOF
+          git config user.name "navigraph-cd-bot"
+          git config user.email "cd-bot@navigraph.internal"
+          git add infra/k8s/overlays/dev/kustomization.yaml
+          git commit -m "cd: promote ${GITHUB_SHA} to gateway-stable/web-stable/agent-runtime" || echo "no changes to commit"
+          git push
+
+  rollback:
+    name: manual rollback
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.action == 'rollback' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group ${{ env.AKS_RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER_NAME }} --overwrite-existing
+
+      - name: Re-point *-stable at the requested SHA (independent of any in-flight automated run)
+        run: |
+          test -n "${{ inputs.rollback_to_sha }}"
+          kubectl set image deployment/gateway-stable gateway="${{ env.ACR_NAME }}.azurecr.io/navigraph-gateway:${{ inputs.rollback_to_sha }}" -n navigraph
+          kubectl set image deployment/web-stable web="${{ env.ACR_NAME }}.azurecr.io/navigraph-web:${{ inputs.rollback_to_sha }}" -n navigraph
+          kubectl rollout status deployment/gateway-stable -n navigraph --timeout=180s
+          kubectl rollout status deployment/web-stable -n navigraph --timeout=180s
+          kubectl scale deployment/gateway-canary --replicas=0 -n navigraph
+          kubectl scale deployment/web-canary --replicas=0 -n navigraph

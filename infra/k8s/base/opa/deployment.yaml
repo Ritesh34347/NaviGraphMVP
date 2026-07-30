@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: navigraph
+  labels:
+    app: opa
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: opa
+  template:
+    metadata:
+      labels:
+        app: opa
+    spec:
+      containers:
+        - name: opa
+          image: openpolicyagent/opa:latest
+          args:
+            - "run"
+            - "--server"
+            - "--config-file=/conf/config.yaml"
+            - "--addr=0.0.0.0:8181"
+            - "/policies"
+          ports:
+            - containerPort: 8181
+          volumeMounts:
+            # Real bug found live during Phase 10a's own kind validation:
+            # mounting the whole ConfigMap volume at /policies makes OPA's
+            # own recursive directory scan walk straight into the
+            # ConfigMap volume's internal "..data" symlink structure
+            # (Kubernetes' mechanism for atomic ConfigMap updates), finding
+            # the SAME authz.rego file three times via different symlinked
+            # paths and failing to start with "multiple default rules
+            # found". subPath resolves to a single real (non-symlinked)
+            # file, sidestepping the whole issue -- same fix already used
+            # for neo4j-conf/prometheus-config/otel-collector-config below.
+            - name: opa-policies
+              mountPath: /policies/authz.rego
+              subPath: authz.rego
+            - name: opa-conf
+              mountPath: /conf/config.yaml
+              subPath: config.yaml
+          # infra/docker-compose.yml has NO healthcheck here because the
+          # official openpolicyagent/opa image is a minimal static binary
+          # with no shell/wget/curl (Docker's exec-based HEALTHCHECK can't
+          # run inside it). Kubernetes' httpGet probe is performed by the
+          # kubelet itself over the network, not exec'd inside the
+          # container, so a real probe against OPA's own /health endpoint
+          # is possible here even though it wasn't in compose.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+      volumes:
+        - name: opa-policies
+          configMap:
+            name: opa-policies
+        - name: opa-conf
+          configMap:
+            name: opa-conf

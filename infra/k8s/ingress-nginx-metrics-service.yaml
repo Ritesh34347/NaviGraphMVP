@@ -1,0 +1,27 @@
+# Real gap found live during Phase 10a's own kind validation: the official
+# ingress-nginx kind/AKS install manifests serve Prometheus metrics on port
+# 10254 by default (--enable-metrics defaults to true), but create no
+# Service exposing it -- infra/prometheus/prometheus.k8s.yml's
+# "ingress-nginx-controller" scrape job (the real source of truth for
+# tools/scripts/canary_gate.py's promotion-gate checks) would otherwise
+# simply fail to scrape, exactly as that file's own comment warned it
+# might. This is cluster-bootstrap infrastructure, applied once alongside
+# ingress-nginx's own official manifest (see
+# docs/runbooks/k8s-local-validation.md) -- NOT part of infra/k8s/base/,
+# since it lives in the ingress-nginx namespace, not navigraph.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingress-nginx-controller-metrics
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/part-of: ingress-nginx
+spec:
+  selector:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+  ports:
+    - name: metrics
+      port: 10254
+      targetPort: 10254

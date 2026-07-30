@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-stable
+  namespace: navigraph
+  labels:
+    app: web
+    track: stable
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+      track: stable
+  template:
+    metadata:
+      labels:
+        app: web
+        track: stable
+    spec:
+      containers:
+        - name: web
+          image: navigraph-web:unset
+          ports:
+            - containerPort: 3000
+          env:
+            # Server-side only -- deliberately ALWAYS gateway-stable, never
+            # gateway-canary, so an in-flight gateway canary rollout can
+            # never break SSR page renders for users who never opted into
+            # it via a direct browser call. NEXT_PUBLIC_GATEWAY_URL (the
+            # browser-side URL, which DOES see canary traffic) is baked
+            # into this image at build time -- see web/Dockerfile's
+            # NEXT_PUBLIC_GATEWAY_URL build-arg -- not a runtime env var,
+            # since Next.js inlines NEXT_PUBLIC_* vars at `next build` time.
+            - name: GATEWAY_URL
+              value: http://gateway-stable.navigraph.svc.cluster.local:8000
+          # Real bug found live during Phase 10a's own kind validation:
+          # the root page (src/app/page.tsx) does a server-side fetch to
+          # GATEWAY_URL with its own internal AbortSignal.timeout(3000) --
+          # but Kubernetes' httpGet probe defaults to a 1-second
+          # timeoutSeconds, guaranteeing failures whenever that fetch takes
+          # anywhere in the (very plausible) 1-3s range, causing a
+          # CrashLoopBackOff on an app that was actually rendering fine.
+          # timeoutSeconds here must comfortably exceed the app's own
+          # worst-case internal timeout.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

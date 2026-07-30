@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-canary
+  namespace: navigraph
+  labels:
+    app: gateway
+    track: canary
+spec:
+  # Fixed at 2, not scaled with traffic weight -- NGINX's canary-weight
+  # annotation controls the request PERCENTAGE independently of replica
+  # count on either side. Scaled to 0 only when no rollout is in flight
+  # (infra/k8s's steady state) or when tools/scripts/canary_gate.py's
+  # automated rollback fires.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+      track: canary
+  template:
+    metadata:
+      labels:
+        app: gateway
+        track: canary
+    spec:
+      containers:
+        - name: gateway
+          # Overridden per-overlay via Kustomize's images: transformer, and
+          # imperatively via `kubectl set image` mid-rollout by
+          # .github/workflows/cd-deploy.yml -- this track's tag is
+          # deliberately NEVER git-tracked, unlike gateway-stable's.
+          image: navigraph-gateway:unset
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: navigraph-app-env
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

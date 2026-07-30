@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: navigraph
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:latest
+          args: ["--config=/etc/otel-collector-config.yaml"]
+          ports:
+            - containerPort: 4317
+            - containerPort: 4318
+            - containerPort: 8889
+            - containerPort: 13133
+          volumeMounts:
+            - name: otel-collector-config
+              mountPath: /etc/otel-collector-config.yaml
+              subPath: otel-collector-config.yaml
+          # infra/docker-compose.yml has NO healthcheck here because Docker's
+          # HEALTHCHECK directive requires exec-ing a binary inside the
+          # container, and this scratch image has no shell/wget/curl at all.
+          # Kubernetes' httpGet probe is performed by the kubelet itself over
+          # the network, not exec'd inside the container -- so a real
+          # readiness/liveness probe against the health_check extension
+          # (port 13133, already enabled in the real
+          # infra/otel/otel-collector-config.yaml) is possible here even
+          # though it wasn't in compose.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: otel-collector-config
+          configMap:
+            name: otel-collector-config

@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-canary
+  namespace: navigraph
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/canary: "true"
+    # Steady-state default -- 0% canary traffic. Patched to "10"/"50"/"100"
+    # mid-rollout by .github/workflows/cd-deploy.yml, reset back to "0" on
+    # promotion or rollback. Must share the exact same host+path as
+    # base/ingress-gateway.yaml for NGINX to merge the two into one
+    # weighted backend set.
+    nginx.ingress.kubernetes.io/canary-weight: "0"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.navigraph.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-canary
+                port:
+                  number: 8000

@@ -38,3 +38,8 @@ output "entra_app_client_id" {
   description = "Application (client) ID of the dev Azure AD app registration."
   value       = module.entra_app_registration.client_id
 }
+
+output "aks_key_vault_secrets_provider_client_id" {
+  description = "Client ID of the AKS-managed Key Vault Secrets Store CSI driver addon identity -- used by infra/k8s/overlays/dev's SecretProviderClass resources' userAssignedIdentityID parameter."
+  value       = module.aks.key_vault_secrets_provider_client_id
+}

@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: neo4j
+  namespace: navigraph
+  labels:
+    app: neo4j
+spec:
+  serviceName: neo4j
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neo4j
+  template:
+    metadata:
+      labels:
+        app: neo4j
+    spec:
+      containers:
+        - name: neo4j
+          image: neo4j:5-community
+          ports:
+            - name: http
+              containerPort: 7474
+            - name: bolt
+              containerPort: 7687
+          env:
+            # Real bug found live during Phase 10a's own kind validation:
+            # the official neo4j image's entrypoint auto-translates EVERY
+            # NEO4J_* env var into a neo4j.conf setting (e.g.
+            # NEO4J_dbms_memory_heap_max__size -> dbms.memory.heap.max_size)
+            # -- a plain NEO4J_PASSWORD var (needed for the $(VAR)
+            # composition below) got mistranslated into an invalid,
+            # single-word "PASSWORD" setting, and neo4j refused to start
+            # under strict config validation. NAVIGRAPH_NEO4J_PASSWORD
+            # (deliberately NOT prefixed "NEO4J_") holds the one real
+            # secret value (from Key Vault in overlays/dev, from a manual
+            # `kubectl create secret` in overlays/kind) untouched by that
+            # auto-translation; NEO4J_AUTH is composed from it via
+            # Kubernetes' own $(VAR) env-value interpolation -- matching
+            # infra/docker-compose.yml's identical
+            # `NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}` shape without needing
+            # to store an already-composed credential string anywhere.
+            - name: NAVIGRAPH_NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: neo4j-secrets
+                  key: NEO4J_PASSWORD
+            - name: NEO4J_AUTH
+              value: neo4j/$(NAVIGRAPH_NEO4J_PASSWORD)
+          volumeMounts:
+            - name: neo4j-data
+              mountPath: /data
+            - name: neo4j-conf
+              mountPath: /conf/neo4j.conf
+              subPath: neo4j.conf.local
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7474
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 7474
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 2Gi
+      volumes:
+        - name: neo4j-conf
+          configMap:
+            name: neo4j-conf
+  volumeClaimTemplates:
+    - metadata:
+        name: neo4j-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: managed-csi
+        resources:
+          requests:
+            storage: 10Gi

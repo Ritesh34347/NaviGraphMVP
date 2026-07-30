@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: navigraph-app-env
+  namespace: navigraph
+data:
+  POSTGRES_HOST: postgres.navigraph.svc.cluster.local

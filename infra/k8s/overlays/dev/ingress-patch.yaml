@@ -1,0 +1,44 @@
+# REPLACE_AFTER_APPLY: <domain> below is a placeholder -- no real domain
+# name has been decided yet (see the Phase 10 plan's judgment call #1).
+# Before Phase 10b's cluster bootstrap, either supply a real domain here
+# (and point its DNS at the real ingress-nginx LoadBalancer IP) or replace
+# both hosts with a temporary nip.io-style hostname
+# (api.<lb-ip>.nip.io / app.<lb-ip>.nip.io) -- either way, ssl-redirect
+# stays "false" and no cert-manager annotation is added until a real,
+# stable hostname exists for Let's Encrypt's HTTP01 challenge to validate
+# against.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: navigraph
+spec:
+  rules:
+    - host: app.navigraph.REPLACE_AFTER_APPLY_DOMAIN
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-canary
+  namespace: navigraph
+spec:
+  rules:
+    - host: app.navigraph.REPLACE_AFTER_APPLY_DOMAIN
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  namespace: navigraph
+spec:
+  rules:
+    - host: api.navigraph.REPLACE_AFTER_APPLY_DOMAIN
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-canary
+  namespace: navigraph
+spec:
+  rules:
+    - host: api.navigraph.REPLACE_AFTER_APPLY_DOMAIN

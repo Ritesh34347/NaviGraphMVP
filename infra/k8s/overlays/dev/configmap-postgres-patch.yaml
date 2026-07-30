@@ -1,0 +1,12 @@
+# REPLACE_AFTER_APPLY: real value is Terraform's `postgres_fqdn` output
+# (terraform output -raw postgres_fqdn in terraform/environments/dev),
+# only known after Phase 10b's real terraform apply.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: navigraph-app-env
+  namespace: navigraph
+data:
+  POSTGRES_HOST: REPLACE_AFTER_APPLY_POSTGRES_FQDN
+  POSTGRES_USER: navigraphadmin
+  POSTGRES_DB: navigraph

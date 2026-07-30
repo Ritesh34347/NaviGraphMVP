@@ -11,6 +11,15 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
+# NEXT_PUBLIC_* vars are inlined into the client bundle at `next build`
+# time -- unlike GATEWAY_URL (server-side, read at runtime from a real
+# process.env, see src/lib/env.ts), NEXT_PUBLIC_GATEWAY_URL cannot be a
+# runtime ConfigMap value in infra/k8s/. Phase 10's CD workflow passes the
+# real public hostname here at image-build time
+# (--build-arg NEXT_PUBLIC_GATEWAY_URL=https://api.navigraph.<domain>);
+# local/compose builds fall back to src/lib/env.ts's own default.
+ARG NEXT_PUBLIC_GATEWAY_URL
+ENV NEXT_PUBLIC_GATEWAY_URL=$NEXT_PUBLIC_GATEWAY_URL
 # next.config.ts sets `output: "standalone"`, so this produces a pruned,
 # self-contained server bundle in .next/standalone.
 RUN npm run build

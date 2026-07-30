@@ -1,0 +1,27 @@
+# Mounting the CSI volume is what actually triggers the Key Vault Secrets
+# Store CSI driver to sync agent-runtime-kv's secretObjects into the real
+# agent-runtime-secrets Kubernetes Secret that base/agent-runtime/deployment.yaml's
+# envFrom already references -- without this volume mount, the
+# SecretProviderClass resource exists but nothing ever asks the CSI driver
+# to act on it, and agent-runtime-secrets never gets created.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-runtime
+  namespace: navigraph
+spec:
+  template:
+    spec:
+      containers:
+        - name: agent-runtime
+          volumeMounts:
+            - name: agent-runtime-kv
+              mountPath: /mnt/secrets-store
+              readOnly: true
+      volumes:
+        - name: agent-runtime-kv
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: agent-runtime-kv

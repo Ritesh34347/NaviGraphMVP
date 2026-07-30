@@ -1,0 +1,100 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Real bug found live during Phase 10a's own kind validation: without this,
+# Kustomize's configMapGenerator-produced ConfigMaps (below) have no
+# explicit metadata.namespace field at all, so `kubectl apply` silently
+# placed them in the CURRENT CONTEXT's default namespace instead of
+# navigraph -- every hand-written resource above already declares
+# `namespace: navigraph` explicitly, which is why only the 8 generated
+# ConfigMaps were affected. This transformer stamps `navigraph` onto every
+# namespaced resource in the build output (Kustomize's built-in
+# resource-scope knowledge correctly skips the cluster-scoped Namespace
+# resource itself), making the explicit per-resource `namespace:` fields
+# above technically redundant but harmless -- kept for clarity/defense in
+# depth rather than removed.
+namespace: navigraph
+
+resources:
+  - namespace.yaml
+  - configmap-app-env.yaml
+  - gateway/deployment-stable.yaml
+  - gateway/deployment-canary.yaml
+  - gateway/service-stable.yaml
+  - gateway/service-canary.yaml
+  - web/deployment-stable.yaml
+  - web/deployment-canary.yaml
+  - web/service-stable.yaml
+  - web/service-canary.yaml
+  - agent-runtime/deployment.yaml
+  - agent-runtime/service.yaml
+  - neo4j/statefulset.yaml
+  - neo4j/service.yaml
+  - redis/deployment.yaml
+  - redis/service.yaml
+  - otel-collector/deployment.yaml
+  - otel-collector/service.yaml
+  - prometheus/pvc.yaml
+  - prometheus/deployment.yaml
+  - prometheus/service.yaml
+  - grafana/pvc.yaml
+  - grafana/deployment.yaml
+  - grafana/service.yaml
+  - opa/deployment.yaml
+  - opa/service.yaml
+  - ingress-web.yaml
+  - ingress-web-canary.yaml
+  - ingress-gateway.yaml
+  - ingress-gateway-canary.yaml
+  - networkpolicy-default-deny.yaml
+  - networkpolicy-allow.yaml
+
+# Every ConfigMap here is generated directly from the real, existing config
+# files under infra/ -- never a duplicated copy -- so infra/docker-compose.yml
+# and infra/k8s/ always read the exact same policy/dashboard/collector config.
+# disableNameSuffixHash: true keeps each ConfigMap's name stable (no
+# content-hash suffix) so base manifests can reference a fixed name like
+# "neo4j-conf" directly, at the cost of losing Kustomize's automatic
+# rolling-restart-on-config-change behavior -- an acceptable tradeoff here
+# since these config files change rarely and any change ships through the
+# same CD pipeline that already rolls the app Deployments.
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: neo4j-conf
+    files:
+      - ../../neo4j/conf/neo4j.conf.local
+  - name: otel-collector-config
+    files:
+      - ../../otel/otel-collector-config.yaml
+  - name: prometheus-config
+    files:
+      - ../../prometheus/prometheus.k8s.yml
+  - name: grafana-provisioning-dashboards
+    files:
+      - ../../grafana/provisioning/dashboards/dashboards.yml
+  - name: grafana-provisioning-datasources
+    files:
+      - ../../grafana/provisioning/datasources/prometheus.yml
+  - name: grafana-dashboards
+    files:
+      - ../../grafana/dashboards/request-latency.json
+      - ../../grafana/dashboards/system-health.json
+  - name: opa-policies
+    files:
+      - ../../opa/policies/authz.rego
+  - name: opa-conf
+    files:
+      - ../../opa/conf/config.yaml
+
+images:
+  - name: navigraph-gateway
+    newName: navigraph-gateway
+    newTag: unset
+  - name: navigraph-agent-runtime
+    newName: navigraph-agent-runtime
+    newTag: unset
+  - name: navigraph-web
+    newName: navigraph-web
+    newTag: unset

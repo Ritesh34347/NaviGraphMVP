@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-stable
+  namespace: navigraph
+  labels:
+    app: gateway
+    track: stable
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway
+      track: stable
+  template:
+    metadata:
+      labels:
+        app: gateway
+        track: stable
+    spec:
+      containers:
+        - name: gateway
+          # Overridden per-overlay via Kustomize's images: transformer --
+          # this base tag is a deliberate placeholder, never meant to run.
+          image: navigraph-gateway:unset
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: navigraph-app-env
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

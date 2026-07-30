@@ -746,3 +746,92 @@ above. See `LIMITATIONS.md` item 44 for the full breakdown, including two
 still-correct PII rejections and a live confirmation of the already-logged
 `DataSourceDiscoveryAgent` first-match ambiguity (item 26) -- neither new,
 neither fixed here.
+
+## 2026-07-30 — Phase 10a: real Kubernetes manifests, a real weighted-canary CD pipeline, and real adversarial cloud security tests -- all built and proven with zero Azure cost
+
+Split Phase 10 ("real AKS deployment, GitOps CD, canary rollout, security
+review") into two hard-gated sub-phases: **10a**, fully buildable and
+verifiable now with zero Azure credentials, and **10b**, real Azure --
+gated on the user explicitly providing real subscription/credentials,
+which has not happened yet (see `DECISIONS.md`). Resolved four real
+architecture forks with the user via `AskUserQuestion` before writing any
+manifests: Kustomize over Helm, push-based CD over ArgoCD/Flux, NGINX
+Ingress canary annotations over a service mesh, Trino excluded from the
+cloud deployment / Redis staying self-hosted in AKS.
+
+Built: `infra/k8s/base/` (Kustomize manifests for every real
+docker-compose service except Trino -- gateway/web as permanent
+stable/canary Deployment+Service pairs, agent-runtime as a plain rolling
+update, neo4j as a real `StatefulSet` with `volumeClaimTemplates`, real
+`NetworkPolicy` default-deny-all + explicit per-service allows) and two
+overlays (`kind`, zero Azure, an ephemeral in-cluster Postgres; `dev`, real
+AKS, Key Vault CSI-synced secrets, real Postgres Flexible Server FQDN).
+Two small, targeted Terraform additions (`key_vault_secrets_provider`,
+`network_profile { network_policy = "azure" }` on the `aks` module, plus
+new `azurerm_role_assignment` resources) -- `terraform validate` clean,
+never applied. `tools/scripts/canary_gate.py` (real Prometheus-query-based
+promotion gate: 5xx rate, error-rate ratio, p95 latency ratio, all
+verified against realistic mocked Prometheus responses before trusting
+it). Three new GitHub Actions workflows:
+`.github/workflows/cd-deploy.yml` (build+push to ACR, weighted
+10%/50%/100% canary rollout with automated rollback, promotion, and a
+manual rollback escape hatch), `.github/workflows/k8s-manifests-ci.yml`
+(the real `kind` validation sequence below, run on every PR touching
+`infra/k8s/**`), `.github/workflows/cloud-security-tests.yml` (re-points
+the existing `tests/security/` OPA suite at real deployed OPA, runs the
+new `tests/security/cloud/` suite -- both gated on real Azure credentials
+existing, same as `terraform-plan.yml`'s `plan` job).
+
+**Real bugs found and fixed while building, before ever touching a
+cluster**: `AGENT_RUNTIME_URL` was a dead, never-read env var since Phase
+1 (`GatewaySettings` actually reads `AGENT_RUNTIME_BASE_URL`) -- fixed in
+both `docker-compose.yml` and the new K8s ConfigMap. Terraform's Postgres
+Flexible Server module never created the real application database (only
+the server's own default `postgres` DB existed) -- fixed with a new
+`azurerm_postgresql_flexible_server_database` resource.
+
+**Real bugs found and fixed by actually deploying to a live local `kind`
+cluster** (six of them, full detail in
+`docs/runbooks/k8s-local-validation.md`): a `storageClassName` naming
+mismatch (`managed-csi` doesn't exist in `kind`) left three PVCs `Pending`
+forever with no error; `configMapGenerator`-produced ConfigMaps silently
+landed in the wrong namespace (fixed with a top-level `namespace:`
+transformer); OPA failed to start because mounting a whole ConfigMap
+directory made its own recursive scan walk into the volume's `..data`
+symlink structure and find the same rego file three times (fixed via
+`subPath` mounts); `web` pods `CrashLoopBackOff`'d because Kubernetes'
+1-second default probe timeout raced against the app's own real 3-second
+internal gateway-fetch timeout; the official neo4j image auto-translated
+a plain `NEO4J_PASSWORD` env var into an invalid config setting (fixed by
+renaming it to deliberately not start with `NEO4J_`); and a Kustomize
+patch touching only one PVC-template field silently dropped the other
+required ones (`volumeClaimTemplates` doesn't get the same field-level
+merge as `containers`/`volumes`).
+
+**Real, live proof after every fix**: all 18 pods `Running`/`Ready`; real
+HTTP 200s through the real `ingress-nginx` controller for both `gateway`
+and `web`; and -- the highest-risk new mechanism in the whole design --
+a real weighted-canary run showing a marker-bearing v2 image in 26/200
+requests (~13%) against a configured 10% weight, real proof NGINX's
+canary-weight annotation actually performs proportional traffic splitting,
+not an assumption. One local-only finding (`agent-runtime` briefly
+unreachable from other pods over `kind`'s network, while an
+architecturally identical path worked fine at the same time) was
+investigated thoroughly enough to rule out an application or manifest bug
+before being logged as a `kind`/Docker-Desktop-specific environment quirk
+(`LIMITATIONS.md` item 49), not chased further.
+
+Also built: `tests/security/cloud/` (6 new adversarial test files --
+network policy isolation with a positive control, secret-provider
+scoping, RBAC least-privilege, AKS API server exposure, ACR privacy,
+ingress TLS), all collecting cleanly under pytest, ruff- and
+mypy-clean. During implementation, deviated from the original technical
+design's shared-Secret-name proposal in favor of real per-service Secret
+names (`agent-runtime-secrets`/`neo4j-secrets`/`grafana-secrets`) -- a
+genuine improvement, not a compromise, logged in `DECISIONS.md` and
+`LIMITATIONS.md` item 50.
+
+**Phase 10b (real Azure) has not started** -- it requires the user to
+explicitly provide real Azure credentials first, per this project's
+established discipline (Snowflake/Anthropic credentials were always
+provided directly in chat, never guessed).

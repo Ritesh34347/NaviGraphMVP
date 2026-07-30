@@ -921,3 +921,179 @@ coherent event (this phase's first live orchestrator run), logged
 together rather than fragmented. None of the low-scoring questions are
 fixed here; they are the real signal a real harness run against a real
 orchestrator was built to produce.
+
+### 45. `AGENT_RUNTIME_URL` was a dead env var since Phase 1 — found and fixed in Phase 10
+
+**What was wrong**: `infra/docker-compose.yml`'s `gateway` service set
+`AGENT_RUNTIME_URL`, but `GatewaySettings.agent_runtime_base_url` actually
+maps to `AGENT_RUNTIME_BASE_URL` (pydantic-settings uppercases the field
+name) — the compose env var was silently never read, "working" only
+because its default value happened to equal the intended one.
+
+**Why it wasn't caught until now**: nothing ever set
+`AGENT_RUNTIME_BASE_URL` to a DIFFERENT value than the default, so the
+mismatch had zero observable effect until Phase 10 needed the exact same
+config wired correctly into `infra/k8s/base/configmap-app-env.yaml`.
+
+**Fix**: renamed to `AGENT_RUNTIME_BASE_URL` in both
+`infra/docker-compose.yml` and the new K8s ConfigMap.
+
+### 46. Terraform's Postgres Flexible Server module never created the real application database — found and fixed in Phase 10
+
+**What was wrong**: `terraform/modules/postgres-flexible-server` created
+only the server resource itself, leaving just its default `postgres`
+database — every real `POSTGRES_DB=navigraph` connection
+(`navigraph_catalog`, `navigraph_lineage`) would have failed against a
+real, newly-applied server.
+
+**Fix**: added a real `azurerm_postgresql_flexible_server_database`
+resource (new `database_name` variable, default `"navigraph"`) to the
+module. `terraform validate` confirmed clean; never applied.
+
+### 47. Kustomize's default file-load sandbox required the standalone `kustomize` CLI, not plain `kubectl apply -k`
+
+**What's deferred**: nothing — this is a real, resolved constraint, logged
+so a future reader doesn't reach for `kubectl apply -k` directly and get a
+confusing "file is not in or below" error.
+
+**Why**: `infra/k8s/base/kustomization.yaml`'s `configMapGenerator`
+entries deliberately pull real config directly from `infra/opa/`,
+`infra/neo4j/`, `infra/prometheus/`, `infra/grafana/` (a single source of
+truth, never duplicated into `infra/k8s/`) — but those paths are outside
+`base/`'s own directory, which Kustomize's default security sandbox
+(`LoadRestrictionsRootOnly`) forbids. `kubectl`'s embedded Kustomize
+support has no flag to relax this; only the standalone `kustomize` CLI's
+`--load-restrictor LoadRestrictionsNone` does.
+
+**What full version requires**: nothing further — every real invocation
+(`.github/workflows/{cd-deploy,k8s-manifests-ci}.yml`, `docs/runbooks/k8s-local-validation.md`)
+already uses the standalone binary with this flag.
+
+### 48. Real K8s manifest bugs found and fixed only by actually running a live `kind` cluster
+
+**What was found**: six genuine, load-bearing bugs (PVC `storageClassName`
+mismatch, `configMapGenerator` resources landing in the wrong namespace,
+OPA's recursive directory scan hitting ConfigMap symlink duplication, a
+probe-timeout/app-timeout race causing `web` `CrashLoopBackOff`, the
+official neo4j image auto-translating a plain `NEO4J_PASSWORD` env var
+into an invalid config setting, and a Kustomize patch silently dropping
+required PVC fields) — none of which would have been caught by `terraform
+validate`, `kustomize build`, or reading the YAML, only by actually
+deploying to a real (if local) cluster and watching pods fail. Full
+detail and fixes in `docs/runbooks/k8s-local-validation.md`'s "Real bugs
+found and fixed" section.
+
+**Why this matters beyond the fixes themselves**: it's the concrete,
+lived reason Phase 10a's plan insisted on a real `kind` validation step
+before ever touching Azure — `terraform validate`/`kustomize build`
+succeeding is necessary but nowhere near sufficient evidence a K8s
+deployment actually works.
+
+### 49. A local, environment-specific `kind`/Docker-Desktop networking quirk (not a manifest defect)
+
+**What was found**: during local `kind` validation, `agent-runtime` pods
+became genuinely unreachable from every other pod over the real cluster
+network (a fresh, unrelated debug pod also failed to reach it), while: the
+app responded correctly on `localhost` from inside its own pod; kubelet's
+own httpGet probes against the same pod IP succeeded continuously; and an
+architecturally identical pod-to-pod path
+(`ingress-nginx-controller` → `gateway-stable`/`web-stable`) worked
+correctly at the same time. Restarting the affected pods did not resolve
+it; Docker resource usage was not elevated.
+
+**Why this is logged as a limitation, not silently worked around**: this
+strongly points at a `kindnet`-on-Windows/Docker-Desktop/WSL2-specific
+pod-routing flake — real AKS uses Azure CNI on real Linux nodes, an
+entirely different networking stack, so this has no reason to recur in
+Phase 10b. It is logged rather than chased further because continuing to
+debug a local-only environment quirk would not have improved the actual
+deliverable (the K8s manifests themselves, which were separately,
+thoroughly proven correct via the ingress/canary tests). See
+`docs/runbooks/k8s-local-validation.md`'s own note on this for
+troubleshooting if it recurs.
+
+**What full version requires**: nothing from this codebase — if this
+recurs during a future local validation session, try recreating the
+affected pods or the whole `kind` cluster; if it ever reproduces against
+real AKS in Phase 10b, that would be a genuinely new, real finding
+worth its own investigation, not a repeat of this one.
+
+### 50. Secret scoping is genuinely per-service, not just apparent — a design improvement over the original technical plan
+
+**What's resolved, not deferred**: the original Phase 10 technical design
+(from the Plan agent's initial draft) proposed one shared
+`navigraph-app-secrets` Kubernetes `Secret` name synced by every
+`SecretProviderClass`, which would have made real per-service secret
+scoping impossible (multiple `SecretProviderClass` resources all writing
+to the same Secret object name would stomp on each other, and any pod
+reading that Secret could see every other service's values). The actual
+implementation instead gives each service its own Secret name
+(`agent-runtime-secrets`, `neo4j-secrets`, `grafana-secrets`), and
+`gateway`/`web` (which need zero secret values) get no
+`SecretProviderClass` or CSI volume at all.
+
+**Why this is logged**: `tests/security/cloud/test_secret_provider_scoping.py`
+was originally anticipated (by the initial technical design) to find and
+report a real scoping gap — instead it's real, passing proof the scoping
+already works correctly. Logged here so the discrepancy between the
+original design narrative and the actual implementation is explicit, not
+silently absorbed.
+
+**Real, still-open caveat**: all `SecretProviderClass` resources in
+`overlays/dev` share ONE AKS-managed addon identity (the
+`key_vault_secrets_provider` addon), not per-pod Azure Workload Identity
+federation. The real isolation boundary is therefore "which secret names
+each `SecretProviderClass` declares" (which IS correctly scoped, per
+above), not a hard per-pod Azure-identity wall — anyone who can create or
+modify a `SecretProviderClass`/`Pod` in the `navigraph` namespace could, in
+principle, declare a new one requesting a different service's secret
+names. This ties directly into item 51's RBAC gap below, not a separate
+hole.
+
+### 51. No AAD-integrated Kubernetes RBAC in `dev` — a real, deliberate scope limit
+
+**What's deferred**: namespace-scoped Kubernetes RBAC tied to real Azure
+AD identities. `terraform/modules/aks` has no
+`azure_active_directory_role_based_access_control` block — the cluster
+uses local Kubernetes accounts, so once any identity can fetch a
+kubeconfig at all (granted via the real `Azure Kubernetes Service Cluster
+User Role` `azurerm_role_assignment` this phase added for the CI service
+principal), it is effectively cluster-admin.
+
+**Why**: real AAD-integrated K8s RBAC is a meaningfully larger scope
+addition (Azure AD group-to-Kubernetes-Role bindings, a real access review
+process) than Phase 10's stated deployment-mechanics goal. Deferring it
+here mirrors this project's existing precedent of naming a real gap
+rather than silently working around it (see item 23's identical framing
+for gateway-level Azure AD token verification).
+
+**What full version requires**: a real AAD-integrated RBAC design, plus a
+decision on which real Azure AD groups map to which Kubernetes Roles —
+not yet started. `tests/security/cloud/test_rbac_least_privilege.py`
+proves and documents this exact gap against the real live cluster rather
+than assuming it, and is EXPECTED to keep passing (i.e. keep finding
+`cluster-admin`-equivalent access) until this is addressed — a future
+passing-differently result there is the correct signal to revisit this
+item, not a test regression to chase.
+
+### 52. Trino excluded from the cloud deployment; domain/TLS and node sizing left as placeholders
+
+**What's deferred**: Trino is fully built, unit-tested, and still the
+non-default execution route (see items 3/19) — Phase 10's real AKS
+deployment deliberately excludes it entirely (confirmed with the user)
+to avoid real Azure cost/attack-surface for a route nothing actually uses
+yet. It remains fully available in local `docker-compose` for continued
+dev/testing of the route itself.
+
+**Also still open, flagged rather than guessed**: no real domain name has
+been decided yet — `overlays/dev/ingress-patch.yaml` uses a
+`REPLACE_AFTER_APPLY_DOMAIN` placeholder, and cert-manager/Let's Encrypt
+setup is deferred until a real, DNS-resolvable hostname exists (Let's
+Encrypt's HTTP01 challenge cannot validate a placeholder domain). AKS node
+sizing/region are kept at the existing Terraform defaults (2×
+`Standard_D2s_v5`, `eastus`) pending explicit confirmation before Phase
+10b's real `terraform apply`.
+
+**What full version requires**: the user supplying a real domain (or
+confirming a temporary `nip.io`-style scheme is acceptable) and confirming
+node sizing/region, both before Phase 10b's cluster bootstrap step.
