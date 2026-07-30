@@ -81,6 +81,7 @@ class AnthropicLLMClient(LLMClient):
         *,
         api_key: str | None = None,
         model: str | None = None,
+        http_client: Any | None = None,
     ) -> None:
         # Imported lazily so importing this module never requires the
         # `anthropic` package to be installed unless this class is actually
@@ -88,8 +89,14 @@ class AnthropicLLMClient(LLMClient):
         import anthropic
 
         self._model = model or os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5")
+        # `http_client` (an `httpx.AsyncClient`) is injectable for tests only
+        # -- mirrors `navigraph_shared.opa.client.HttpOpaClient`'s identical
+        # `transport` injection point, letting real-response-parsing logic
+        # be tested against a real `httpx.MockTransport` rather than
+        # monkeypatched internals. Never set in real production use.
         self._client = anthropic.AsyncAnthropic(
             api_key=api_key or os.environ.get("ANTHROPIC_API_KEY") or None,
+            http_client=http_client,
         )
 
     async def complete(
@@ -99,7 +106,44 @@ class AnthropicLLMClient(LLMClient):
         messages: list[dict[str, Any]],
         max_tokens: int = 1024,
     ) -> LLMResponse:
-        response = await self._client.messages.create(
+        response = await self._create(system=system, messages=messages, max_tokens=max_tokens)
+        text = self._extract_text(response)
+
+        if not text.strip():
+            # REAL BUG, found live against a real model (see
+            # LIMITATIONS.md's grounded-narrative-generation entry): the
+            # live API occasionally returns a genuine HTTP 200 response --
+            # real `usage`/`stop_reason`, no error -- but zero real `text`
+            # content blocks, confirmed by inspecting the raw response
+            # directly (not just an unparseable string downstream). Every
+            # real case observed resolved on a single identical retry (the
+            # exact same prompt produced a real, well-formed response the
+            # second time), so this is treated as a transient completion
+            # glitch, not a structural prompt problem -- exactly one retry
+            # is attempted before giving up and returning whatever the
+            # second attempt produced (even if still empty) to the
+            # caller's own existing malformed-response handling, which
+            # already degrades gracefully rather than crashing.
+            response = await self._create(
+                system=system, messages=messages, max_tokens=max_tokens
+            )
+            text = self._extract_text(response)
+
+        return LLMResponse(
+            text=text,
+            tokens_input=response.usage.input_tokens,
+            tokens_output=response.usage.output_tokens,
+            model=response.model,
+        )
+
+    async def _create(
+        self,
+        *,
+        system: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+    ) -> Any:
+        return await self._client.messages.create(
             model=self._model,
             max_tokens=max_tokens,
             system=system,
@@ -110,15 +154,10 @@ class AnthropicLLMClient(LLMClient):
             messages=cast("list[MessageParam]", messages),
         )
 
+    @staticmethod
+    def _extract_text(response: Any) -> str:
         text_parts = [block.text for block in response.content if block.type == "text"]
-        text = "".join(text_parts)
-
-        return LLMResponse(
-            text=text,
-            tokens_input=response.usage.input_tokens,
-            tokens_output=response.usage.output_tokens,
-            model=response.model,
-        )
+        return "".join(text_parts)
 
 
 class FakeLLMClient(LLMClient):
