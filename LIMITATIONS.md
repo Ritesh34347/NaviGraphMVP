@@ -1869,3 +1869,40 @@ permission, a stale federated-credential subject format, a
 never-actually-redeployed `agent-runtime`, and a real node-capacity
 rollout hang -- to a fully real, fully automatic, fully verified CD
 pipeline, proven end to end against live Azure infrastructure.
+
+### 72. RESOLVED: `promote`'s bot-commit push failed whenever any other real commit landed on `main` during a CD run's bake window
+
+**What was found**: this happened for real, twice, for two different
+reasons. The first time (item 71) was a benign artifact of manually
+re-dispatching a commit a push had already triggered a deploy for. The
+second time was a genuinely ordinary scenario: an unrelated, real
+`LIMITATIONS.md` documentation commit was pushed to `main` while a
+separate, real CD run (deploying the empty-response retry fix) was still
+in its ~20-minute build+bake window -- `promote`'s bot-commit step
+checked out `main` at the *start* of that window, so by the time it tried
+to push its own commit at the *end*, the remote had moved and the push
+was rejected (`! [rejected] main -> main (fetch first)`). Confirmed the
+live cluster was unaffected both times: `kubectl set image`/scale/patch
+all run in earlier steps of the same job and had already succeeded --
+only the git-tracked `newTag` bookkeeping was left stale.
+
+**Why this was worth fixing properly this time**: item 71's original
+note treated this as a testing artifact not worth fixing. The second
+occurrence proved that framing wrong -- any ordinary push to `main`
+during a live CD run's real ~20-minute duration will reproduce this, and
+that's a realistic, recurring pattern for a repo with more than one
+person (or one person doing more than one thing) pushing to `main`.
+
+**Resolution**: `promote`'s commit step now retries the push up to 5
+times, `git fetch origin main && git rebase origin/main` between
+attempts, before giving up. The commit's own edit (a deterministic
+"set `newTag` to the promoted SHA" regex substitution on one file) rebases
+cleanly against unrelated changes elsewhere in the repo; a real
+conflict here would mean two promotions racing for the same file, bounded
+at 5 attempts rather than retried forever. The stale `newTag` values left
+by this specific failure were also corrected manually to match the
+already-correct live cluster state, keeping git and the cluster in sync
+without waiting for the next real deploy.
+
+**What full version requires**: nothing further planned -- verify on the
+next real CD run that a concurrent push no longer breaks `promote`.

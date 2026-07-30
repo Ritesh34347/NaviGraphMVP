@@ -282,7 +282,32 @@ jobs:
           git config user.email "cd-bot@navigraph.internal"
           git add infra/k8s/overlays/dev/kustomization.yaml
           git commit -m "cd: promote ${GITHUB_SHA} to gateway-stable/web-stable/agent-runtime" || echo "no changes to commit"
-          git push
+
+          # REAL BUG, found live twice: this push was rejected
+          # ("! [rejected] main -> main (fetch first)") whenever ANY other
+          # commit landed on main during this run's build+bake window
+          # (which can take 20+ minutes) -- not just a duplicate CD
+          # dispatch, but any ordinary, unrelated push (e.g. a docs-only
+          # commit) racing against this job's now-stale checkout. The
+          # live cluster's kubectl set image/scale/patch steps above
+          # already succeeded by this point regardless, so a failure here
+          # only left the git-tracked newTag stale, not the cluster --
+          # but it's still worth fixing rather than leaving a real,
+          # recurring failure mode. Rebase onto the latest origin/main and
+          # retry the push -- this one-file, deterministic "set newTag to
+          # X" edit rebases cleanly against unrelated changes; a real
+          # conflict here would mean two promotions racing for real,
+          # bounded at 5 attempts rather than retried forever.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}/5) -- rebasing onto latest origin/main and retrying"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "::error::failed to push the promoted-SHA commit after 5 attempts"
+          exit 1
 
   rollback:
     name: manual rollback
