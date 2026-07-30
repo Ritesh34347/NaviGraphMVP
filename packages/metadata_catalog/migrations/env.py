@@ -28,8 +28,14 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Build the real DB URL from env-derived settings rather than whatever
-# (blank) value is in alembic.ini.
-config.set_main_option("sqlalchemy.url", MetadataCatalogSettings().sqlalchemy_url)
+# (blank) value is in alembic.ini. ConfigParser (which backs alembic's
+# Config object) treats a bare "%" as the start of an interpolation
+# token, so any URL whose password happens to contain "%" (a real,
+# perfectly valid password character) raises "invalid interpolation
+# syntax" unless literal percents are escaped as "%%" first.
+config.set_main_option(
+    "sqlalchemy.url", MetadataCatalogSettings().sqlalchemy_url.replace("%", "%%")
+)
 
 
 def run_migrations_offline() -> None:

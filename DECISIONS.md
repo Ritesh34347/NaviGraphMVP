@@ -831,3 +831,27 @@ real risk of misconfiguration (wrong ingress class, wrong solver, DNS not
 resolving yet), validating against staging's effectively unlimited but
 browser-untrusted certs first avoids burning that budget on a config
 that might need several iterations.
+
+## 2026-07-30 — Real Postgres admin password rotated twice during cluster bootstrap
+
+Two separate accidental exposures of the real Postgres administrator
+password occurred in this working session, each caught and fixed
+immediately: first via a plain `kubectl exec ... -- env` used to check
+what env vars a pod actually had; second via a Python traceback (the
+`ConfigParser` interpolation crash in `LIMITATIONS.md` item 59) that
+embedded the password in a printed connection URL. Both times the
+password was rotated for real (on the live Postgres server, in Key
+Vault, and in `terraform.tfvars`) before continuing, with the user's
+explicit confirmation each time. The second rotation deliberately used a
+restricted safe character set (letters, digits, `-_.=` only) specifically
+to avoid recreating the exact class of bug that caused the second
+exposure (a `%` breaking `ConfigParser`) -- not just to rotate the value,
+but to reduce the odds of the next password hitting the same failure
+mode. This is logged here as a real incident record, not folded silently
+into an unrelated `LIMITATIONS.md` item, because the pattern (checking
+pod env vars, reading error tracebacks) is exactly the kind of routine
+debugging action that will recur in future sessions against this same
+cluster -- future operators should default to reading only specific,
+named env vars or secrets (never a bare `env` dump) and should assume
+any raw exception involving a DB connection may embed credentials in
+its message.

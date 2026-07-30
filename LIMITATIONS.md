@@ -1278,3 +1278,65 @@ field must repeat the full list item, never just the changed field --
 true for `volumeClaimTemplates`, `rules`, and likely any other bare list
 in this manifest tree that isn't explicitly reviewed against this
 pattern.
+
+### 59. RESOLVED: a `%` in a real password broke ConfigParser-based Alembic migrations
+
+**What was found**: running `alembic upgrade head` against the real
+cloud Postgres for the first time crashed with `ValueError: invalid
+interpolation syntax`. `alembic`'s `Config` object is backed by Python's
+`ConfigParser`, which treats a bare `%` as the start of an interpolation
+token -- a real, valid, randomly-generated password containing `%` broke
+`config.set_main_option("sqlalchemy.url", ...)` in both
+`packages/metadata_catalog/migrations/env.py` and
+`packages/lineage/migrations/env.py`. Neither had ever been run against
+a real Postgres server with a password containing `%` before (local
+`docker-compose` and prior phases' passwords happened not to).
+
+**Resolution**: both `env.py` files now call `.replace("%", "%%")` on
+the built URL before passing it to `set_main_option`, escaping any
+literal percent signs. A real, generalizable lesson: any future
+`ConfigParser`-based settings loading in this codebase should assume
+password values may contain `%` and escape accordingly.
+
+**Also found in the same investigation**: this triggering error message
+itself printed the real Postgres password in plaintext (embedded in the
+connection URL inside the traceback) directly into the working session
+-- caught immediately, and the password was rotated a second time as a
+result (see the real, live incident record in `DECISIONS.md`).
+
+### 60. RESOLVED: no NetworkPolicy actually allowed agent-runtime to reach the real external Postgres
+
+**What was found**: `infra/k8s/base/networkpolicy-allow.yaml`'s
+`allow-agent-runtime-to-datastores` policy's own comment claimed real
+Postgres egress was "covered by `allow-agent-runtime-external-https`
+below instead" -- but that policy only opens port 443 (HTTPS, for
+Snowflake/Anthropic), not port 5432. No policy in the manifest tree
+actually allowed egress to Postgres's real external endpoint at all;
+every real connection attempt from `agent-runtime` timed out silently
+(the same symptom a firewall-rule gap would produce, which delayed
+finding this -- see item 61's Terraform fix, applied first and found
+insufficient on its own).
+
+**Resolution**: added a new, correctly-scoped
+`allow-agent-runtime-external-postgres` NetworkPolicy (same
+broad-CIDR-minus-private-ranges pattern as the HTTPS one, port 5432
+instead of 443) and corrected the misleading comment on the
+in-cluster-only `postgres` podSelector rule it had wrongly assumed
+covered this case.
+
+### 61. RESOLVED: Postgres Flexible Server had zero firewall rules
+
+**What was found**: `terraform/modules/postgres-flexible-server` set
+`public_network_access_enabled` implicitly but never created any
+`azurerm_postgresql_flexible_server_firewall_rule` -- Azure Postgres
+Flexible Server requires an explicit firewall rule before any
+connection succeeds regardless of that setting. Every real connection
+attempt (including from AKS pods on the same VNet, since this module
+has no VNet integration/private endpoint) timed out.
+
+**Resolution**: added an `azurerm_postgresql_flexible_server_firewall_rule`
+resource using Azure's documented `"0.0.0.0"`-`"0.0.0.0"` special
+convention ("allow public access from any Azure service"), applied via
+a real, reviewed `terraform plan`/`apply`. Combined with item 60's
+NetworkPolicy fix, real Postgres connectivity from AKS now works end to
+end (confirmed via real Alembic migrations reaching revision head).

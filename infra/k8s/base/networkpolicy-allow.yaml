@@ -136,10 +136,14 @@ spec:
       ports:
         - protocol: TCP
           port: 4317
-    # overlays/kind's ephemeral in-cluster postgres (overlays/dev's real
-    # Azure Postgres Flexible Server is outside the cluster -- covered by
-    # allow-agent-runtime-external-https below instead, since it's reached
-    # over the public/private endpoint, not a cluster-local pod IP).
+    # overlays/kind's ephemeral in-cluster postgres only. overlays/dev's
+    # real Azure Postgres Flexible Server is outside the cluster, reached
+    # over its public endpoint on port 5432 -- REAL BUG found live: this
+    # was previously (wrongly) commented as "covered by
+    # allow-agent-runtime-external-https below instead", but that policy
+    # only opens port 443, not 5432, so no NetworkPolicy actually allowed
+    # this egress at all. Real Postgres connections timed out until
+    # allow-agent-runtime-external-postgres (below) was added.
     - to:
         - podSelector:
             matchLabels:
@@ -218,6 +222,34 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+---
+# overlays/dev's real Azure Postgres Flexible Server has no VNet
+# integration (see terraform/modules/postgres-flexible-server), so it's
+# reached over its public endpoint like any other external service --
+# same broad-CIDR-minus-private-ranges compromise as the HTTPS policy
+# above, for the same reason (NetworkPolicy can't name it by DNS/FQDN).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agent-runtime-external-postgres
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: agent-runtime
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 5432
 ---
 # Prometheus scrapes every app's /metrics plus the ingress-nginx
 # controller's own metrics (see infra/prometheus/prometheus.k8s.yml).
