@@ -41,6 +41,23 @@ concurrency:
   group: cd-deploy-dev
   cancel-in-progress: false
 
+# REAL BUG, found live on this workflow's first-ever real trigger: every
+# job below calls azure/login@v2 with auth-type: SERVICE_PRINCIPAL (OIDC),
+# which requires GitHub to mint a short-lived `id-token` for the job --
+# that only happens if the job's *effective* permissions grant
+# `id-token: write`. Nothing in this file declared that (the default
+# workflow permissions are read-only unless stated), so every real
+# Azure login attempt failed with "Failed to fetch federated token from
+# GitHub. Please make sure to give write permissions to id-token in the
+# workflow." Setting it here at the workflow level covers build-and-push/
+# deploy-canary/canary-bake/rollback; `promote` below still needs its own
+# job-level `permissions:` block repeated in full (job-level permissions
+# REPLACE the workflow-level ones for that job, they don't merge with
+# them), since it also needs `contents: write` for its bot-commit step.
+permissions:
+  contents: read
+  id-token: write
+
 env:
   ACR_NAME: navigraphdevacr
   AKS_RESOURCE_GROUP: navigraph-dev-rg
@@ -191,8 +208,12 @@ jobs:
     name: promote canary to stable
     needs: canary-bake
     runs-on: ubuntu-latest
+    # Job-level permissions REPLACE (not merge with) the workflow-level
+    # block above, so id-token: write must be repeated here alongside the
+    # contents: write this job's bot-commit step needs.
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4

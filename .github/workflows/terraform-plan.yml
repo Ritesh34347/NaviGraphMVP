@@ -79,6 +79,15 @@ jobs:
     needs: [fmt-and-validate, check-azure-creds]
     runs-on: ubuntu-latest
     if: needs.check-azure-creds.outputs.configured == 'true'
+    # REAL BUG, same shape as the one found live on cd-deploy.yml's first
+    # real trigger: azure/login@v2 (OIDC) needs GitHub to mint an
+    # `id-token` for the job, which only happens with this permission
+    # explicitly granted -- the default is read-only. Fixed proactively
+    # here (this job had never actually run for real yet) rather than
+    # waiting to rediscover it via another live failure.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4

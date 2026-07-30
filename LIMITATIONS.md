@@ -1557,7 +1557,7 @@ produced a spurious "invalid workflow file" run on this same push,
 proving bug 3's fix holds (they correctly only trigger on
 `pull_request`/`workflow_run` now, not on an ordinary push to `main`).
 
-### 66. `cd-deploy.yml`'s first real trigger failed at Azure login -- the AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_SUBSCRIPTION_ID GitHub secrets are not actually configured on this repo
+### 66. RESOLVED: `cd-deploy.yml`'s first real trigger failed at Azure login -- the AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_SUBSCRIPTION_ID GitHub secrets were not actually configured on this repo
 
 **What was found**: the same push that finally turned CI green also gave
 `cd-deploy.yml` its first-ever real trigger (it runs on every push to
@@ -1579,12 +1579,65 @@ real GitHub repo -- a standing, security-relevant configuration change to
 a shared system, not a local file edit, so it needs the user's explicit
 go-ahead rather than being assumed as in-scope for "confirm CI passes."
 
-**What full version requires**: confirm with the user, then look up the
-real `navigraph-cd` app registration's `client_id` (already recorded
-during Phase 10b's app-registration step, see `terraform.tfvars`'s
-`ci_service_principal_object_id` -- note this is the *object* ID, not the
-`client_id`/`appId` the `azure/login@v2` action needs, so a fresh
-`az ad app list` lookup is required either way), and run
-`gh secret set AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID`
-against `Ritesh34347/NaviGraphMVP` before `cd-deploy.yml` can get past its
-first real step.
+**Resolution**: confirmed with the user, then looked up the real
+`navigraph-cd` app registration's `appId` (`cbc3e5d0-dbf0-423f-ac76-c553c939b1a2`,
+distinct from `terraform.tfvars`'s `ci_service_principal_object_id`, which
+is the *object* ID -- `azure/login@v2` needs the `appId`/client ID
+instead) via a fresh `az ad app list` lookup, confirmed the existing
+federated credential's subject (`repo:Ritesh34347/NaviGraphMVP:ref:refs/heads/main`)
+was already correctly scoped for `cd-deploy.yml`'s `push: main` trigger,
+then set all three secrets. This also surfaced two real PAT-scope gaps in
+the process (the fine-grained token used for `gh` this session lacked
+both "Secrets" and "Actions" repository permissions) -- both required the
+user to edit the token's permissions before `gh secret set` and
+`gh workflow run` would succeed. Verified for real: re-triggering
+`cd-deploy.yml` got past the `Azure login (OIDC)` step this time (it
+progressed to the actual image build/push steps) -- see item 67 for the
+next real bug this surfaced.
+
+### 67. RESOLVED: `cd-deploy.yml`, `terraform-plan.yml`, and `cloud-security-tests.yml` were all missing `permissions: id-token: write`, required for Azure OIDC login
+
+**What was found**: with item 66's secrets finally in place,
+`cd-deploy.yml`'s real, manually-dispatched run (`gh workflow run
+cd-deploy.yml`) got past the "not all values are present" error but
+failed at the exact same `Azure login (OIDC)` step with a different,
+real error: `Failed to fetch federated token from GitHub. Please make
+sure to give write permissions to id-token in the workflow.` --
+`azure/login@v2`'s OIDC (`auth-type: SERVICE_PRINCIPAL` with no client
+secret) flow requires GitHub to mint a short-lived `id-token` for the
+job, which only happens when the job's *effective* permissions grant
+`id-token: write` -- the default is read-only, and nothing in the file
+declared it. All 3 real matrix jobs (`navigraph-gateway`,
+`navigraph-agent-runtime`, `navigraph-web`) hit this identically;
+`navigraph-web` surfaced it first (fastest job), which cancelled the
+other two via the matrix's default fail-fast, not because they succeeded.
+
+**Why this wasn't caught before**: `cd-deploy.yml` had never actually run
+for real until this same investigation (item 66); `terraform-plan.yml`'s
+`plan` job and `cloud-security-tests.yml`'s `adversarial-tests` job have
+the exact same gap but had *also* never actually run for real yet
+(`plan` only triggers on a PR touching `terraform/**`;
+`adversarial-tests` only after a successful `cd-deploy.yml` run, which
+had never happened) -- found and fixed proactively in both, by
+inspection, rather than waiting to rediscover the identical failure live
+a second and third time.
+
+**Resolution**: added a workflow-level `permissions: { contents: read,
+id-token: write }` block to `cd-deploy.yml` (covering
+`build-and-push`/`deploy-canary`/`canary-bake`/`rollback`), and updated
+the `promote` job's own job-level `permissions:` block to include both
+`contents: write` (already there, needed for its bot-commit step) AND
+`id-token: write` -- job-level `permissions:` blocks REPLACE the
+workflow-level default for that job rather than merging with it, so
+`promote` would have silently kept failing even with the new
+workflow-level block added, had its own block not also been updated.
+Added the equivalent `permissions: { contents: read, id-token: write }`
+directly to the single job that needs it in both `terraform-plan.yml`
+and `cloud-security-tests.yml`. `k8s-manifests-ci.yml` was checked and
+confirmed to use no Azure OIDC login at all (it only ever touches a
+local, ephemeral `kind` cluster), so it needed no change.
+
+**What full version requires**: nothing further planned -- this is a
+real, fixed bug. Not yet verified as of this writing: re-dispatching
+`cd-deploy.yml` after this fix and confirming the real run gets past
+Azure login and into the actual ACR build/push steps.
