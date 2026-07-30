@@ -94,6 +94,39 @@ spec:
         - protocol: TCP
           port: 8001
 ---
+# REAL BUG, found live against the actual AKS cluster (not caught by any
+# prior local `kind` validation, since kindnet never enforces
+# NetworkPolicy at all -- see item 49): the policy above declares only the
+# *ingress* half of gateway-to-agent-runtime traffic (an Ingress rule
+# attached to agent-runtime pods). `default-deny-all` denies Egress by
+# default for every pod including gateway, and no policy anywhere granted
+# gateway pods the matching *egress* half -- so gateway could not reach
+# agent-runtime at all on real, NetworkPolicy-enforcing Azure CNI, even
+# though the exact same manifests looked fine on `kind`. This is precisely
+# what test_positive_control_gateway_can_still_reach_agent_runtime exists
+# to catch (see tests/security/cloud/test_network_policy_isolation.py) --
+# it failed on first real run against this cluster, which is how this was
+# found.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-egress-to-agent-runtime
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: agent-runtime
+      ports:
+        - protocol: TCP
+          port: 8001
+---
 # agent-runtime is the one real caller of neo4j, redis, and opa -- see
 # packages/agent_runtime/navigraph_agents/main.py's lifespan() wiring.
 apiVersion: networking.k8s.io/v1

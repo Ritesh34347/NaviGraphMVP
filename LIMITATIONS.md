@@ -1402,3 +1402,50 @@ anomalies by `|z_score|`), apply the same review to
 `ops.evaluation_judge`'s prompt construction, then re-run the full
 10-question eval harness for real once Anthropic API access is
 available again to confirm the fix.
+
+### 64. RESOLVED: gateway had no NetworkPolicy egress to agent-runtime -- the real `/ask` path was broken on real AKS
+
+**What was found**: the very first real run of
+`tests/security/cloud/test_network_policy_isolation.py`'s positive
+control (`test_positive_control_gateway_can_still_reach_agent_runtime`)
+against the real cluster failed. Manual reproduction confirmed it was
+real, not a test artifact: `kubectl exec` into `gateway-stable` and
+attempting `http://agent-runtime.navigraph.svc.cluster.local:8001/healthz`
+(or the raw pod IP, same-node, bypassing DNS/Service routing entirely)
+both timed out consistently, while `agent-runtime`'s own kubelet
+readiness/liveness probes and localhost-within-the-pod checks succeeded
+continuously -- initially indistinguishable from item 49's `kindnet`
+quirk, except this time on real, NetworkPolicy-enforcing Azure CNI.
+
+**Root cause**: `allow-gateway-to-agent-runtime` in
+`infra/k8s/base/networkpolicy-allow.yaml` only ever declared the
+*ingress* half of this traffic (an Ingress-type policy attached to
+`agent-runtime` pods, allowing traffic in from `gateway`). `default-deny-all`
+denies Egress by default for every pod in the namespace including
+`gateway`, and no policy anywhere granted `gateway` pods the matching
+*egress* half. Kubernetes NetworkPolicy requires both the sender's
+egress and the receiver's ingress to independently permit a connection
+-- one-sided declaration is a real, silent gap, not a redundant
+belt-and-suspenders. Confirmed this wasn't a broader network failure by
+testing `gateway` -> `web-stable` (also blocked, same missing-egress
+pattern) before concluding the fix, and confirmed `allow-web-to-gateway`
+(the reverse pair) was already correctly declared as an Egress-type
+policy on `web`, so this asymmetry was specific to the gateway/
+agent-runtime pair, not systemic.
+
+**Why this matters**: this is precisely the real, load-bearing bug this
+project's whole cloud-security-test investment exists to catch. It went
+completely undetected through every phase of local `kind` validation
+because `kindnet` never enforces NetworkPolicy at all (confirmed in item
+49) -- meaning the real, public-facing `/ask` endpoint's actual backend
+call (gateway -> agent-runtime) would have been silently broken on any
+real AKS deployment until the first real user request failed, had this
+adversarial test not existed and been run for real against this cluster.
+
+**Resolution**: added `allow-gateway-egress-to-agent-runtime`, a
+correctly-scoped Egress-type policy on `gateway` pods. Verified twice,
+independently: (1) the positive-control test now passes, and (2) a real
+`POST /ask` against the live public `https://api.navigraph.51-8-46-125.nip.io/ask`
+endpoint now reaches agent-runtime and returns a real, structured
+response (failing only on the separate, already-diagnosed Anthropic API
+quota exhaustion in item 63/eval harness -- not a network error).
