@@ -13,6 +13,7 @@ resources:
   - secretproviderclass-agent-runtime.yaml
   - secretproviderclass-neo4j.yaml
   - secretproviderclass-grafana.yaml
+  - cluster-issuer.yaml
 
 patches:
   - path: configmap-postgres-patch.yaml

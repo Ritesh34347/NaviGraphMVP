@@ -1,44 +1,69 @@
-# REPLACE_AFTER_APPLY: <domain> below is a placeholder -- no real domain
-# name has been decided yet (see the Phase 10 plan's judgment call #1).
-# Before Phase 10b's cluster bootstrap, either supply a real domain here
-# (and point its DNS at the real ingress-nginx LoadBalancer IP) or replace
-# both hosts with a temporary nip.io-style hostname
-# (api.<lb-ip>.nip.io / app.<lb-ip>.nip.io) -- either way, ssl-redirect
-# stays "false" and no cert-manager annotation is added until a real,
-# stable hostname exists for Let's Encrypt's HTTP01 challenge to validate
-# against.
+# Real hostnames as of Phase 10b's cluster bootstrap: no registered domain
+# exists yet, so this uses nip.io (a free wildcard DNS service that
+# resolves any "<label>.<ip-with-dashes>.nip.io" hostname to that IP, no
+# registration needed), pointed at the real ingress-nginx LoadBalancer's
+# external IP (51.8.46.125, confirmed via `kubectl -n ingress-nginx get svc
+# ingress-nginx-controller`). cert-manager's letsencrypt-prod ClusterIssuer
+# (see cluster-issuer.yaml) can now issue real certs against this stable
+# hostname via the HTTP01 challenge.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: web
   namespace: navigraph
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-staging
 spec:
+  tls:
+    - hosts:
+        - app.navigraph.51-8-46-125.nip.io
+      secretName: web-tls
   rules:
-    - host: app.navigraph.REPLACE_AFTER_APPLY_DOMAIN
+    - host: app.navigraph.51-8-46-125.nip.io
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: web-canary
   namespace: navigraph
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
+  tls:
+    - hosts:
+        - app.navigraph.51-8-46-125.nip.io
+      secretName: web-tls
   rules:
-    - host: app.navigraph.REPLACE_AFTER_APPLY_DOMAIN
+    - host: app.navigraph.51-8-46-125.nip.io
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: gateway
   namespace: navigraph
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-staging
 spec:
+  tls:
+    - hosts:
+        - api.navigraph.51-8-46-125.nip.io
+      secretName: gateway-tls
   rules:
-    - host: api.navigraph.REPLACE_AFTER_APPLY_DOMAIN
+    - host: api.navigraph.51-8-46-125.nip.io
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: gateway-canary
   namespace: navigraph
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
+  tls:
+    - hosts:
+        - api.navigraph.51-8-46-125.nip.io
+      secretName: gateway-tls
   rules:
-    - host: api.navigraph.REPLACE_AFTER_APPLY_DOMAIN
+    - host: api.navigraph.51-8-46-125.nip.io

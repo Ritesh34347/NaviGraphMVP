@@ -797,3 +797,37 @@ failed while trying to enforce that diff. Declaring
 `oidc_issuer_enabled = true` explicitly makes the module's declared state
 match the real cluster's actual (and unchangeable) state, rather than
 fighting it every plan.
+
+## 2026-07-30 — Phase 10b: nip.io as the dev environment's domain, not a real registered domain
+
+No real domain was available at cluster-bootstrap time. Rather than block
+ingress/TLS setup on acquiring one, we used the real public IP the
+ingress-nginx LoadBalancer was assigned (51.8.46.125) with nip.io -- a
+free wildcard DNS service that resolves any `<label>.<ip>.nip.io`
+hostname to that IP with no registration step. This is explicitly a dev-
+environment stopgap (see `LIMITATIONS.md`'s domain/TLS item): the IP is
+tied to this specific LoadBalancer Service and would change if it were
+ever deleted and recreated, which a real registered domain would not be
+sensitive to.
+
+## 2026-07-30 — Phase 10b: `enable_rbac_authorization = true` on the Key Vault module
+
+Discovered live (see `LIMITATIONS.md` item 55) that the vault defaulted
+to the legacy access-policy model, under which the AKS CSI driver's
+already-applied RBAC role assignment had no actual effect. Switching to
+RBAC mode makes the vault's access model consistent with how every other
+resource in this Terraform config already grants access (via
+`azurerm_role_assignment`), rather than introducing a second,
+access-policy-based mechanism used nowhere else in the project.
+
+## 2026-07-30 — Phase 10b: staging Let's Encrypt issuer first, promote to prod after one verified issuance
+
+`infra/k8s/overlays/dev/cluster-issuer.yaml` defines both
+`letsencrypt-staging` and `letsencrypt-prod` ClusterIssuers;
+`ingress-patch.yaml` initially points at staging. Production Let's
+Encrypt enforces a real rate limit (5 certificates per registered
+domain per week); since this is a first-time HTTP01 challenge setup with
+real risk of misconfiguration (wrong ingress class, wrong solver, DNS not
+resolving yet), validating against staging's effectively unlimited but
+browser-untrusted certs first avoids burning that budget on a config
+that might need several iterations.

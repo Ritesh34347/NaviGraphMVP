@@ -1170,3 +1170,45 @@ via a real `kubectl get nodes`), Key Vault, Postgres Flexible Server +
 database, an Entra app registration + service principal, and 3 role
 assignments. This is genuinely billable infrastructure, not a plan
 preview.
+
+### 54. RESOLVED: `terraform output -json` briefly exposed a real AKS cluster credential
+
+**What happened**: while fetching non-sensitive Terraform outputs during
+cluster bootstrap, `terraform output -json` was run instead of querying a
+specific output by name. Unlike the plain table view, `-json` output does
+not respect the `sensitive` flag -- it printed the full real
+`clusterUser_navigraph-dev-rg_navigraph-dev-aks` kubeconfig (client
+certificate, private key, and bearer token) into this session. Since this
+cluster has no AAD-integrated RBAC yet (item 51), that credential was
+cluster-admin-equivalent.
+
+**Resolution**: the file the value had been written to was deleted
+immediately, and `az aks rotate-certs` was run (with the user's explicit
+confirmation) to invalidate the exposed certificate/key/token before any
+further cluster work continued. Going forward, only `terraform output
+-raw <specific-output-name>` is used for non-sensitive values -- never
+`-json` or a bare `terraform output` against this environment.
+
+### 55. RESOLVED: Key Vault had RBAC authorization disabled, silently nullifying its own role assignments
+
+**What was found**: `terraform/modules/key-vault/main.tf` never set
+`enable_rbac_authorization`, which defaults to `false` (the legacy
+access-policy model). This was discovered live, via `az keyvault show`,
+while trying to populate real secrets: the vault had zero access
+policies AND `enableRbacAuthorization: false`, meaning the
+`azurerm_role_assignment.aks_key_vault_secrets_user` grant (Key Vault
+Secrets User, RBAC role) created in `environments/dev/main.tf` had been
+silently granting **nothing** -- in access-policy mode, Azure RBAC role
+assignments on a vault's data plane are simply ignored. Had this gone
+unnoticed, the AKS Secrets Store CSI driver would have failed to sync
+any real secret once deployed, likely surfacing as a confusing pod-level
+error far from the actual root cause.
+
+**Resolution**: added `enable_rbac_authorization = true` to the module,
+applied via a real, reviewed `terraform plan`/`apply` (2 resources
+changed: the Key Vault flag itself, plus an unrelated cosmetic
+`kube_config` drift from the cert rotation above). Also discovered that
+subscription-level Owner does **not** automatically resolve as Key Vault
+data-plane access even once RBAC mode is on (a real `ForbiddenByRbac`
+persisted); a direct `Key Vault Secrets Officer` role assignment scoped
+to the vault was required for the human operator to populate secrets.
