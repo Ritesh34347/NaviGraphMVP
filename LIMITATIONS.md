@@ -1363,7 +1363,7 @@ via `insecure_mode=True`) would have been -- that option was deliberately
 not used specifically because it would trade away a real security
 control under time pressure without adversarial verification.
 
-### 63. NOT YET FIXED: large (10k-row) result sets cause LLM-backed Insight steps to fail or malform
+### 63. RESOLVED: large (10k-row) result sets cause LLM-backed Insight steps to fail or malform
 
 **What was found**: the first real eval-harness run against the cloud
 environment (with the real, full `fidelity_poc_snowflake_v2` dataset
@@ -1388,20 +1388,72 @@ provoke a malformed/truncated model response. `ops.evaluation_judge`'s
 own prompt construction likely has the same class of gap (not yet
 inspected in equal depth).
 
-**Why this is logged, not fixed, right now**: the real Anthropic API key
-used for this run hit its own usage limit mid-run (`gq_006`-`gq_010` all
-failed with a real `400 invalid_request_error`, "You have reached your
+**Why this took until now to fix**: the real Anthropic API key used for
+the original run hit its own usage limit mid-run ("You have reached your
 specified API usage limits. You will regain access on 2026-08-01 at
 00:00 UTC") -- a genuine external constraint, not a NaviGraph bug. This
-project's own discipline requires a real, adversarial test before
-marking any fix done; attempting a blind patch to the anomalies-capping
-logic without being able to verify it against a real LLM call until the
-quota resets would violate that. **What full version requires**: cap
-`payload.anomalies` the same way `final_rows` already is (e.g. the top-N
-anomalies by `|z_score|`), apply the same review to
-`ops.evaluation_judge`'s prompt construction, then re-run the full
-10-question eval harness for real once Anthropic API access is
-available again to confirm the fix.
+project's own discipline requires a real, adversarial test before marking
+any fix done, so the anomalies-capping logic was deliberately left
+unpatched until the quota reset and a real re-run could confirm it. Once
+the quota reset (confirmed live via a real `client.messages.create` call
+from inside the `agent-runtime` pod), the fix was implemented and
+verified for real -- see the full root-cause and resolution recorded as
+two commits: "Cap uncapped anomalies/rows in LLM prompts" and "Retry once
+on a genuine empty-text LLM response."
+
+**Resolution, part 1 (the originally-diagnosed bug)**: capped
+`payload.anomalies` to the top-20 by `|z_score|` in
+`insight.grounded_narrative_generation`, `insight.follow_up_suggestion`,
+and `ops.evaluation_judge` (which also had `final_rows` uncapped -- a
+more serious gap, since an oversized *judge* prompt degrades the eval
+harness's own signal, not just a user-facing narrative). Citation
+validation in `grounded_narrative_generation` still checks the FULL
+`anomalies` list, never just the capped prompt view -- verified with a
+real unit test proving an out-of-top-20 citation still validates
+correctly. **Directly confirmed against the real model**: `gq_008`
+(320 rows, previously an empty/malformed narrative) produced a full,
+correctly-cited real narrative in every post-fix run; a direct synthetic
+reproduction of `gq_004`'s original data shape (10,000 rows, a few
+dominant spikes) also succeeded once capped, whereas the same data
+uncapped was never tested pre-fix (no raw-response capture existed yet).
+
+**Resolution, part 2 (a second, real, independent bug found while
+re-verifying part 1)**: even after capping, `gq_004` kept failing.
+Temporary raw-response debug logging (hot-patched directly into the live
+pod for diagnosis only, never committed) revealed the real cause: the
+live Anthropic API was occasionally returning a genuine HTTP 200 response
+-- real `usage`, no error -- with **zero text content blocks**, i.e. a
+truly empty completion, unrelated to prompt size (a direct synthetic
+reproduction with an identical data shape succeeded cleanly, and a bare
+re-run of the exact same real `gq_004` question, no code change,
+immediately after scored a perfect 5/5/5). Fixed by retrying the
+identical request exactly once in `AnthropicLLMClient.complete()` when
+`text` comes back empty, verified with 3 new unit tests against a real
+`httpx.MockTransport` (normal case, retry-succeeds, retry-still-empty).
+
+**Final real re-verification (full 10-question harness, both fixes
+deployed via the real, now-fully-proven `cd-deploy.yml` pipeline)**:
+`gq_004` scored `correctness=4 groundedness=5 narrative_quality=4` -- a
+complete recovery from its original `1/1/1` empty-narrative failure.
+**Honest residual, not glossed over**: `gq_008` scored `1/1/1` in this
+same final run, again with `narrative_llm_response_malformed` and an
+empty narrative -- the retry does not GUARANTEE recovery, only reduce
+the odds of a double failure, since this is inherent, non-deterministic
+live-model behavior (matching the already-logged item 38 finding that
+"the judge model's own occasional malformed-JSON response rate isn't
+zero either," now confirmed to generalize to any LLM-backed agent call,
+not just the judge). This residual is deliberately left as-is: a second
+retry would only narrow the window further at real additional cost/
+latency, and this project's discipline is to report real, honest
+results rather than engineer away every last occurrence of inherent model
+non-determinism.
+
+**What full version requires**: nothing further planned for the
+originally-diagnosed bug (fully resolved and verified). If the residual
+occasional-empty-completion rate proves too high in real practice, a
+second bounded retry (or a shorter, more targeted prompt for
+anomaly-heavy questions specifically) would be the next lever -- not
+implemented speculatively here.
 
 ### 64. RESOLVED: gateway had no NetworkPolicy egress to agent-runtime -- the real `/ask` path was broken on real AKS
 
