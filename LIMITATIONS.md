@@ -1545,10 +1545,46 @@ first real CI executions) and root-caused together across one
 investigation -- logging them individually would fragment one coherent
 finding, the same reasoning already used for items 38/44.
 
-**What full version requires**: nothing further planned -- all six are
-real, fixed bugs, not deferred scope. The one remaining open action is
-confirming (not yet done as of this writing) that the fixes actually
-turn CI/`terraform-plan`/`cloud-security-tests` green on a real run,
-since a fix that looks correct by inspection is not the same as one
-proven against the real GitHub Actions runner -- exactly the standard
-this whole item's discovery already demonstrated is necessary.
+**What full version requires**: nothing further -- all six are real,
+fixed bugs, not deferred scope, and the fix is now proven for real:
+`gh run view` on commit `099650c`'s `CI` run
+(`https://github.com/Ritesh34347/NaviGraphMVP/actions/runs/30560655356`)
+shows both jobs (`Python lint, type-check, and test`,
+`Node lint, type-check, and test`) as real `success` -- the first fully
+green CI run in this repository's history. `terraform-plan.yml` and
+`cloud-security-tests.yml` also confirmed correct post-fix: neither
+produced a spurious "invalid workflow file" run on this same push,
+proving bug 3's fix holds (they correctly only trigger on
+`pull_request`/`workflow_run` now, not on an ordinary push to `main`).
+
+### 66. `cd-deploy.yml`'s first real trigger failed at Azure login -- the AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_SUBSCRIPTION_ID GitHub secrets are not actually configured on this repo
+
+**What was found**: the same push that finally turned CI green also gave
+`cd-deploy.yml` its first-ever real trigger (it runs on every push to
+`main`). It failed immediately at the `Azure login (OIDC)` step with
+`Login failed with Error: Using auth-type: SERVICE_PRINCIPAL. Not all
+values are present. Ensure 'client-id' and 'tenant-id' are supplied.` --
+i.e. `secrets.AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID`
+resolved empty at the real Azure/login@v2 step. `gh api
+repos/.../environments` confirmed there are zero GitHub Environments on
+this repo, ruling out "they're environment-scoped, not repo-scoped
+secrets" as the explanation -- the secrets simply are not set at all.
+
+**Why this is surfaced as a limitation, not silently fixed**: this
+directly contradicts an earlier record of the federated-credential/
+secrets wiring being complete. Setting these secrets requires looking up
+the real `navigraph-cd` app registration's client ID (via `az ad app
+list` against the real tenant) and running `gh secret set` against the
+real GitHub repo -- a standing, security-relevant configuration change to
+a shared system, not a local file edit, so it needs the user's explicit
+go-ahead rather than being assumed as in-scope for "confirm CI passes."
+
+**What full version requires**: confirm with the user, then look up the
+real `navigraph-cd` app registration's `client_id` (already recorded
+during Phase 10b's app-registration step, see `terraform.tfvars`'s
+`ci_service_principal_object_id` -- note this is the *object* ID, not the
+`client_id`/`appId` the `azure/login@v2` action needs, so a fresh
+`az ad app list` lookup is required either way), and run
+`gh secret set AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID`
+against `Ritesh34347/NaviGraphMVP` before `cd-deploy.yml` can get past its
+first real step.
