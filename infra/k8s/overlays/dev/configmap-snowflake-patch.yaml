@@ -1,0 +1,15 @@
+# Real values from infra/.env's SNOWFLAKE_* settings (non-secret half --
+# SNOWFLAKE_PASSWORD stays in Key Vault via
+# secretproviderclass-agent-runtime.yaml, never here).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: navigraph-app-env
+  namespace: navigraph
+data:
+  SNOWFLAKE_ACCOUNT: TKISXMB-JYB85836
+  SNOWFLAKE_USER: SHUBHSNFLK
+  SNOWFLAKE_WAREHOUSE: FIDELITY_WH
+  SNOWFLAKE_DATABASE: FIDELITY_POC
+  SNOWFLAKE_ROLE: FIDELITY_ANALYST_ROLE
+  SNOWFLAKE_AUTH_METHOD: password

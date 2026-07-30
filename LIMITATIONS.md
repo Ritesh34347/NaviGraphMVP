@@ -1340,3 +1340,65 @@ convention ("allow public access from any Azure service"), applied via
 a real, reviewed `terraform plan`/`apply`. Combined with item 60's
 NetworkPolicy fix, real Postgres connectivity from AKS now works end to
 end (confirmed via real Alembic migrations reaching revision head).
+
+### 62. RESOLVED: Snowflake OCSP checks retried for ~90s per connection (blocked by NetworkPolicy)
+
+**What was found**: real Snowflake connections from the cloud
+agent-runtime pods took ~90 seconds each -- not a slow first connection
+as initially assumed, but the Snowflake Python connector retrying OCSP
+(certificate revocation) checks against `ocsp.snowflakecomputing.com`/
+`ocsp.digicert.com` over plain HTTP (port 80) on *every* connection, each
+attempt failing with "Network is unreachable" since only ports 443/5432
+were allowed. OCSP is fail-open (a blocked check doesn't fail the
+connection), so real crawls/queries always eventually succeeded, just
+slowly -- multiplied across ~50+ Snowflake connections in a full
+eval-harness run, this would have added 20-40+ minutes of pure waste.
+
+**Resolution**: added port 80 to `allow-agent-runtime-external-https`
+(see the updated comment in `infra/k8s/base/networkpolicy-allow.yaml`).
+This is a genuine security *improvement*, not a tradeoff: it lets
+certificate-revocation checking actually succeed instead of silently
+failing closed-by-network-block, unlike disabling OCSP outright (e.g.
+via `insecure_mode=True`) would have been -- that option was deliberately
+not used specifically because it would trade away a real security
+control under time pressure without adversarial verification.
+
+### 63. NOT YET FIXED: large (10k-row) result sets cause LLM-backed Insight steps to fail or malform
+
+**What was found**: the first real eval-harness run against the cloud
+environment (with the real, full `fidelity_poc_snowflake_v2` dataset
+crawled in Phase 10b) surfaced a real, reproducible pattern that no
+prior phase's smaller worked examples ever exercised: every golden
+question whose `final_row_count` was small (16, 1 rows) scored cleanly
+(5/5/5, 5/5/5); every question with `final_row_count=10000` degraded --
+two got `correctness=groundedness=narrative_quality=1` with rationale
+`"judge response could not be parsed"` (`ops.evaluation_judge`), and one
+(`gq_004`, an `anomaly_investigation` question) got a completely empty
+narrative string with `narrative_llm_response_malformed`
+(`insight.grounded_narrative_generation`).
+
+**Root cause identified (not yet fixed)**: `grounded_narrative_generation/agent.py`
+already caps `final_rows` at 200 before rendering into the LLM prompt
+(`_MAX_ROWS_IN_PROMPT`), but serializes `payload.anomalies` **uncapped**
+(`f"Anomalies: {json.dumps([a.model_dump() for a in payload.anomalies])}"`)
+-- a 10,000-row anomaly-investigation query can produce hundreds of
+z-score>2.0 findings (statistically ~2.5% of a large enough population),
+producing a prompt large enough to plausibly exceed a sane limit and
+provoke a malformed/truncated model response. `ops.evaluation_judge`'s
+own prompt construction likely has the same class of gap (not yet
+inspected in equal depth).
+
+**Why this is logged, not fixed, right now**: the real Anthropic API key
+used for this run hit its own usage limit mid-run (`gq_006`-`gq_010` all
+failed with a real `400 invalid_request_error`, "You have reached your
+specified API usage limits. You will regain access on 2026-08-01 at
+00:00 UTC") -- a genuine external constraint, not a NaviGraph bug. This
+project's own discipline requires a real, adversarial test before
+marking any fix done; attempting a blind patch to the anomalies-capping
+logic without being able to verify it against a real LLM call until the
+quota resets would violate that. **What full version requires**: cap
+`payload.anomalies` the same way `final_rows` already is (e.g. the top-N
+anomalies by `|z_score|`), apply the same review to
+`ops.evaluation_judge`'s prompt construction, then re-run the full
+10-question eval harness for real once Anthropic API access is
+available again to confirm the fix.

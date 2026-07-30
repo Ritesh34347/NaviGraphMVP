@@ -23,6 +23,7 @@ resources:
 
 patches:
   - path: configmap-postgres-patch.yaml
+  - path: configmap-snowflake-patch.yaml
   - path: ingress-patch.yaml
   - path: patch-agent-runtime-csi-volume.yaml
   - path: patch-neo4j-csi-volume.yaml

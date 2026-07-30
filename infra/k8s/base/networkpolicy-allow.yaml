@@ -200,6 +200,15 @@ spec:
 # narrowly-pinned allowlist of Snowflake/Anthropic's actual IP ranges
 # (which rotate and aren't published as a stable CIDR block by either
 # vendor) -- see LIMITATIONS.md's new item on this.
+#
+# Port 80 is included too: real bug found live -- the Snowflake Python
+# connector does OCSP (certificate revocation) checks over plain HTTP to
+# ocsp.snowflakecomputing.com/ocsp.digicert.com, which is fail-open (a
+# blocked OCSP check doesn't fail the connection) but was retrying for
+# ~90s per connection before giving up, since only port 443 was allowed.
+# Allowing port 80 lets OCSP actually succeed -- this is a genuine
+# security IMPROVEMENT (revocation checking now works as intended), not a
+# tradeoff like disabling OCSP outright would have been.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -222,6 +231,8 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+        - protocol: TCP
+          port: 80
 ---
 # overlays/dev's real Azure Postgres Flexible Server has no VNet
 # integration (see terraform/modules/postgres-flexible-server), so it's
