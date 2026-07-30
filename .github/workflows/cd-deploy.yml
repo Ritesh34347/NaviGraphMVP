@@ -137,10 +137,29 @@ jobs:
       - name: Apply base manifests (everything except the canary tracks' own images)
         run: kustomize build infra/k8s/overlays/dev --load-restrictor LoadRestrictionsNone | kubectl apply -f -
 
-      - name: Point the canary tracks at the new SHA
+      - name: Point the canary tracks (and agent-runtime) at the new SHA
+        # REAL BUG, found live on this workflow's first fully successful
+        # real run: agent-runtime has no *-stable/*-canary split (by
+        # design -- see DECISIONS.md), so it was relying entirely on the
+        # "Apply base manifests" kustomize step above to pick up its new
+        # image via overlays/dev/kustomization.yaml's `newTag` field. But
+        # that field is only ever bumped by the `promote` job's bot-commit
+        # AFTER a successful bake -- i.e. one full CD run *after* the one
+        # that actually built the image -- and `promote` itself never
+        # updates the live agent-runtime Deployment directly (only
+        # gateway-stable/web-stable). Net effect, confirmed live via
+        # `kubectl get deployment agent-runtime -o jsonpath=...`: the real
+        # cluster kept running an old image indefinitely, and a
+        # `kubectl rollout status` on a Deployment nothing had just
+        # changed trivially reports "success" with no new rollout ever
+        # having happened. Fixed by explicitly setting agent-runtime's
+        # image here too, in the same run that built it -- it has no
+        # canary track to bake through, so it can update immediately,
+        # same as any other plain rolling-update service.
         run: |
           kubectl set image deployment/gateway-canary gateway="${{ env.ACR_NAME }}.azurecr.io/navigraph-gateway:${{ github.sha }}" -n navigraph
           kubectl set image deployment/web-canary web="${{ env.ACR_NAME }}.azurecr.io/navigraph-web:${{ github.sha }}" -n navigraph
+          kubectl set image deployment/agent-runtime agent-runtime="${{ env.ACR_NAME }}.azurecr.io/navigraph-agent-runtime:${{ github.sha }}" -n navigraph
           kubectl rollout status deployment/gateway-canary -n navigraph --timeout=180s
           kubectl rollout status deployment/web-canary -n navigraph --timeout=180s
           kubectl rollout status deployment/agent-runtime -n navigraph --timeout=180s

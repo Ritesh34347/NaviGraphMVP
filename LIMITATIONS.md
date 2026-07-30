@@ -1637,7 +1637,94 @@ and `cloud-security-tests.yml`. `k8s-manifests-ci.yml` was checked and
 confirmed to use no Azure OIDC login at all (it only ever touches a
 local, ephemeral `kind` cluster), so it needed no change.
 
-**What full version requires**: nothing further planned -- this is a
-real, fixed bug. Not yet verified as of this writing: re-dispatching
-`cd-deploy.yml` after this fix and confirming the real run gets past
-Azure login and into the actual ACR build/push steps.
+**What full version requires**: nothing further -- fully verified. After
+this fix, re-dispatching `cd-deploy.yml` got past Azure login and into
+the real build/push steps, but surfaced a second, distinct real bug (a
+mismatched OIDC subject format) before it could succeed -- see item 68.
+
+### 68. RESOLVED: the federated credentials' `subject` used the plain `owner/repo` name format, but this repo's real OIDC tokens include immutable owner/repo IDs
+
+**What was found**: with item 67's fix in place, the real, re-dispatched
+`cd-deploy.yml` run got all the way to a real token exchange attempt and
+failed with a new, different error: `AADSTS700213: No matching federated
+identity record found for presented assertion subject
+'repo:Ritesh34347@19557415/NaviGraphMVP@1317223914:ref:refs/heads/main'`.
+The actual OIDC token GitHub issued for this repo embeds immutable
+numeric owner/repo IDs in the subject claim
+(`repo:OWNER@ownerId/REPO@repoId:...`), but the `navigraph-cd` app
+registration's two federated credentials (`navigraph-github-push-main`,
+`navigraph-github-pull-request`) were both created with the plain
+`repo:Ritesh34347/NaviGraphMVP:...` name-based subject -- confirmed via
+`az ad app federated-credential list`, which showed exactly that
+mismatch.
+
+**Why this wasn't caught when the federated credentials were first
+created**: nothing had actually exercised a real token exchange against
+them until this same investigation (`cd-deploy.yml` had never gotten
+past item 66's missing-secrets error, and `terraform-plan.yml`'s `plan`
+job -- sharing the pull_request credential -- had never actually run
+against real Azure credentials either). The credential *existing* said
+nothing about whether its subject actually matched what GitHub would
+really present.
+
+**Resolution**: `az ad app federated-credential update` on both
+credentials, changing `subject` to the real, ID-based format
+(`repo:Ritesh34347@19557415/NaviGraphMVP@1317223914:ref:refs/heads/main`
+and `...:pull_request` respectively) -- `workflow_dispatch` runs on
+`main` present the identical `ref:refs/heads/main` subject as a real
+push, confirmed by the fact this fix immediately unblocked the manually
+re-dispatched run too, with no third federated credential needed.
+
+**Verified**: the next re-dispatch of `cd-deploy.yml`
+(`https://github.com/Ritesh34347/NaviGraphMVP/actions/runs/30562940216`)
+completed with every job `success` -- real image builds/pushes for all 3
+services, a real canary deploy at 0% weight, real bake windows at
+10%/50%/100% (each polling the real live ingress-nginx Prometheus
+metrics via `tools/scripts/canary_gate.py`), and a real promotion to
+`gateway-stable`/`web-stable` with a real bot-commit
+(`0168080`) updating `overlays/dev/kustomization.yaml`'s `newTag` fields
+-- the first fully successful real `cd-deploy.yml` run in this project's
+history.
+
+### 69. RESOLVED: `agent-runtime`'s Deployment was never actually updated with a new image during a CD run -- found live via the first fully successful run
+
+**What was found**: real, post-run verification (`kubectl get deployment
+agent-runtime -n navigraph -o jsonpath='{...image}'`) showed
+`navigraphdevacr.azurecr.io/navigraph-agent-runtime:unreleased` still
+running, and the pods' `AGE` was unchanged (3h13m old) despite item 68's
+run having just built and pushed a fresh `navigraph-agent-runtime:<sha>`
+image moments earlier -- i.e. the real cluster's `agent-runtime` never
+actually got the new code.
+
+**Root cause**: `agent-runtime` has no `*-stable`/`*-canary` split (by
+design -- it's a plain rolling-update, internal-only service, see
+DECISIONS.md), so `deploy-canary`'s "Apply base manifests" kustomize step
+was its ONLY path to a new image, driven entirely by
+`overlays/dev/kustomization.yaml`'s `newTag` field for
+`navigraph-agent-runtime`. But that field is only ever bumped by the
+`promote` job's bot-commit, which runs at the very END of a successful
+CD run -- one full cycle *after* the run that actually built the image --
+and `promote` itself only ever calls `kubectl set image` for
+`gateway-stable`/`web-stable`, never for `agent-runtime`. Net effect: a
+`kubectl apply` where the manifest's image field is textually unchanged
+from what's already deployed creates no new ReplicaSet, so the following
+`kubectl rollout status deployment/agent-runtime` step trivially reports
+success on a rollout that never happened -- silently masking the gap
+rather than erroring.
+
+**Why this wasn't caught in Phase 10a's local `kind` validation**: that
+validation applies a fixed, hand-picked tag once and checks the pod comes
+up `Ready` -- it never exercises two sequential CD runs to notice that a
+*second* run's newly-built image never actually lands.
+
+**Resolution**: added an explicit `kubectl set image deployment/agent-runtime
+agent-runtime=...:${{ github.sha }}` call in `deploy-canary`'s "Point the
+canary tracks at the new SHA" step, alongside the existing
+gateway-canary/web-canary calls -- `agent-runtime` has no bake/promotion
+gate of its own, so updating it immediately (same run it was built in) is
+correct, matching how any other plain rolling-update service should
+behave. Not yet re-verified with a fresh CD run as of this writing (the
+fix was applied and reasoned through against the real, observed gap, but
+the next real `cd-deploy.yml` run should be checked to confirm
+`agent-runtime`'s pods actually roll to the new SHA and are no longer
+stuck on `:unreleased`).
