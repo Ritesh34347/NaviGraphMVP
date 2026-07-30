@@ -7,11 +7,25 @@ metadata:
     app: agent-runtime
 spec:
   replicas: 2
+  # REAL BUG, found live on the first cd-deploy.yml run to actually try
+  # rolling agent-runtime to a new image: `maxSurge: 1, maxUnavailable: 0`
+  # requires scheduling a 3rd replica before any old one is torn down --
+  # with only 2 small AKS nodes (1900m allocatable CPU each) already
+  # running gateway/web's *-stable AND *-canary tracks plus every other
+  # cluster service, there was no spare CPU for a surge pod
+  # (`FailedScheduling: Insufficient cpu`), and the rollout hung until
+  # cd-deploy.yml's own 180s timeout killed the job -- masking the real
+  # image-update fix this same investigation had just made. Switched to
+  # `maxSurge: 0, maxUnavailable: 1`: rolls out one-at-a-time by tearing
+  # down an old replica before starting its replacement, so it only ever
+  # needs the SAME footprint agent-runtime already has (never a 3rd),
+  # while still keeping 1 of 2 replicas serving throughout -- no Azure
+  # cost/node-size change needed.
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: agent-runtime

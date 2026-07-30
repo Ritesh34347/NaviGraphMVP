@@ -1728,3 +1728,53 @@ fix was applied and reasoned through against the real, observed gap, but
 the next real `cd-deploy.yml` run should be checked to confirm
 `agent-runtime`'s pods actually roll to the new SHA and are no longer
 stuck on `:unreleased`).
+
+**Verified, with a real complication**: the next re-dispatched run
+(`https://github.com/Ritesh34347/NaviGraphMVP/actions/runs/30564905124`)
+confirmed the fix -- `deployment.apps/agent-runtime image updated` fired
+this time, unlike before -- but the rollout itself then hung and the job
+failed on the 180s timeout. Investigated live: `kubectl describe pod`
+showed the real cause was a NEW, distinct bug, item 70 below.
+
+### 70. RESOLVED: `agent-runtime`'s `maxSurge: 1, maxUnavailable: 0` rollout strategy needs more spare CPU than the real 2-node dev cluster has
+
+**What was found**: with item 69's image-update fix in place,
+`kubectl rollout status deployment/agent-runtime` hung for the full 180s
+timeout. `kubectl describe pod` on the new, stuck replica showed
+`PodScheduled: False` with the real scheduler event
+`0/2 nodes are available: 2 Insufficient cpu`. `agent-runtime`'s
+`maxSurge: 1, maxUnavailable: 0` strategy requires a 3rd replica to be
+scheduled and become Ready before any of the 2 existing ones are torn
+down -- but by this point in Phase 10b, the real cluster is also running
+`gateway`/`web`'s permanent `*-stable`+`*-canary` pairs (4 pods, not 2)
+plus every observability/datastore service, on only 2 real
+`Standard_D2s_v7` nodes (1900m allocatable CPU each, confirmed via
+`kubectl get nodes -o custom-columns=...allocatable.cpu`) -- there was
+simply no spare capacity for a genuinely extra (not replacing) pod.
+
+**Why this wasn't caught in Phase 10a's local `kind` validation**: `kind`
+runs a single-node, resource-unconstrained local cluster with far fewer
+concurrently-running services (no permanent canary tracks, no real
+observability stack pressure) -- a capacity-driven scheduling failure
+like this is specific to the real, resource-limited dev AKS environment,
+not reproducible locally.
+
+**Resolution**: changed `agent-runtime`'s rollout strategy in
+`infra/k8s/base/agent-runtime/deployment.yaml` to `maxSurge: 0,
+maxUnavailable: 1` -- rolls out one-at-a-time by tearing down an old
+replica before starting its replacement, so it only ever needs
+`agent-runtime`'s existing footprint (never a 3rd pod), while keeping 1
+of 2 replicas serving throughout the rollout. No Azure cost or node-size
+change needed. Applied directly to the live, already-stuck Deployment via
+`kubectl patch` to unblock the in-progress rollout immediately (confirmed:
+`kubectl rollout status` completed successfully within seconds after the
+patch, both pods `Running` on the new SHA, the stuck `Pending` replica
+gone), and committed the same change to the source manifest so every
+future `kustomize build`/CD run inherits the fix.
+
+**Verified end to end**: `kubectl get deployment agent-runtime -n
+navigraph -o jsonpath='{...image}'` confirmed the live cluster is running
+`navigraph-agent-runtime:1637375aea5a4019c2c623df72b2871630f89e2a` --
+the exact SHA this investigation's own commits produced -- closing the
+loop on items 66 through 70 with real, observed proof at every step
+rather than an assumption that the fixes "should" work.
