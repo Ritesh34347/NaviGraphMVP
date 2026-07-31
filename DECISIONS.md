@@ -855,3 +855,53 @@ cluster -- future operators should default to reading only specific,
 named env vars or secrets (never a bare `env` dump) and should assume
 any raw exception involving a DB connection may embed credentials in
 its message.
+
+## 2026-07-31 — Anomalies capped by top-N `|z_score|`, not by count or truncation order
+
+When `insight.grounded_narrative_generation`'s (and, once the same gap
+was found there too, `insight.follow_up_suggestion`'s and
+`ops.evaluation_judge`'s) LLM prompts needed a cap on `payload.anomalies`
+to stop a real, live-observed prompt-bloat failure, the cap was defined
+as "the top-20 most extreme findings by `|z_score|`," not "the first 20
+in list order" or a flat count-based truncation. Anomaly findings are
+already ranked by how surprising they are; keeping the most extreme ones
+and dropping the marginal ones (barely over the 2.0 threshold) preserves
+exactly the information a narrative would actually want to lead with,
+rather than an arbitrary subset. Citation validation deliberately still
+checks the FULL, uncapped `anomalies` list in
+`grounded_narrative_generation` (the only one of the three with a
+grounding check) -- the cap only bounds what the model *sees*, never what
+a real citation is allowed to reference.
+
+## 2026-07-31 — Retry exactly once on an empty LLM completion, never more
+
+`AnthropicLLMClient.complete()` now retries the identical request once
+if the response comes back with real `usage`/no error but zero text
+content blocks -- confirmed via live evidence to be a real, transient
+completion glitch, not a structural prompt problem (a bare re-run of the
+same real failing question, no code change, produced a perfect score
+immediately after). The retry count is hard-bounded at exactly one, not
+looped until success: every LLM-backed agent in this codebase already has
+its own graceful malformed-response fallback (drop to an empty narrative,
+record a real `AgentError`, degrade confidence to 0.5) specifically so a
+genuinely bad response never crashes anything -- a second identical empty
+response is rare enough, and the existing fallback handles it well enough,
+that trading unbounded retries (and their real added cost/latency) for a
+marginal reliability gain wasn't worth it. Confirmed live: even with the
+retry in place, one golden question in the final re-verification run
+still hit two empty completions in a row and degraded gracefully exactly
+as designed -- this residual is accepted, not chased further.
+
+## 2026-07-31 — `cd-deploy.yml`'s federated credentials updated to GitHub's real ID-based OIDC subject format, not reverted to name-based
+
+GitHub's real OIDC tokens for this repo embed immutable numeric owner/
+repo IDs in the subject claim (`repo:owner@ownerId/repo@repoId:...`), not
+the plain `repo:owner/repo:...` format the `navigraph-cd` app
+registration's federated credentials were originally created with
+(confirmed live: Azure AD rejected the real token with "No matching
+federated identity record found" until the credentials' `subject` field
+was updated to match). The fix updates the Azure-side credential to the
+real format GitHub actually presents, rather than seeking a way to make
+GitHub emit the older, simpler format -- the ID-based format is the more
+correct, forward-looking choice anyway (it survives a repo rename or
+ownership transfer, which a name-based subject would silently break).

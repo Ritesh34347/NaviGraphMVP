@@ -953,3 +953,104 @@ yet done**: a real `cd-deploy.yml` CI run (attempted but not yet
 confirmed executing/succeeding -- `gh` CLI auth was still pending at
 session's end), and a full, unblocked eval-harness pass once the real
 Anthropic API quota resets on 2026-08-01.
+
+## 2026-07-31 — Phase 10b closed out: CI turned fully green, `cd-deploy.yml` proven end to end for real, and the deferred large-result-set eval bug fixed and re-verified
+
+This entry closes the two items the previous entry logged as "not yet
+done." Both required extensive real, live debugging against this repo's
+actual GitHub Actions and Azure infrastructure -- not one of the real
+bugs found below could have been caught by any local test, `terraform
+validate`, or `kustomize build`, since they only manifest against a real
+GitHub Actions runner, a real Azure OIDC token exchange, or a real,
+resource-constrained AKS cluster.
+
+**CI, fully green for the first time in this repo's history.** This
+repository was only pushed to GitHub during Phase 10b -- every workflow
+had literally zero real executions before this investigation began. Six
+independent real bugs were found and fixed across three commits:
+`ci.yml`'s Python job never installed `agent_runtime`'s real dependency
+chain (only Phase 1's original three packages); its Node job never
+installed the Playwright browser binary; `terraform-plan.yml` and
+`cloud-security-tests.yml` both referenced the `secrets` context inside a
+job-level `if:` (disallowed by GitHub, silently invalidating both entire
+workflow files on every trigger); three `tools/scripts/*.py` files had a
+real `ruff` `EXE001` violation (a shebang present but the file never
+marked executable in git, invisible on this Windows dev machine); `web/playwright.config.ts`
+had no `webServer` block, so its test always failed with
+`ERR_CONNECTION_REFUSED` on a clean runner; and `mypy packages/`
+collided on duplicate module names (`tests`, and a same-named Alembic
+migration file) once every colliding package was finally swept together
+in one invocation. Full root-cause detail for all six: `LIMITATIONS.md`
+item 65.
+
+**`cd-deploy.yml`, proven fully automatic for the first time, after six
+more real bugs.** Getting from zero to a genuinely unattended, fully
+successful CD run required: setting the `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/
+`AZURE_SUBSCRIPTION_ID` GitHub secrets (never actually configured despite
+an earlier record saying this wiring was complete); adding
+`permissions: id-token: write` to three workflows (missing entirely,
+so Azure OIDC login failed with "Failed to fetch federated token from
+GitHub"); updating the `navigraph-cd` app registration's federated
+credentials to the real, ID-based OIDC subject format GitHub actually
+issues (`repo:owner@ownerId/repo@repoId:...`, not the plain
+name-based format the credentials were originally created with);
+explicitly setting `agent-runtime`'s image in `deploy-canary` (it has no
+`*-stable`/`*-canary` split, so it was silently relying on a
+kustomize `newTag` field that only gets bumped one full CD cycle late --
+real pods were found still running the stale `:unreleased` tag
+indefinitely); switching `agent-runtime`'s rollout `maxSurge`/
+`maxUnavailable` from `1`/`0` to `0`/`1` after a real `FailedScheduling:
+Insufficient cpu` event (the 2-node dev cluster had no spare capacity for
+a genuinely extra pod once gateway/web's permanent canary tracks also
+existed); and adding a bounded rebase-and-retry loop around `promote`'s
+final `git push`, which was rejected twice for real whenever any other
+commit landed on `main` during a run's ~20-minute build+bake window.
+Full detail: `LIMITATIONS.md` items 66-72. The final, fully clean,
+zero-manual-intervention run: every job succeeded, confirmed both via
+the GitHub Actions UI and directly against the live cluster's deployed
+image tags on `gateway-stable`/`web-stable`/`agent-runtime`.
+
+**The deferred large-result-set eval-harness bug (`LIMITATIONS.md` item
+63), fixed and verified once the real Anthropic API quota reset.** Two
+distinct, independent real bugs were found and fixed, in that order:
+(1) `insight.grounded_narrative_generation`, `insight.follow_up_suggestion`,
+and `ops.evaluation_judge` all rendered `payload.anomalies` uncapped into
+their LLM prompts (and `evaluation_judge` also rendered `final_rows`
+uncapped) -- for real, heavy-tailed financial data, a population z-score
+check can flag a large fraction of groups as outliers regardless of the
+result set's actual row count (a 320-row result triggered this just as
+easily as a 10,000-row one), bloating the prompt enough to produce a
+malformed or empty model response. Fixed by capping anomalies to the
+top-20 by `|z_score|` and rows to the first 200, with citation validation
+in `grounded_narrative_generation` still checked against the full,
+uncapped lists. (2) Re-verifying fix (1) against the real model surfaced
+a second, genuinely independent bug: the live Anthropic API occasionally
+returns a real HTTP 200 response -- real `usage`, no error -- with zero
+text content blocks, unrelated to prompt size (confirmed via raw-response
+inspection and a direct synthetic reproduction). Fixed by retrying the
+identical request exactly once in `AnthropicLLMClient.complete()` when
+text comes back empty. Both fixes carry real unit tests (6 new tests
+total, including 3 against a real `httpx.MockTransport` for the retry
+logic) and were verified with real, repeated re-runs of the golden-set
+harness against the live cloud stack: `gq_004` recovered from a
+`correctness=1` empty narrative to `correctness=4, groundedness=5,
+narrative_quality=4` in the final run. The honest residual -- `gq_008`
+still hit a double empty-completion in that same final run -- is logged,
+not glossed over: the retry reduces but cannot fully eliminate genuine,
+non-deterministic live-model behavior.
+
+**Process note**: three real credential/permission gaps in the working
+`gh` CLI PAT were hit and resolved live during this investigation (missing
+Actions-secrets write permission, missing Actions read/write permission
+for `workflow_dispatch`) -- each required the user to edit the token's
+own permissions rather than issuing a new one, resolved in minutes each
+time rather than another full re-authentication cycle.
+
+**Final state**: CI green, `cd-deploy.yml` proven fully automatic end to
+end against real Azure/AKS infrastructure with zero manual intervention,
+and the eval harness's own real, cloud-verified pipeline-success rate
+recovered from its original 60-70% (Phase 8/9 runs) with the specific
+large-result-set failure mode now closed. Every fix in this entry is
+committed, pushed, and independently confirmed via a real subsequent
+CI/CD run or a real harness re-run -- never marked done on inspection
+alone.
