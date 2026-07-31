@@ -141,6 +141,72 @@ async def test_worked_example_produces_exact_sql_skeleton_with_no_llm_call() -> 
 
 
 # ---------------------------------------------------------------------------
+# (a2) Real bug found live (LIMITATIONS.md item 38): a "how many X" question
+# must produce COUNT(*), never a SUM over a resolved measure column.
+# ---------------------------------------------------------------------------
+
+_TRANSACTION_COUNT_COLUMNS = [
+    ResolvedColumnRef(
+        term="customer",
+        catalog_column_id="col_customer",
+        table_name="STAGING_TRANSACTIONS",
+        schema_name="STAGING",
+        column_name="CUSTOMERID",
+        data_type="TEXT",
+        role="dimension",
+    ),
+]
+
+
+async def test_how_many_question_produces_count_star_not_sum() -> None:
+    """The real gq_002 scenario: "How many transactions has each customer
+    made?" resolves only a dimension column (CUSTOMERID), no measure
+    column at all -- the fix must still produce a real COUNT(*), not a
+    bare, ungrouped SELECT."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question="How many transactions has each customer made?",
+            intent="metric_lookup",
+            columns=_TRANSACTION_COUNT_COLUMNS,
+        )
+    )
+
+    assert fake_llm.calls == []
+    assert output.errors == []
+    statement = output.result.statements[0]
+    assert statement.sql == (
+        "SELECT STAGING_TRANSACTIONS.CUSTOMERID, COUNT(*) AS RECORD_COUNT\n"
+        "FROM STAGING.STAGING_TRANSACTIONS\n"
+        "GROUP BY STAGING_TRANSACTIONS.CUSTOMERID"
+    )
+
+
+async def test_how_many_question_ignores_a_spuriously_resolved_measure_column() -> None:
+    """Even if schema_mapping (or an upstream mis-resolution) attaches a
+    real `role="measure"` column to a "how many" question, it must not be
+    summed -- COUNT(*) always wins for this question shape."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question="How many transactions has each customer made?",
+            intent="metric_lookup",
+            columns=_TRANSACTION_COUNT_COLUMNS + [_MARKET_VOLUME_COLUMNS[0]],  # adds UNITS as measure
+        )
+    )
+
+    statement = output.result.statements[0]
+    assert "SUM" not in statement.sql
+    assert "COUNT(*) AS RECORD_COUNT" in statement.sql
+
+
+# ---------------------------------------------------------------------------
 # (b) A real predicate phrase + a canned valid LLM response -> a correctly
 # bind-parameterized GeneratedSql. The literal value must appear in `params`,
 # never in the `sql` string.

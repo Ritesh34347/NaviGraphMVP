@@ -1906,3 +1906,37 @@ without waiting for the next real deploy.
 
 **What full version requires**: nothing further planned -- verify on the
 next real CD run that a concurrent push no longer breaks `promote`.
+
+### 73. RESOLVED: SQL Generation's `SUM`-vs-`COUNT` aggregation gap (item 38's `gq_002` finding)
+
+**What was found** (originally, Phase 8): `gq_002` ("How many
+transactions has each customer made?") resolved only a dimension column
+(`CUSTOMERID`, no numeric measure column at all, confirmed against the
+real golden question's own `expected_columns: [CUSTOMERID]`), yet SQL
+Generation's `_aggregation_function` had no way to express "count the
+rows" independent of a resolved measure column -- `_generate_statements`
+only ever emitted an aggregate when at least one `role="measure"` column
+existed, and even then only ever chose `SUM`/`COUNT` keyed on that
+column's data type, never a bare `COUNT(*)`. The real, live result was a
+nonsensical per-customer total like "1,229,737,256 transactions."
+
+**Resolution**: added a small, documented phrase-trigger heuristic,
+`_is_count_question` (mirroring `_needs_predicate_resolution`'s existing
+style) -- `"how many"`, `"number of"`, `"count of"` -- that, when
+matched, always emits `COUNT(*) AS RECORD_COUNT` and intentionally
+ignores any `role="measure"` columns for aggregation purposes (a "how
+many" question summing a resolved numeric field would be just as wrong
+as summing the wrong one). Also fixed the `GROUP BY` condition, which
+previously only fired when a measure column existed -- a count-only
+query with dimension columns but no measure needs `GROUP BY` too, or it
+would return one row per record instead of one row per group. Verified
+with 2 new unit tests: the exact `gq_002` shape (dimension-only,
+produces `COUNT(*)`), and a case proving a spuriously-resolved measure
+column is still correctly ignored when the question is count-shaped.
+
+**What full version requires**: nothing further planned -- this specific,
+real finding from item 38 is fully resolved. The rest of item 38's
+findings (the judge's own occasional malformed-response rate, the
+gq_007/gq_010 schema-resolution misses already addressed by Phase 9's
+join-inference fix and the Clarification Coordinator respectively) remain
+as originally logged.

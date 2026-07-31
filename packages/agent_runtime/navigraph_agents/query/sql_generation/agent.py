@@ -102,6 +102,39 @@ _TEMPORAL_TRIGGER_PHRASES = (
 
 _VALID_OPERATORS = {"=", "!=", ">", ">=", "<", "<=", "IN", "BETWEEN", "LIKE"}
 
+# REAL BUG, found live against a real model (LIMITATIONS.md item 38):
+# `_aggregation_function`'s SUM/COUNT choice, keyed only on a resolved
+# measure column's data type and intent, has no way to express "count the
+# rows," which "how many X"-shaped questions actually need -- for real,
+# live gq_002 ("How many transactions has each customer made?"), this
+# produced a real SUM over whatever numeric column got resolved as
+# `role="measure"`, yielding a nonsensical "1,229,737,256 transactions"
+# per customer. A `COUNT(*)` trigger phrase check, mirroring
+# `_needs_predicate_resolution`'s existing small-heuristic style, fixes
+# this at the one place it can be fixed correctly regardless of which
+# (if any) measure column upstream resolved.
+_COUNT_QUESTION_TRIGGER_PHRASES = (
+    "how many",
+    "number of",
+    "count of",
+)
+
+
+def _is_count_question(question: str) -> bool:
+    """A "how many X" / "number of X" / "count of X" question is asking
+    for a row COUNT, never a SUM over some resolved numeric column --
+    regardless of whatever `role="measure"` column schema_mapping (or an
+    upstream Semantic Retrieval mis-resolution) may have attached. This
+    intentionally overrides `_aggregation_function` entirely rather than
+    only supplementing it: a "how many" question summing a resolved
+    numeric field would be just as wrong as summing the wrong one.
+    Deliberately a small, documented phrase-trigger heuristic, not an
+    attempt at exhaustive NLP -- same honesty as `_needs_predicate_resolution`.
+    """
+
+    lowered = question.lower()
+    return any(phrase in lowered for phrase in _COUNT_QUESTION_TRIGGER_PHRASES)
+
 
 def _load_system_prompt() -> str:
     return _PROMPT_PATH.read_text(encoding="utf-8")
@@ -512,9 +545,17 @@ class SqlGenerationAgent:
         from_clause = _build_from_clause(tables, payload.schema_mapping.joins, schema_by_table)
 
         select_parts = [_qualified_col(c) for c in dimension_columns]
-        for measure in measure_columns:
-            agg = _aggregation_function(measure, payload.intent)
-            select_parts.append(f"{agg}({_qualified_col(measure)}) AS {measure.column_name}_TOTAL")
+        is_count_question = _is_count_question(payload.original_question)
+        if is_count_question:
+            # A "how many"/"number of"/"count of" question always means
+            # COUNT(*) -- never a SUM over whatever measure column upstream
+            # happened to resolve (see this constant's own docstring and
+            # LIMITATIONS.md item 38 for the real, live failure this fixes).
+            select_parts.append("COUNT(*) AS RECORD_COUNT")
+        else:
+            for measure in measure_columns:
+                agg = _aggregation_function(measure, payload.intent)
+                select_parts.append(f"{agg}({_qualified_col(measure)}) AS {measure.column_name}_TOTAL")
 
         columns_by_name = {c.column_name: c for c in columns}
         where_clause, params = _build_where_clause(predicate_resolutions, columns_by_name)
@@ -522,7 +563,8 @@ class SqlGenerationAgent:
         sql_lines = [f"SELECT {', '.join(select_parts)}", from_clause]
         if where_clause:
             sql_lines.append(where_clause)
-        if measure_columns and dimension_columns:
+        has_aggregate = bool(measure_columns) or is_count_question
+        if has_aggregate and dimension_columns:
             sql_lines.append(
                 f"GROUP BY {', '.join(_qualified_col(c) for c in dimension_columns)}"
             )
