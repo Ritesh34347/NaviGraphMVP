@@ -1940,3 +1940,90 @@ findings (the judge's own occasional malformed-response rate, the
 gq_007/gq_010 schema-resolution misses already addressed by Phase 9's
 join-inference fix and the Clarification Coordinator respectively) remain
 as originally logged.
+
+### 74. RESOLVED: cert-manager's HTTP-01 solver pods had no NetworkPolicy allowing ingress -- both real TLS certificates sat unissued for 16+ hours
+
+**What was found**: `gateway-tls`/`web-tls` had been stuck
+`Ready: False` since cluster bootstrap, with the real Challenge objects
+reporting "Waiting for HTTP-01 challenge propagation ... context
+deadline exceeded" for over 16 hours. Root-caused with real evidence, not
+assumption: a direct in-cluster `curl` to the exact real challenge token
+path timed out identically whether routed through the public hostname or
+straight to the solver Service's ClusterIP (bypassing ingress-nginx
+entirely) -- ruling out an ingress-routing problem and confirming the
+network layer itself was the block. `cm-acme-http-solver-*` pods (one
+dynamically created per in-flight ACME challenge, always labeled
+`acme.cert-manager.io/http01-solver: "true"`) were never covered by any
+of this namespace's existing NetworkPolicies -- `default-deny-all`'s
+empty `podSelector: {}` silently denied all ingress to them, including
+from ingress-nginx itself. This class of gap (a new pod type introduced
+without its own explicit allow-rule under a default-deny scheme) is the
+same shape as item 64's gateway→agent-runtime finding, just for a
+dynamically-created pod type nobody had written a static manifest for.
+
+**Resolution**: added `allow-ingress-nginx-to-acme-solver`, a real
+NetworkPolicy allowing ingress from the `ingress-nginx` namespace to any
+pod labeled `acme.cert-manager.io/http01-solver: "true"` on port 8089
+(cert-manager's own fixed, internal solver-container port, confirmed via
+`kubectl get svc -l acme.cert-manager.io/http01-solver=true`). Applied
+directly to the live cluster first to unblock the already-stuck
+certificates immediately, then committed to source so every future
+deploy inherits it. **Verified end to end, twice**: both certificates
+issued successfully within seconds of the fix ("The certificate has been
+successfully issued"), first against `letsencrypt-staging` (confirming
+the real fix), then -- since this was exactly the "one verified staging
+issuance" `DECISIONS.md` names as the trigger to promote -- against
+`letsencrypt-prod` for real, genuinely browser-trusted certificates,
+confirmed via a real `curl` with full TLS verification (no `-k` bypass)
+returning `HTTP 200` on both public hostnames.
+
+**What full version requires**: nothing further planned -- both real
+certificates are issued, trusted, and auto-renewing (`Renewal Time` set
+by cert-manager). The one remaining, already-logged limitation (item 52)
+is that this is still `nip.io`, not a real registered domain -- unrelated
+to this fix.
+
+### 75. RESOLVED: gateway's HTTP client to agent-runtime (and ingress-nginx's own proxy timeout) were both shorter than the real Request Orchestrator's actual latency
+
+**What was found**: the first real end-to-end `/ask` call ever made
+through the actual public gateway path (every prior real verification
+this project ran -- the eval harness -- called the Request Orchestrator
+directly inside the `agent-runtime` pod, bypassing this HTTP hop
+entirely) returned a real `502 {"detail":"agent-runtime is unavailable
+or returned an error"}`. Root-caused with real evidence: `agent-runtime`'s
+own logs showed the exact same `trace_id` still genuinely
+processing -- real `Anthropic`/`Snowflake`/`OPA` calls -- 45+ seconds
+after `gateway`'s own log recorded "agent-runtime call failed." Gateway's
+`httpx.AsyncClient` used a flat `timeout=30.0`, and `ingress-nginx`'s
+default `proxy-read-timeout` (60s, no override annotation existed) was
+also shorter than the real pipeline's actual worst-case latency -- a
+question requiring several sequential LLM calls (Conversation, Intent
+Understanding, Semantic Retrieval predicate resolution, Narrative
+Generation, Follow-up Suggestion, now potentially plus one retry each
+from item 63's empty-completion fix) can genuinely take well over a
+minute for real.
+
+**Why this was never caught before**: nothing in this entire project's
+extensive real verification history had ever actually exercised the real
+public HTTP path end to end -- the eval harness, `tests/integration/orchestrator_pipeline/`,
+and every other pipeline-chain test all call `RequestOrchestratorAgent`
+directly in-process or via a pod-local invocation, never through
+`gateway`'s own `httpx` client and never through the real
+internet-facing ingress.
+
+**Resolution**: bumped `gateway`'s `httpx.AsyncClient` timeout from 30s
+to 120s, and added matching `nginx.ingress.kubernetes.io/proxy-read-timeout`/
+`proxy-send-timeout: "120"` annotations to both the `gateway` and
+`gateway-canary` Ingress objects (both share the same real hostname's
+server block, so both need the same value -- same reasoning as the
+existing shared `ssl-redirect` annotation). Raising only one of the two
+layers would have just moved the bottleneck to the other. Applied
+directly to the live cluster's Ingress objects first to unblock real
+usage immediately, then committed to source.
+
+**What full version requires**: nothing further planned for this
+specific gap. A more robust long-term design (e.g. a real async
+job/polling pattern instead of one long-held HTTP connection) is a
+reasonable future improvement if real question latency grows further,
+but is out of scope for this fix -- 120s comfortably covers every real
+latency this project has ever observed.

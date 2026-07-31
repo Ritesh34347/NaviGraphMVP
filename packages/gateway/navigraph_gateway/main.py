@@ -53,7 +53,18 @@ tracer = get_tracer("navigraph-gateway")
 async def lifespan(app: FastAPI):
     settings = get_gateway_settings()
     app.state.settings = settings
-    app.state.http_client = httpx.AsyncClient(base_url=settings.agent_runtime_base_url, timeout=30.0)
+    # REAL BUG, found live via the first real end-to-end /ask call ever made
+    # through the actual public gateway path: 30s was shorter than the real
+    # Request Orchestrator's actual end-to-end latency for a non-trivial
+    # question (confirmed live: agent-runtime was still genuinely
+    # processing -- real Anthropic/Snowflake/OPA calls in its own logs --
+    # 45+ seconds after this client had already given up and returned a 502
+    # to the caller). Bumped to 120s; the gateway/gateway-canary Ingress
+    # objects' own `proxy-read-timeout`/`proxy-send-timeout` annotations
+    # were bumped to match (see infra/k8s/overlays/dev/ingress-patch.yaml)
+    # -- raising only one of the two layers just moves the bottleneck to
+    # the other.
+    app.state.http_client = httpx.AsyncClient(base_url=settings.agent_runtime_base_url, timeout=120.0)
     try:
         yield
     finally:

@@ -7,6 +7,14 @@
 # (see cluster-issuer.yaml) can now issue real certs against this stable
 # hostname via the HTTP01 challenge.
 #
+# PROMOTED from letsencrypt-staging to letsencrypt-prod after a real
+# staging certificate issuance was observed to succeed (per
+# cluster-issuer.yaml's own documented sequencing) -- see LIMITATIONS.md's
+# entry on the real NetworkPolicy gap (cert-manager's dynamically-created
+# HTTP-01 solver pods were never covered by any allow-rule, silently
+# blocking every challenge for 16+ hours) that had to be fixed first
+# before either issuer could ever succeed.
+#
 # REAL BUG, found live: `spec.rules` has no Kubernetes-defined patch merge
 # key, so a strategic-merge patch supplying only `host` REPLACES THE WHOLE
 # rules ARRAY -- silently deleting each base Ingress's `http.paths.backend`
@@ -25,7 +33,7 @@ metadata:
   namespace: navigraph
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: letsencrypt-staging
+    cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   tls:
     - hosts:
@@ -74,7 +82,21 @@ metadata:
   namespace: navigraph
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: letsencrypt-staging
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # REAL BUG, found live via the first real end-to-end /ask call ever
+    # made through the actual public gateway path (every prior real
+    # verification this project ran the eval harness directly inside the
+    # agent-runtime pod, bypassing this HTTP hop entirely): ingress-nginx's
+    # default proxy-read-timeout (60s) is shorter than the real Request
+    # Orchestrator's actual end-to-end latency for a non-trivial question
+    # (confirmed live: a real `/ask` call was still genuinely processing --
+    # real Anthropic/Snowflake/OPA calls in agent-runtime's own logs -- 45+
+    # seconds after nginx would already have timed out the client
+    # connection). Matches the timeout bump on gateway's own httpx client
+    # below (see navigraph_gateway/main.py) -- both layers need to agree,
+    # or raising just one only moves the bottleneck to the other.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
 spec:
   tls:
     - hosts:
@@ -99,6 +121,12 @@ metadata:
   namespace: navigraph
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Matches the `gateway` ingress's own timeout annotations above --
+    # both share the same real hostname/server block, so their proxy
+    # timeouts must agree (same reasoning as the shared `ssl-redirect`
+    # annotation elsewhere in this file).
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
 spec:
   tls:
     - hosts:

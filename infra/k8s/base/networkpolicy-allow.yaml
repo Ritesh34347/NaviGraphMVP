@@ -357,3 +357,38 @@ spec:
       ports:
         - protocol: TCP
           port: 9090
+---
+# REAL BUG, found live: cert-manager's HTTP-01 challenge solver pods (one
+# dynamically created per in-flight ACME challenge, always labeled
+# `acme.cert-manager.io/http01-solver: "true"` regardless of which
+# Certificate/domain/token they're serving) were never covered by any
+# NetworkPolicy here -- `default-deny-all`'s empty `podSelector: {}`
+# silently blocked ALL ingress to them, including from ingress-nginx
+# itself. Both `gateway-tls` and `web-tls` Certificates sat permanently
+# `Ready: False` for 16+ hours as a result (Challenge status stuck on
+# "Waiting for HTTP-01 challenge propagation ... context deadline
+# exceeded"), confirmed as a real network-layer block (not an
+# ingress-routing issue) by a direct in-cluster `curl` to the solver
+# Service itself timing out identically. Port 8089 is cert-manager's own
+# fixed, internal solver-container port (confirmed live via `kubectl get
+# svc -l acme.cert-manager.io/http01-solver=true`) -- stable regardless
+# of whichever random NodePort/Service name gets generated per challenge.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-nginx-to-acme-solver
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8089
