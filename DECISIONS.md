@@ -905,3 +905,23 @@ real format GitHub actually presents, rather than seeking a way to make
 GitHub emit the older, simpler format -- the ID-based format is the more
 correct, forward-looking choice anyway (it survives a repo rename or
 ownership transfer, which a name-based subject would silently break).
+
+## 2026-07-31 — Demo chat UI calls the gateway directly from the browser (real CORS), not through a Next.js API-route proxy; charts are plain CSS/SVG, no new dependency
+
+Two small, related choices building `web`'s first real chat interface
+(LIMITATIONS.md item 77). First: `ChatDemo.tsx` calls
+`NEXT_PUBLIC_GATEWAY_URL` (the real public gateway) directly from the
+browser rather than proxying through a Next.js API route -- a proxy would
+add a hop and a second place for the 120s timeout (item 75) to need
+re-tuning, for no real benefit here (there are no secrets to hide server-
+side; the demo trust model already puts `tenant_id`/`roles` in the
+client). This did require adding real `CORSMiddleware` to the gateway
+(a genuinely new requirement -- every prior real caller was `curl`/`httpx`,
+neither subject to browser same-origin policy), scoped to exactly the
+real `web` origin plus `localhost:3000` for local iteration, not a
+wildcard. Second: charts render with plain HTML/CSS bars and an inline
+SVG polyline instead of a real charting library -- `web/package.json`
+never actually gained Recharts despite Phase 1's `DECISIONS.md` naming it,
+and installing a new dependency for the first time this close to a live
+demo wasn't worth the risk for bar/line/single-value rendering simple
+enough to do by hand.

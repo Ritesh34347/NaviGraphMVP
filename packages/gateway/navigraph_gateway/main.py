@@ -34,6 +34,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from navigraph_shared.contracts import RequestContext
 from navigraph_shared.telemetry import (
     bind_request_context,
@@ -49,9 +50,12 @@ logger = configure_logging("navigraph-gateway")
 tracer = get_tracer("navigraph-gateway")
 
 
+_settings = get_gateway_settings()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_gateway_settings()
+    settings = _settings
     app.state.settings = settings
     # REAL BUG, found live via the first real end-to-end /ask call ever made
     # through the actual public gateway path: 30s was shorter than the real
@@ -72,6 +76,22 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="NaviGraph Gateway", version="0.1.0", lifespan=lifespan)
+
+# Real bug's fix, found while wiring up the first actual browser-facing
+# chat UI: the `web` app's real client component calls this gateway's
+# `/ask` directly from the browser (a different origin,
+# app.navigraph.* vs api.navigraph.*), and no browser allows that without
+# an explicit CORS allow-origin -- every prior real verification of `/ask`
+# used `curl`/`httpx`, which aren't subject to the browser's
+# same-origin policy, so this was never exercised before. `localhost:3000`
+# is included too so `next dev` against the real deployed gateway works
+# without a separate CORS config for local iteration.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[_settings.web_origin, "http://localhost:3000"],
+    allow_methods=["POST"],
+    allow_headers=["Content-Type"],
+)
 
 # Prometheus /metrics endpoint. Exposed on the same port (8000) per the
 # infra workstream's Prometheus scrape config (gateway:8000/metrics).

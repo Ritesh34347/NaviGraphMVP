@@ -2075,3 +2075,59 @@ concurrency group keyed on the `promote` job specifically, queuing rather
 than racing) -- logged as a real, unimplemented improvement rather than
 solved here, since this project's CD workflow has otherwise never needed
 run-to-run serialization before now.
+
+### 77. `web` had no real chat interface until now -- was still Phase 1's placeholder status page, never updated by any later phase
+
+**What was found**: asked "how do I demo this," the honest answer was
+"curl or Postman" -- `web/src/app/page.tsx` was still exactly Phase 1's
+scaffolding (`getGatewayStatus()`, a single server-rendered "gateway
+reachable: yes/no" line). Every later phase's real verification
+(`eval/run_harness.py`, every `tests/integration/*_pipeline/` suite, every
+live smoke test) called the gateway's `/ask` directly via `httpx`/`curl`,
+so nothing ever needed a real browser-facing UI, and nothing ever built
+one. This is the same class of drift already named in item 32 (docs
+falling behind what's actually built) but in the opposite direction --
+here, a real feature was simply never added, not a doc going stale.
+
+**What was added**: a real, working client-side chat UI (`web/src/app/ChatDemo.tsx`)
+-- text input, real narrative/chart/data-table/follow-up-suggestion
+rendering per `RequestOrchestratorResult`'s actual outcome variants
+(`answered`/`needs_clarification`/`failed`), real `session_id` threading
+across turns for genuine multi-turn conversation. It calls the gateway's
+`/ask` directly from the browser (not through a Next.js API route), which
+required adding real CORS middleware to the gateway (`packages/gateway/navigraph_gateway/main.py`)
+-- the first time any browser-origin call had ever been made against
+`/ask` in this project's history; every prior real call used `curl`/`httpx`,
+neither of which is subject to a browser's same-origin policy, so this
+gap was invisible until now. Two real tests
+(`packages/gateway/tests/test_cors.py`) prove the real allow/deny
+behavior against the actual configured `web_origin`.
+
+**Known, deliberate scope limits of this addition** (not oversights):
+- **No real sign-in.** `tenant_id`/`user_id`/`roles`/`claims` are fixed
+  demo constants in the client component (`navikenz-poc`/`demo-user`/
+  `["analyst"]`) -- identical trust model to every prior real API call
+  this project has made (see item 23's Azure AD deferral), just now also
+  true of the browser path. A real login screen is future work, not a
+  regression introduced here.
+- **No SQL preview.** `RequestOrchestratorResult` (the real contract the
+  gateway returns) never carries the generated SQL -- only
+  `final_columns`/`final_rows`/`chart`/`narrative` -- so the UI can't show
+  it without a contract change. Logged rather than silently working
+  around it by reaching into an unrelated agent's output.
+- **No real progress indicator.** A real question can take up to ~2
+  minutes (see item 75) but the UI shows one static "Thinking..." message
+  the whole time, not real incremental progress -- there is no
+  streaming/SSE mechanism anywhere in the real pipeline to drive one.
+- **Charts are plain HTML/CSS/SVG, not a charting library.** `web/package.json`
+  never actually had Recharts installed (Phase 1's own decision named it,
+  but no later phase added the dependency) -- adding a real new npm
+  dependency wasn't necessary for a demo-quality bar/line/single-value
+  rendering, and was skipped to avoid an unreviewed new dependency this
+  close to a live deploy.
+
+**What full version requires**: a real sign-in flow (blocked on the
+already-logged Azure AD gap, item 23); a real SQL-preview field added to
+`RequestOrchestratorResult` if that transparency is wanted; a real
+async/streaming answer mechanism if question latency grows further past
+what a static "thinking" message can reasonably cover.

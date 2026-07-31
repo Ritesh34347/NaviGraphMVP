@@ -1,5 +1,7 @@
 import { env } from "@/lib/env";
 
+import ChatDemo from "./ChatDemo";
+
 interface GatewayStatus {
   reachable: boolean;
   detail: string;
@@ -37,8 +39,10 @@ export default async function HomePage() {
         NaviGraph is a multi-tenant conversational BI platform that lets teams ask questions of
         their data in natural language and get back trustworthy, explainable answers.
       </p>
-      <p>Gateway status: {status.reachable ? "reachable" : "gateway unreachable"}</p>
-      <p>{status.detail}</p>
+      <p className="status-line">
+        Gateway status: {status.reachable ? "reachable" : "gateway unreachable"} ({status.detail})
+      </p>
+      <ChatDemo gatewayUrl={env.NEXT_PUBLIC_GATEWAY_URL} />
     </main>
   );
 }
