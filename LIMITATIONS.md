@@ -2027,3 +2027,51 @@ job/polling pattern instead of one long-held HTTP connection) is a
 reasonable future improvement if real question latency grows further,
 but is out of scope for this fix -- 120s comfortably covers every real
 latency this project has ever observed.
+
+### 76. RESOLVED: item 72's `promote` retry-and-rebase fix couldn't handle a genuine same-line merge conflict, when two concurrent CD runs' promote commits raced
+
+**What was found**: item 72's bounded rebase-and-retry loop was built for
+the *ordinary* case (an unrelated commit lands on `main` during the bake
+window, and `promote`'s own edit rebases cleanly on top of it). This time
+was different: two CD runs were genuinely concurrent -- run1 (promoting
+`289ff11`, the SUM-vs-COUNT fix) and run2 (promoting `fb55ec1`, the
+NetworkPolicy+timeout fix) -- and BOTH runs' `promote` jobs were editing
+the exact same `newTag:` lines in
+`infra/k8s/overlays/dev/kustomization.yaml` at the same time. Run1's bot
+commit (`7d4ed88`, setting `newTag` to `289ff11`) landed on `origin/main`
+first, during run2's own bake window. When run2's `promote` tried to
+rebase its own bot commit (setting `newTag` to `fb55ec1`) on top of
+`origin/main`, git correctly reported a genuine content conflict on the
+identical lines -- `CONFLICT (content): Merge conflict in
+infra/k8s/overlays/dev/kustomization.yaml` -- which no amount of retrying
+a plain `git rebase` can auto-resolve, since both sides are real,
+different, non-mergeable edits to the same field. Run2's job failed after
+exhausting its 5 retry attempts.
+
+**Confirmed the live cluster was unaffected**: `kubectl get deployment
+gateway-stable web-stable agent-runtime -n navigraph -o jsonpath=...`
+showed all three genuinely running run2's image
+(`fb55ec1924238ea90f1b833a41e78a72948b06b8`) -- the actual `kubectl set
+image`/rollout steps in run2's job had already succeeded before the
+conflicting bot-commit step ran. Only the git-tracked `newTag`
+bookkeeping (now stuck at run1's older `289ff11`, one promotion behind
+the real, live state) was left wrong.
+
+**Resolution**: manually corrected `infra/k8s/overlays/dev/kustomization.yaml`'s
+three `newTag` fields on `main` from `289ff11...` to
+`fb55ec1924238ea90f1b833a41e78a72948b06b8`, matching the confirmed-correct
+live cluster state -- the same resolution pattern item 72 already used
+for the first occurrence of this bug class.
+
+**What full version requires**: item 72's retry-and-rebase loop still
+correctly handles the common case (an unrelated commit landing mid-bake);
+it does not and cannot auto-resolve two promotions racing to set the same
+field to two different values -- that's a genuine conflict, not a
+transient rejection, and auto-resolving it would mean silently picking
+one promotion's SHA over the other with no principled way to know which
+one is actually newest/correct. A more robust fix would serialize
+`promote` jobs across concurrent CD runs (e.g. a GitHub Actions
+concurrency group keyed on the `promote` job specifically, queuing rather
+than racing) -- logged as a real, unimplemented improvement rather than
+solved here, since this project's CD workflow has otherwise never needed
+run-to-run serialization before now.
