@@ -2194,3 +2194,66 @@ still be worthwhile defense-in-depth for any future genuinely-static page
 that references `NEXT_PUBLIC_GATEWAY_URL` directly in client code (which
 IS correctly build-time-inlined, unaffected by this specific bug) -- not
 done here since no such page exists yet.
+
+### 79. RESOLVED: Semantic Retrieval's LLM call silently truncated (empty response) once the real candidate list + unresolved-term count got large enough, causing whole-batch clarification failures on real, legitimate questions
+
+**What was found**: reported by the user directly testing the new chat
+UI -- a real question ("How does the transaction count and value on
+2018-01-02 compare to the same day in prior weeks or the prior month
+average?") got a clarification response claiming no tables matched
+"transaction count" or "value", even though the real
+`STAGING_TRANSACTIONS` table and its `TOTALVALUE`/`TRANSACTIONID` columns
+obviously cover exactly this. Root-caused by calling each real
+Understanding-domain agent directly (via a `kubectl port-forward` to
+`agent-runtime`, bypassing the gateway) with the real question's actual
+extracted entities and the real 114-column candidate list from
+`Metadata Discovery`:
+- Intent Understanding correctly extracted 5 real entities: `"transaction
+  count"`, `"transaction value"`, `"2018-01-02"`, `"prior weeks"`, `"prior
+  month average"`.
+- Calling Semantic Retrieval with all 5 terms + the real 114-candidate
+  list returned `matched: false` for every single term, with the agent's
+  own `errors` showing `llm_response_not_json: "Expecting value: line 1
+  column 1 (char 0)"` -- the LLM's response text was completely empty --
+  and `metadata.tokens_output` exactly equal to the agent's hardcoded
+  `max_tokens=1536`.
+- Calling Semantic Retrieval again with the SAME real 114-candidate list
+  but just `"transaction value"` alone, or `"transaction count"` alone, or
+  both together (no date/relative-time terms), succeeded cleanly every
+  time with sensible real matches (`TOTALVALUE`, `TRANSACTIONID` /
+  `CUSTOMER_ASSET_AGG.TXN_COUNT`) -- proving the matching logic and
+  prompt are fine; only the token budget was the problem.
+- `AnthropicLLMClient`'s existing retry-once-on-empty-completion logic
+  (added for a different, transient bug -- see item 63/the Grounded
+  Narrative Generation entry) already ran here too and still came back
+  empty, confirming this is a structural under-budgeting, not the
+  transient single-call glitch that retry was designed to catch --
+  retrying with the same too-small `max_tokens` just truncates again.
+
+**Why this matters beyond this one question**: `Metadata Discovery`
+returns the ENTIRE real catalog's columns as candidates (114 for this
+tenant's one data source), dumped verbatim into the prompt
+(`tokens_input: 17483` on the failing call) -- this scales with the
+real customer's schema size, not a fixed small number, and any question
+whose `Ontology` pass leaves multiple unresolved terms (very common for
+genuinely complex, multi-clause real questions, as opposed to the 10
+golden-set questions which were all written/tested with clean single-
+concept phrasing) exercises exactly this path.
+
+**Resolution**: raised `SemanticRetrievalAgent`'s hardcoded `max_tokens`
+from 1536 to 4096 (`understanding/semantic_retrieval/agent.py`). Added a
+new unit test (`test_max_tokens_budget_is_large_enough_for_a_real_size_candidate_list`)
+asserting the real budget requested is comfortably above the confirmed
+failure point, so a future edit can't silently shrink it back down
+unnoticed.
+
+**What full version requires**: 4096 is a reasoned, evidence-based
+increase (comfortably above the exact 1536-token failure point observed),
+not a value re-derived from a real worst-case analysis of catalog size ×
+term count -- if a future tenant's real catalog grows substantially
+larger than 114 columns, or a real question routinely produces
+significantly more than 5 unresolved terms, this budget may need
+revisiting again. A more scalable long-term fix (e.g., pre-filtering the
+candidate list to a smaller relevant subset before this LLM call, rather
+than always sending the entire catalog) is a reasonable future
+improvement, logged here rather than built now.

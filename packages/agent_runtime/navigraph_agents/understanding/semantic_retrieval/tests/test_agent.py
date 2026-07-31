@@ -244,3 +244,22 @@ async def test_llm_call_failure_falls_back_gracefully() -> None:
     assert output.errors[0].recoverable is False
     assert output.metadata.model_version is None
     assert output.metadata.tokens_input is None
+
+
+async def test_max_tokens_budget_is_large_enough_for_a_real_size_candidate_list() -> None:
+    """Regression guard for a real bug found live: with a real-size (114
+    column) candidate list and several unresolved terms in one batch, a
+    1536-token budget let the real model's response come back truncated --
+    `tokens_output` exactly equal to `max_tokens` with an EMPTY `text` --
+    even though the same terms matched correctly in isolation against the
+    identical candidate list. This just asserts the budget the agent
+    actually requests is comfortably above that failure point, so a future
+    edit can't silently shrink it back down without this test noticing.
+    """
+
+    fake_llm = FakeLLMClient(response=json.dumps({"matches": []}))
+    agent = SemanticRetrievalAgent(llm_client=fake_llm)
+
+    await agent.run(_make_input(unresolved_terms=["payment volume"]))
+
+    assert fake_llm.calls[0]["max_tokens"] >= 4096

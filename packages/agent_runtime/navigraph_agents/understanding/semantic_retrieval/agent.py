@@ -104,7 +104,25 @@ class SemanticRetrievalAgent:
                     llm_response = await self._llm_client.complete(
                         system=self._system_prompt,
                         messages=[{"role": "user", "content": user_message}],
-                        max_tokens=1536,
+                        # REAL BUG, found live via the demo chat UI (a real
+                        # question with 5 unresolved terms against the real
+                        # 114-column candidate list): 1536 was too small a
+                        # budget once the candidate list is this large --
+                        # `tokens_output` came back exactly equal to
+                        # `max_tokens` with an EMPTY `text` (confirmed via a
+                        # direct repro against this exact real candidate
+                        # list/term set), meaning the response was cut off
+                        # before any real JSON content was ever emitted, not
+                        # a transient empty-completion glitch (which the
+                        # client's own retry-once-on-empty already handles --
+                        # it ran here too and still came back empty, since
+                        # retrying with the same too-small budget just
+                        # truncates again). The exact same terms matched
+                        # correctly when called in isolation/smaller batches
+                        # with the identical candidate list, confirming the
+                        # matching logic itself is fine -- only the token
+                        # budget was the problem.
+                        max_tokens=4096,
                     )
                 except Exception as exc:  # noqa: BLE001 - never let an LLM-side failure crash the agent
                     errors.append(
