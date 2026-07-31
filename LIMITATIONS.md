@@ -2131,3 +2131,66 @@ already-logged Azure AD gap, item 23); a real SQL-preview field added to
 `RequestOrchestratorResult` if that transparency is wanted; a real
 async/streaming answer mechanism if question latency grows further past
 what a static "thinking" message can reasonably cover.
+
+### 78. RESOLVED: `NEXT_PUBLIC_GATEWAY_URL` silently fell back to `localhost:8000` in production because `page.tsx`'s own health check makes the route dynamic
+
+**What was found**: the first real click of the new chat UI (item 77)
+sent its `/ask` call to `http://localhost:8000/ask` instead of the real
+public gateway -- confirmed live via the actual browser's network panel
+(`OPTIONS http://localhost:8000/ask -> 405`, then `POST ... [FAILED:
+net::ERR_FAILED]`). Root cause: the existing assumption (written into
+`infra/k8s/base/web/deployment-stable.yaml`'s own comment) that
+`NEXT_PUBLIC_GATEWAY_URL` is purely inlined into the client bundle at
+`next build` time is only true for a **statically generated** route.
+`src/app/page.tsx` performs its own `cache: "no-store"` fetch (the
+gateway-reachability health check), which makes Next.js treat `/` as
+dynamic (`ƒ /` in the real `next build` output) -- so
+`env.NEXT_PUBLIC_GATEWAY_URL`, read inside that Server Component and
+passed as a prop to the new `ChatDemo` client component, is evaluated
+fresh from `process.env` on the actual running container at every real
+request, not baked into a prerendered page at build time. `web/Dockerfile`'s
+`runner` stage never re-declares `ENV NEXT_PUBLIC_GATEWAY_URL` (Docker
+`ENV`/`ARG` do not cross a `FROM ... AS runner` stage boundary from the
+earlier `builder` stage), so the variable was genuinely undefined at
+runtime, and `src/lib/env.ts`'s own `optional()` fallback
+(`http://localhost:8000`) silently took over -- with no error anywhere in
+the build or deploy pipeline, since the build-arg mechanism itself
+(`--build-arg NEXT_PUBLIC_GATEWAY_URL=...`) worked exactly as designed for
+the `builder` stage; the gap was specifically the `runner` stage's
+separate, empty environment. A second, independent real finding
+surfaced investigating this: the `NAVIGRAPH_DOMAIN` GitHub Actions
+repository variable that `cd-deploy.yml`'s build-arg reads
+(`https://api.navigraph.${{ vars.NAVIGRAPH_DOMAIN }}`) was never actually
+set, confirmed live in the real build log
+(`BUILD_ARGS="--build-arg NEXT_PUBLIC_GATEWAY_URL=https://api.navigraph."`
+-- note the trailing dot, no real domain) -- a second, compounding gap
+that would have produced a malformed URL even if the `runner`-stage issue
+were the only problem.
+
+**This gap was invisible until now for the same reason as item 77
+itself**: nothing before the real chat UI ever made a browser-side
+fetch that depended on this specific value -- the server-side
+`GATEWAY_URL` health check (a different variable, correctly runtime-
+configured via the Deployment's own `env:` block all along) was the only
+thing `page.tsx` ever used.
+
+**Resolution**: added `NEXT_PUBLIC_GATEWAY_URL` as a real Kubernetes
+Deployment-level runtime env var to both `web-stable` and `web-canary`
+(`infra/k8s/base/web/deployment-{stable,canary}.yaml`), set to the real
+public gateway hostname, matching exactly how `GATEWAY_URL` itself was
+already wired -- this fixes the dynamic-route runtime read directly and
+remains correct even if the route is ever made static again (Next.js
+would then just also inline the same correct value at build time from
+the existing build-arg). Applied live via `kubectl set env
+deployment/web-stable` first to unblock the demo immediately, verified
+via a real browser round-trip (see item 77), then committed to source.
+The `NAVIGRAPH_DOMAIN` repo-variable gap is logged separately below
+rather than fixed here, since the Deployment-level env var now makes it
+unnecessary for this specific route regardless.
+
+**What full version requires**: setting the real `NAVIGRAPH_DOMAIN`
+GitHub Actions repository variable properly (currently unset) would
+still be worthwhile defense-in-depth for any future genuinely-static page
+that references `NEXT_PUBLIC_GATEWAY_URL` directly in client code (which
+IS correctly build-time-inlined, unaffected by this specific bug) -- not
+done here since no such page exists yet.

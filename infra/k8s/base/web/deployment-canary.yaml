@@ -28,13 +28,16 @@ spec:
             - containerPort: 3000
           env:
             # Same deliberate stable-only pinning as web-stable -- see that
-            # manifest's comment. The canary track's own
-            # NEXT_PUBLIC_GATEWAY_URL is still baked in at build time and
-            # still points at the real public hostname, so browser-side
-            # calls from a canary-served page still reach the (possibly
-            # also-canary) gateway via the ingress's own weighting.
+            # manifest's comment.
             - name: GATEWAY_URL
               value: http://gateway-stable.navigraph.svc.cluster.local:8000
+            # Same real bug/fix as web-stable's own NEXT_PUBLIC_GATEWAY_URL
+            # entry -- see that manifest's comment for the full root cause.
+            # Same literal public hostname on both tracks is correct: the
+            # ingress itself (not this URL) decides stable-vs-canary
+            # routing per request based on its own weighting.
+            - name: NEXT_PUBLIC_GATEWAY_URL
+              value: https://api.navigraph.51-8-46-125.nip.io
           # See deployment-stable.yaml's comment -- same real bug, same fix:
           # timeoutSeconds must comfortably exceed page.tsx's own internal
           # 3000ms gateway-fetch timeout.

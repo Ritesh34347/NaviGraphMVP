@@ -27,13 +27,31 @@ spec:
             # Server-side only -- deliberately ALWAYS gateway-stable, never
             # gateway-canary, so an in-flight gateway canary rollout can
             # never break SSR page renders for users who never opted into
-            # it via a direct browser call. NEXT_PUBLIC_GATEWAY_URL (the
-            # browser-side URL, which DOES see canary traffic) is baked
-            # into this image at build time -- see web/Dockerfile's
-            # NEXT_PUBLIC_GATEWAY_URL build-arg -- not a runtime env var,
-            # since Next.js inlines NEXT_PUBLIC_* vars at `next build` time.
+            # it via a direct browser call.
             - name: GATEWAY_URL
               value: http://gateway-stable.navigraph.svc.cluster.local:8000
+            # REAL BUG, found live once a real browser client actually
+            # called this: the comment this replaced assumed
+            # NEXT_PUBLIC_GATEWAY_URL is purely build-time-inlined (per
+            # web/Dockerfile's build-arg), which is true ONLY for
+            # statically-generated pages. `src/app/page.tsx` does its own
+            # no-store fetch (the GATEWAY_URL health check above), which
+            # makes Next.js treat the whole route as dynamic ("ƒ /" in the
+            # build output) -- so `env.NEXT_PUBLIC_GATEWAY_URL`, read
+            # inside that Server Component, is evaluated fresh from
+            # `process.env` on THIS running container at every request,
+            # not inlined at build time. web/Dockerfile's `runner` stage
+            # never re-declares this var (Docker ENV/ARG don't cross `FROM`
+            # stage boundaries), so it was silently undefined at runtime,
+            # and the browser's real fetch silently fell back to
+            # src/lib/env.ts's `http://localhost:8000` default -- 405/
+            # ERR_FAILED in the real browser console, confirmed live via
+            # the actual chat UI's first real end-to-end test. Setting it
+            # here too (matching GATEWAY_URL's own pattern) fixes both the
+            # dynamic-route runtime read AND remains correct if the route
+            # is ever made static again.
+            - name: NEXT_PUBLIC_GATEWAY_URL
+              value: https://api.navigraph.51-8-46-125.nip.io
           # Real bug found live during Phase 10a's own kind validation:
           # the root page (src/app/page.tsx) does a server-side fetch to
           # GATEWAY_URL with its own internal AbortSignal.timeout(3000) --
