@@ -2257,3 +2257,36 @@ revisiting again. A more scalable long-term fix (e.g., pre-filtering the
 candidate list to a smaller relevant subset before this LLM call, rather
 than always sending the entire catalog) is a reasonable future
 improvement, logged here rather than built now.
+
+**Item 79 verified live (2026-08-01, after the Anthropic account's usage
+limit reset)**: re-ran the exact same real question through both the
+direct agent endpoint and the real chat UI. Semantic Retrieval now
+returns `matched=5/5`, zero errors, `tokens_output=3133` (comfortably
+under the new 4096 cap, vs. the old exact-1536 truncation) -- confirmed
+fixed.
+
+### 80. OPEN, NOT YET FIXED: SUM-vs-COUNT gap (item 38/73) resurfaces under phrasing that doesn't trip the `_is_count_question` phrase-trigger
+
+**What was found**: verifying item 79's fix live, the same real question
+("How does the transaction count and value on 2018-01-02 compare...")
+now produces a real `answered` outcome, but with a nonsensical narrative
+value: `"a transaction count total of 3,063,258,983,525"` -- clearly a
+`SUM`, not a real row count, for a single day's data. Root cause is very
+likely the same class of bug items 38/73 already fixed once: Semantic
+Retrieval matched the entity "transaction count" to
+`STAGING_TRANSACTIONS.TRANSACTIONID` (a real, reasonable column match --
+see item 79 above) as a **measure** column, and SQL Generation's
+`_is_count_question` heuristic only trips on the literal phrases `"how
+many"`, `"number of"`, `"count of"` -- none of which appear in this
+question's actual phrasing ("transaction count" as a noun phrase, not
+"how many transactions"). So `_aggregation_function` fell through to its
+normal SUM-based measure aggregation on `TRANSACTIONID`, summing ID
+values instead of counting rows.
+
+**Not yet investigated further or fixed** -- this needs the same kind of
+real, careful root-cause work as items 38/73/79 (confirm the exact
+generated SQL, decide the right fix: broaden `_is_count_question`'s
+phrase list, or a more general signal that a measure column resolved from
+an ID-shaped term like `TRANSACTIONID` should never be summed). Deferred
+by explicit user choice (2026-08-01) in favor of prioritizing product
+documentation deliverables first; logged here so it isn't lost.
