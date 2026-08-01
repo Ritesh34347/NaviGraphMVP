@@ -1,104 +1,176 @@
-# Data Flow: One Request, End to End
+# Data Flow: One Real Request, End to End
 
-This document walks a single request through the full NaviGraph pipeline,
-naming the specific agent responsible for each stage and the lineage event it
-emits. See `docs/architecture/overview.md` for the full agent map and current
-build status, and `docs/architecture/agent-contract.md` for the formal shape of
-`lineage_events`.
+This document walks one real question — from the actual 10-question golden
+set (`eval/golden_set/gq_002_transaction_count_by_customer.yaml`) — through
+the real, live pipeline, naming the real agent responsible for each stage
+and a realistic `lineage_events` entry it emits. Updated 2026-08-01; the
+previous version of this document used a fictional "churn rate" example and
+invented per-stage lineage event names (`request_received`,
+`intent_extracted`, etc.) that don't exist in the real `LineageEvent`
+contract — see `packages/shared/navigraph_shared/contracts/agent_io.py`.
+The real `LineageEvent` shape is just `{event_id, agent_name, timestamp,
+input_summary, output_summary, tenant_id, trace_id}` — there is no separate
+"event type" field; the agent's own dotted name (e.g.
+`understanding.intent_understanding`) is the real, stable identity of each
+step.
 
-Example question used throughout: *"What was our churn rate by region last
-quarter, and why did it spike in the Southwest?"*
+Example question used throughout, real and golden-set-verified: **"How many
+transactions has each customer made?"** (`gq_002`, `expected_intent:
+metric_lookup`, `expected_columns: [CUSTOMERID]`).
 
-## 1. Gateway receives the request
+## Real sequence
 
-The `gateway` service (`packages/gateway`) receives `POST /ask` with the
-question text and the caller's authenticated session (tenant, user, roles from
-Azure AD/Entra ID). It attaches a `RequestContext` (`tenant_id`, `user_id`,
-`trace_id`, `roles`/`claims`) and hands off to the agent runtime's
-Orchestrator.
+```mermaid
+sequenceDiagram
+    participant U as Caller (web UI / API)
+    participant GW as gateway
+    participant RO as orchestrator.request_orchestrator
+    participant Sess as orchestrator.session_context_manager
+    participant Conv as understanding.conversation
+    participant Intent as understanding.intent_understanding
+    participant MD as understanding.metadata_discovery
+    participant Ont as understanding.ontology
+    participant SR as understanding.semantic_retrieval
+    participant SM as understanding.schema_mapping
+    participant DSD as query.data_source_discovery
+    participant SG as query.sql_generation
+    participant Guard as guardrail.* (4 agents)
+    participant SO as query.sql_optimization
+    participant EP as query.execution_planning
+    participant DF as query.data_federation
+    participant Cache as query.caching
+    participant Insight as insight.* (4 agents)
+    participant Lin as ops.lineage_recorder
 
-**Lineage event**: `request_received` — records the raw question, tenant, user,
-and trace_id.
+    U->>GW: POST /ask {"question": "How many transactions has each customer made?", tenant_id, roles: ["analyst"]}
+    GW->>RO: POST /agents/orchestrator/request_orchestrator/invoke
+    RO->>Sess: get(session_id)
+    Sess-->>RO: conversation_history=[] (first turn)
+    RO->>Conv: resolved_question=question (empty history short-circuit, no LLM call)
+    RO->>Intent: classify + extract entities
+    Intent-->>RO: intent=metric_lookup entities=['transactions', 'each customer']
+    RO->>MD: columns for data_source_id
+    MD-->>RO: 114 columns discovered
+    RO->>Ont: resolve entities via knowledge graph
+    Ont-->>RO: resolved=0 unresolved=['transactions', 'each customer']
+    RO->>SR: LLM match vs. closed candidate list
+    SR-->>RO: matched=2/2 (transactions→TRANSACTIONID, each customer→CUSTOMERID)
+    RO->>SM: assemble tables/columns/roles
+    SM-->>RO: tables=[STAGING_TRANSACTIONS] dimension=CUSTOMERID
+    RO->>DSD: resolve owning DataSource + health check
+    DSD-->>RO: resolved, connection healthy
+    RO->>SG: generate SQL (is_count_question→true, COUNT(*) not SUM)
+    SG-->>RO: SELECT CUSTOMERID, COUNT(*) AS RECORD_COUNT FROM STAGING_TRANSACTIONS GROUP BY CUSTOMERID
+    RO->>Guard: schema-constraint + OPA authz + PII check
+    Guard-->>RO: cleared=1 rejected=0
+    RO->>SO: inject LIMIT + audit comment
+    SO-->>RO: optimized
+    RO->>EP: SELECT-only safety parse
+    EP-->>RO: plan approved
+    RO->>DF: execute (direct-connector route)
+    DF-->>RO: 10000 rows
+    RO->>Cache: store
+    Cache-->>RO: hit=false stored=true
+    RO->>Insight: chart + anomalies + narrative + follow-ups
+    Insight-->>RO: chart_type=table, narrative=None (10000 rows), 3 follow-up suggestions
+    RO->>Lin: record every stage's lineage_events (incremental, per-stage)
+    Lin-->>RO: recorded
+    RO-->>GW: RequestOrchestratorResult{outcome: "answered", ...}
+    GW-->>U: 200 OK
+```
 
-## 2. Understanding domain: intent + entity extraction
+## Stage-by-stage detail
 
-The **Intent Understanding** agent (the one agent that is real today) parses
-the question into a structured intent (e.g. "trend + causal explanation
-request") and extracts entities ("churn rate", "region", "last quarter",
-"Southwest"). Downstream **Entity Resolution** and **Ambiguity Detection**
-agents (designed, not yet built) would resolve "Southwest" against the tenant's
-actual region dimension and flag any ambiguous references back to the user.
+### 1. Gateway receives the request
 
-**Lineage event**: `intent_extracted` — records the structured intent payload,
-extracted entities, and the agent's confidence score.
+`gateway` (`packages/gateway`) receives `POST /ask`, builds a
+`RequestContext` (`tenant_id`, `user_id`, `trace_id`, `roles`, `claims`),
+and forwards to `agent-runtime`'s
+`POST /agents/orchestrator/request_orchestrator/invoke` over a real HTTP
+hop (gateway and agent-runtime are separate containers — see
+`system-architecture.md`). `roles`/`claims` are caller-supplied and not yet
+cryptographically verified (`LIMITATIONS.md` item 23).
 
-## 3. Query domain: semantic retrieval
+### 2. Session + Conversation
 
-The **Semantic Catalog Retrieval** and **Knowledge Graph Retrieval** agents
-(designed) look up which tables/columns define "churn rate" for this tenant
-and traverse the knowledge graph (Neo4j) for relevant relationships — e.g.
-which upstream events or attributes are known to correlate with churn in the
-"Southwest" region.
+`orchestrator.session_context_manager` fetches (or mints) the real Redis
+session and its `conversation_history`. `understanding.conversation`
+short-circuits with no LLM call on an empty history (this being a first
+turn); a follow-up question on a non-empty history would get one real LLM
+rewrite call here instead.
 
-**Lineage event**: `context_retrieved` — records which catalog entries and
-graph nodes/edges were retrieved and used.
+### 3. Understanding domain
 
-## 4. Query domain: query generation
+`understanding.intent_understanding` classifies the question as
+`metric_lookup` and extracts `["transactions", "each customer"]` as
+entities — confirmed via a real direct call to this agent this session
+(`lineage_events[0].output_summary = "intent=metric_lookup
+entities=['transactions', 'each customer']"`). `understanding.metadata_discovery`
+independently returns the real 114-column catalog inventory for this
+tenant's one registered Snowflake data source.
+`understanding.ontology` attempts a free, zero-hallucination match against
+the real Neo4j knowledge graph's `BusinessConcept` nodes — for this
+particular question, neither entity resolved this way (confirmed live:
+`"resolved=0 unresolved=['transactions', 'each customer']"`), so both fall
+through to `understanding.semantic_retrieval`, which makes one real,
+closed-candidate-list LLM call and matches both (`"transactions"` →
+`TRANSACTIONID`, `"each customer"` → `CUSTOMERID`, both on
+`STAGING_TRANSACTIONS`). `understanding.schema_mapping` assembles the
+final mapping: one table, one dimension column (`CUSTOMERID`).
 
-The **SQL Generation** agent (designed) produces schema-grounded SQL against
-the resolved tables/columns; if the question requires graph-native reasoning
-(e.g. "why," which may involve relationship traversal beyond a single fact
-table), the **Cypher Generation** agent (designed) produces a complementary
-graph query. The **Query Plan Composer** agent (designed) merges these into a
-single execution plan.
+### 4. Query domain (generation half)
 
-**Lineage event**: `query_generated` — records the generated SQL/Cypher text,
-the schema elements it references, and the metric definitions used (via the
-**Metric Definition Resolver**, designed).
+`query.data_source_discovery` resolves the real Snowflake `DataSource` that
+owns `STAGING_TRANSACTIONS` and confirms live connectivity.
+`query.sql_generation` builds the real SQL — this exact question is the one
+that originally exposed the real SUM-vs-COUNT aggregation bug
+(`LIMITATIONS.md` item 38, fixed as item 73): `_is_count_question` matches
+the phrase "how many" here, so the generated SQL uses `COUNT(*) AS
+RECORD_COUNT`, never `SUM`, even though `TRANSACTIONID` was matched to a
+numeric-looking column.
 
-## 5. Guardrail domain: validation gate
+### 5. Guardrail domain
 
-Before anything executes, the **Schema Constraint Validator**, **Policy
-Authorization** (backed by OPA), **Query Cost/Row-Limit Estimator**, and **PII
-Exposure Checker** agents (all designed) check the generated query against
-schema constraints, the tenant's authorization policy, expected cost/row
-volume, and PII exposure rules. Today, OPA enforces a placeholder allow-all
-policy (see `LIMITATIONS.md` item 4) — the gate exists structurally, but its
-real policy logic is not yet written.
+`guardrail.schema_constraint_validator` confirms `STAGING_TRANSACTIONS` and
+`CUSTOMERID` are real, current catalog entries.
+`guardrail.policy_authorization` makes a real `POST` to OPA's
+`navigraph/authz/decision` endpoint — the `analyst` role and matching
+`tenant_id`/`claims.tenant_id` pass. `guardrail.pii_exposure_checker`
+confirms `CUSTOMERID` is not tagged `is_pii` for this tenant, so the
+statement clears (a *different* golden question asking about
+`RISKLEVEL` — a real tagged PII column — would be denied here instead;
+see `security-compliance.md`).
 
-**Lineage event**: `query_validated` — records the validation outcome (pass/
-fail per check) and the specific policy decision returned by OPA.
+### 6. Query domain (execution half)
 
-## 6. Ops domain: federated execution
+`query.sql_optimization` injects a `LIMIT` and the real audit-trace SQL
+comment. `query.execution_planning` re-parses the SQL to confirm it's a
+single, SELECT-only statement. `query.data_federation` executes it for
+real against Snowflake via the `direct_connector` route (the default —
+Trino is registered but not the default execution path;
+`DECISIONS.md`'s Phase 5 entry) and returns the real result set (10,000
+rows for this tenant's real data). `query.caching` stores the result under
+a tenant-prefixed, versioned Redis key.
 
-The **Federated Query Executor** agent (designed) submits the validated query
-to Trino, which federates execution across registered catalogs. Today, zero
-real catalogs are registered (see `LIMITATIONS.md` item 3), so this stage is
-architecturally proven but not yet connected to real data. The **Result
-Caching** agent (designed) would cache results in Redis keyed by
-tenant+query-hash.
+### 7. Insight domain
 
-**Lineage event**: `query_executed` — records execution duration, row count
-returned, and whether the result was served from cache.
+`insight.chart_selection` picks `table` (no clean single measure/dimension
+pair for a 10,000-row per-customer breakdown). `insight.anomaly_outlier_highlighter`
+runs its z-score check. `insight.grounded_narrative_generation` may return
+an empty narrative for a result this large (a real, current limitation —
+see `LIMITATIONS.md`'s narrative-grounding notes). `insight.follow_up_suggestion`
+proposes real next questions — confirmed live via the actual chat UI:
+*"Who are the top 20 customers by transaction count?"*, *"What is the
+distribution of transaction counts across all customers (e.g., one-time vs.
+repeat buyers)?"*, *"How does each customer's transaction count trend over
+time (monthly or quarterly)?"*
 
-## 7. Insight domain: chart selection, narrative, follow-ups
+### 8. Lineage recorded, response returned
 
-The **Chart Selection** agent (designed) picks an appropriate visualization for
-the result shape (e.g. a time series by region). The **Grounded Narrative
-Generation** agent (designed) writes a natural-language explanation that cites
-the actual returned numbers (never inventing figures not present in the
-result set). The **Anomaly/Outlier Highlighter** agent (designed) flags the
-Southwest spike specifically. The **Follow-up Suggestion** agent (designed)
-proposes related questions ("Did any single account drive the Southwest
-spike?").
-
-**Lineage event**: `insight_generated` — records the chart type chosen, the
-narrative text, and which result values it grounded each claim in.
-
-## 8. Response returned, full lineage recorded
-
-The **Lineage Recorder** agent (designed) persists the full chain of lineage
-events from `request_received` through `insight_generated` against the
-request's `trace_id`, so the entire reasoning chain — from raw question to
-final chart and narrative — can be audited after the fact. The gateway returns
-the chart, narrative, and follow-up suggestions to the caller.
+`ops.lineage_recorder` persists every upstream agent's real
+`lineage_events` incrementally (one call per agent's output, not one
+end-of-request batch), idempotently keyed on each event's real `event_id`.
+The full trace is queryable afterward via `GET /lineage/{trace_id}?tenant_id=...`.
+`gateway` returns the real `RequestOrchestratorResult` — `outcome:
+"answered"`, the real columns/rows, chart spec, narrative, and follow-up
+suggestions — to the caller.

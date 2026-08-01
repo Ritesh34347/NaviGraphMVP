@@ -2,7 +2,16 @@
 
 ## Status
 
-Accepted — 2026-07-28
+Accepted — 2026-07-28. **Partially superseded — 2026-07-31**: the
+LangGraph portion of this decision was explicitly reversed in Phase 9
+after 8 phases and ~22 agents shipped with zero real need for graph
+checkpointing/resumability ever emerging. The Request Orchestrator
+(`orchestrator.request_orchestrator`) is a plain Python async function,
+not a LangGraph graph — see `DECISIONS.md`'s 2026-07-31 "No LangGraph"
+entry for the full reversal rationale. Every other part of this ADR
+(Python 3.12, FastAPI, Pydantic v2) still stands as originally decided;
+this note is deliberately additive, not a rewrite of the original
+reasoning below, which remains accurate for why Python was chosen at all.
 
 ## Context
 

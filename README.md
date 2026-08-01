@@ -37,14 +37,16 @@ for the end-to-end sequence.
 ## Repository layout
 
 ```
-infra/          Local-first docker-compose stack + Terraform skeleton for Azure
-terraform/      Azure infrastructure-as-code (validated skeleton, never applied)
-packages/       Application services: gateway, agent_runtime, shared libraries
-                (built by a parallel workstream, not part of this scaffold)
-web/            Next.js web UI (built by a parallel workstream, not part of this scaffold)
-docs/           Architecture docs, ADRs, runbooks
-tools/          Dev scripts and templates (e.g. smoke-test.sh, agent scaffolding)
-.github/        CI workflows
+infra/          docker-compose stack (local dev) + real infra/k8s/ Kustomize manifests
+terraform/      Azure infrastructure-as-code, applied for real to a live dev environment
+packages/       gateway, agent_runtime (25 real agents), connector_sdk, metadata_catalog,
+                knowledge_graph, federation, lineage, shared
+web/            Next.js web UI, including a real demo chat interface (src/app/ChatDemo.tsx)
+eval/           Golden-set questions + LLM-as-judge evaluation harness
+tests/          Integration pipeline chains + adversarial security suites
+docs/           Architecture docs, ADRs, runbooks, product/security/testing references
+tools/          Dev scripts and templates (smoke-test, canary_gate, new-agent scaffolding)
+.github/        CI + CD (build/push/canary-rollout/promote) workflows
 ```
 
 ## Quickstart (local dev)
@@ -68,18 +70,52 @@ joining the coordinator, OPA bundle load failures).
 
 ## Project documents
 
-- [`LIMITATIONS.md`](./LIMITATIONS.md) — what is deliberately not built yet, and why.
-- [`DECISIONS.md`](./DECISIONS.md) — architecture decisions in ADR-style form.
-- [`BUILD_LOG.md`](./BUILD_LOG.md) — a running log of what was built, by whom/what
-  workstream, and when.
-- [`docs/`](./docs/) — architecture, ADRs, and operational runbooks.
+**Living process logs** (updated continuously as the project is built):
+
+- [`LIMITATIONS.md`](./LIMITATIONS.md) — every known gap, real bug found, and its
+  resolution, numbered and cross-referenced (80 items as of this writing).
+- [`DECISIONS.md`](./DECISIONS.md) — every real architecture/implementation decision,
+  dated, with rationale and consequences (~53 entries).
+- [`BUILD_LOG.md`](./BUILD_LOG.md) — a phase-by-phase narrative of what was built and
+  verified (14 phases, Phase 1 through the real cloud deployment).
+
+**Product & technical reference**:
+
+- [`docs/product/prd.md`](./docs/product/prd.md) — product requirements.
+- [`docs/architecture/overview.md`](./docs/architecture/overview.md) — the full agent
+  map (25 real agents across 6 domains).
+- [`docs/architecture/system-architecture.md`](./docs/architecture/system-architecture.md)
+  — deployment topology, tech stack, canary rollout mechanics.
+- [`docs/architecture/data-flow.md`](./docs/architecture/data-flow.md) — one real
+  question traced end to end through every stage.
+- [`docs/architecture/data-model.md`](./docs/architecture/data-model.md) — the real
+  catalog/knowledge-graph/lineage schemas.
+- [`docs/product/api-reference.md`](./docs/product/api-reference.md) — real endpoint
+  reference for `gateway` and `agent-runtime`.
+- [`docs/security/security-compliance.md`](./docs/security/security-compliance.md) —
+  SOC 2-oriented controls mapping.
+- [`docs/testing/test-strategy.md`](./docs/testing/test-strategy.md) — the real test
+  pyramid (unit/integration/security/eval/CI).
+- [`docs/runbooks/`](./docs/runbooks/) — local dev, `kind` validation, and production
+  operations runbooks.
+- [`docs/product/glossary.md`](./docs/product/glossary.md) — business and platform
+  terms.
+- [`ONBOARDING.md`](./ONBOARDING.md) — new-engineer onboarding guide.
+- [`CHANGELOG.md`](./CHANGELOG.md) — release notes, one entry per phase.
 - [`CONTRIBUTING.md`](./CONTRIBUTING.md) — how to contribute, including how to add a
   new agent.
 - [`SECURITY.md`](./SECURITY.md) — vulnerability disclosure process.
 
 ## Status
 
-This repository is in **Phase 1 (infra scaffolding)**. Only the Intent Understanding
-agent is real; the rest of the ~25-agent architecture is designed but not yet
-implemented. Terraform is a validated skeleton only and has never been applied — no
-real Azure resources exist. See `LIMITATIONS.md` for the full list of known gaps.
+All 10 build phases are complete. **25 real agents** across all 6 domains
+(Understanding, Query, Guardrail, Insight, Ops, Orchestrator) are built, tested, and
+deployed. The platform is **live on Azure Kubernetes Service**
+(`https://app.navigraph.51-8-46-125.nip.io`), backed by real Snowflake data, a real
+Neo4j knowledge graph, real OPA policy enforcement, and real Anthropic LLM calls —
+with CI/CD, canary rollout, an eval harness, and an adversarial security test suite
+all exercised against that live environment. Trino is registered but
+`direct_connector` remains the default execution route (see `DECISIONS.md`'s Phase 5
+entry). See `LIMITATIONS.md` for the current, honestly-scoped list of what's still
+deliberately deferred (Azure AD JWT verification, a registered domain in place of
+`nip.io`, and others) — none of them block real, live use of the platform today.
