@@ -207,6 +207,67 @@ async def test_how_many_question_ignores_a_spuriously_resolved_measure_column() 
 
 
 # ---------------------------------------------------------------------------
+# (a3) Real bug found live (LIMITATIONS.md item 80): a question shaped
+# nothing like "how many X" (so `_is_count_question` never fires) can still
+# resolve an identifier column (e.g. TRANSACTIONID) as a `role="measure"`
+# column -- summing it produces a nonsensical, enormous total. An
+# identifier column must always use COUNT, regardless of phrasing; a real
+# additive measure resolved in the SAME query must still use SUM.
+# ---------------------------------------------------------------------------
+
+_ID_AND_VALUE_MEASURE_COLUMNS = [
+    ResolvedColumnRef(
+        term="transaction count",
+        catalog_column_id="col_transaction_id",
+        table_name="STAGING_TRANSACTIONS",
+        schema_name="STAGING",
+        column_name="TRANSACTIONID",
+        data_type="NUMBER",
+        role="measure",
+    ),
+    ResolvedColumnRef(
+        term="transaction value",
+        catalog_column_id="col_total_value",
+        table_name="STAGING_TRANSACTIONS",
+        schema_name="STAGING",
+        column_name="TOTALVALUE",
+        data_type="NUMBER",
+        role="measure",
+    ),
+]
+
+
+async def test_identifier_shaped_measure_column_is_counted_not_summed() -> None:
+    """The real, live-reproduced item 80 scenario: "How does the transaction
+    count and value on 2018-01-02 compare to prior weeks..." doesn't trip
+    `_is_count_question` (no "how many"/"number of"/"count of" phrase), so
+    Semantic Retrieval's real match of "transaction count" to TRANSACTIONID
+    reaches `_aggregation_function` as a normal measure column. It must be
+    counted, not summed -- while a real additive measure (TOTALVALUE)
+    resolved in the same query must still be summed.
+    """
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question=(
+                "How does the transaction count and value on 2018-01-02 "
+                "compare to the same day in prior weeks or the prior month average?"
+            ),
+            intent="comparison",
+            columns=_ID_AND_VALUE_MEASURE_COLUMNS,
+        )
+    )
+
+    statement = output.result.statements[0]
+    assert "SUM(STAGING_TRANSACTIONS.TRANSACTIONID)" not in statement.sql
+    assert "COUNT(STAGING_TRANSACTIONS.TRANSACTIONID) AS TRANSACTIONID_TOTAL" in statement.sql
+    assert "SUM(STAGING_TRANSACTIONS.TOTALVALUE) AS TOTALVALUE_TOTAL" in statement.sql
+
+
+# ---------------------------------------------------------------------------
 # (b) A real predicate phrase + a canned valid LLM response -> a correctly
 # bind-parameterized GeneratedSql. The literal value must appear in `params`,
 # never in the `sql` string.

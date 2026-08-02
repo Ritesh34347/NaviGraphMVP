@@ -2265,7 +2265,7 @@ returns `matched=5/5`, zero errors, `tokens_output=3133` (comfortably
 under the new 4096 cap, vs. the old exact-1536 truncation) -- confirmed
 fixed.
 
-### 80. OPEN, NOT YET FIXED: SUM-vs-COUNT gap (item 38/73) resurfaces under phrasing that doesn't trip the `_is_count_question` phrase-trigger
+### 80. RESOLVED: SUM-vs-COUNT gap (item 38/73) resurfaces under phrasing that doesn't trip the `_is_count_question` phrase-trigger
 
 **What was found**: verifying item 79's fix live, the same real question
 ("How does the transaction count and value on 2018-01-02 compare...")
@@ -2283,10 +2283,29 @@ question's actual phrasing ("transaction count" as a noun phrase, not
 normal SUM-based measure aggregation on `TRANSACTIONID`, summing ID
 values instead of counting rows.
 
-**Not yet investigated further or fixed** -- this needs the same kind of
-real, careful root-cause work as items 38/73/79 (confirm the exact
-generated SQL, decide the right fix: broaden `_is_count_question`'s
-phrase list, or a more general signal that a measure column resolved from
-an ID-shaped term like `TRANSACTIONID` should never be summed). Deferred
-by explicit user choice (2026-08-01) in favor of prioritizing product
-documentation deliverables first; logged here so it isn't lost.
+**Resolution (2026-08-02)**: rather than broadening `_is_count_question`'s
+phrase list (which would have been the narrower fix, and would have
+actively broken this exact question -- it needs BOTH a real `COUNT` on
+`TRANSACTIONID` AND a real `SUM` on `TOTALVALUE` in the same query;
+`_is_count_question` intentionally overrides ALL measure aggregation with
+a bare `COUNT(*)`, so triggering it here would have silently dropped the
+`TOTALVALUE` sum entirely), fixed the actual general root cause instead:
+`_aggregation_function` (`sql_generation/agent.py`) now checks whether a
+resolved measure column's name is identifier-shaped
+(`_is_identifier_column`: ends in `"ID"`, matching this schema's real,
+consistent naming convention -- `CUSTOMERID`, `TRANSACTIONID`,
+`MARKETID`, `EXCHANGEID`) and always returns `COUNT` for it, regardless
+of phrasing or intent -- summing a surrogate/natural key is never
+semantically valid. A real additive measure (e.g. `TOTALVALUE`) resolved
+in the same query is unaffected and still gets a real `SUM`. This is
+strictly more general than a phrase-list expansion: it also protects
+against any *future* question phrasing that resolves an ID-shaped column
+as a measure, not just this one repro.
+
+Added a new regression test
+(`test_identifier_shaped_measure_column_is_counted_not_summed`) asserting
+both halves of the real, live-reproduced scenario: `TRANSACTIONID` is
+counted, `TOTALVALUE` is still summed, in the same generated statement.
+All 12 `sql_generation` tests (11 pre-existing + 1 new) pass; full
+`packages/` unit suite: 333 passed, 6 skipped (unchanged pre-existing
+local-venv gaps only).

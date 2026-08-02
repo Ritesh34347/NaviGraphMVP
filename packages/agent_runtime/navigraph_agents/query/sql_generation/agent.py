@@ -174,22 +174,49 @@ def _needs_predicate_resolution(question: str, columns: list[ResolvedColumnRef])
     return not already_has_filter_column
 
 
+def _is_identifier_column(column: ResolvedColumnRef) -> bool:
+    """A column whose name ends in "ID" (`CUSTOMERID`, `TRANSACTIONID`,
+    `MARKETID`, `EXCHANGEID` -- the real, consistent naming convention
+    across this schema's actual tables) is a surrogate/natural key, never
+    a genuine additive measure. Summing an identifier is always
+    semantically wrong, independent of how the question is phrased --
+    unlike the `_is_count_question` phrase-trigger (item 38/73), which
+    only catches "how many"/"number of"/"count of"-shaped questions.
+
+    REAL BUG, found live (LIMITATIONS.md item 80): "How does the
+    transaction count and value on 2018-01-02 compare..." doesn't trip
+    `_is_count_question` (no trigger phrase present), so Semantic
+    Retrieval's real, reasonable match of "transaction count" to
+    `TRANSACTIONID` fell through to this function, which summed it --
+    producing a nonsensical "transaction count total of
+    3,063,258,983,525." This check fixes the general case:
+    `TRANSACTIONID` (or any other real ID-shaped column) is never a valid
+    `SUM` target, regardless of phrasing or intent.
+    """
+
+    return column.column_name.upper().endswith("ID")
+
+
 def _aggregation_function(column: ResolvedColumnRef, intent: IntentLabel) -> str:
     """Choose the SQL aggregate function for a `role="measure"` column.
 
     v1 rule (deliberately narrow, mirrors `schema_mapping.agent._assign_role`'s
-    documented narrowness): a numeric `data_type` combined with an intent
-    that actually asks for an aggregated quantity (`_MEASURE_INTENTS`) uses
-    `SUM` -- correct for the additive metrics this system's worked examples
-    actually exercise (transaction volume, unit counts, revenue). A column
-    that upstream nonetheless labeled `role="measure"` without a numeric
-    `data_type` (which, per schema_mapping's own role-assignment invariant,
-    should never happen -- but this agent does not blindly trust that
-    invariant since it receives schema_mapping's output as plain data, not a
-    guarantee) falls back to `COUNT`, since `SUM` over non-numeric data is
-    invalid SQL.
+    documented narrowness): an identifier column (`_is_identifier_column`)
+    is never summed, regardless of intent -- `COUNT` is always the correct,
+    meaningful aggregate over a key column. Otherwise, a numeric `data_type`
+    combined with an intent that actually asks for an aggregated quantity
+    (`_MEASURE_INTENTS`) uses `SUM` -- correct for the additive metrics this
+    system's worked examples actually exercise (transaction volume, unit
+    counts, revenue). A column that upstream nonetheless labeled
+    `role="measure"` without a numeric `data_type` (which, per
+    schema_mapping's own role-assignment invariant, should never happen --
+    but this agent does not blindly trust that invariant since it receives
+    schema_mapping's output as plain data, not a guarantee) falls back to
+    `COUNT`, since `SUM` over non-numeric data is invalid SQL.
     """
 
+    if _is_identifier_column(column):
+        return "COUNT"
     if column.data_type.upper() in _NUMERIC_DATA_TYPES and intent in _MEASURE_INTENTS:
         return "SUM"
     return "COUNT"
