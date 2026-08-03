@@ -79,6 +79,12 @@ joining the coordinator, OPA bundle load failures).
 - [`BUILD_LOG.md`](./BUILD_LOG.md) — a phase-by-phase narrative of what was built and
   verified (14 phases, Phase 1 through the real cloud deployment).
 
+**[`NaviGraphSpec.md`](./NaviGraphSpec.md)** — the comprehensive build
+specification: process discipline, every SDLC phase in instructional
+detail, the agent contract pattern, and a real post-launch bug-class
+catalog — everything needed to build a system like this the same way,
+start to finish.
+
 **Product & technical reference**:
 
 - [`docs/product/prd.md`](./docs/product/prd.md) — product requirements.
