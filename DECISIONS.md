@@ -1048,3 +1048,31 @@ labels that correspond to a real crawled node type
 no such node type exists in the graph (customer/transaction-cardinality
 data is deliberately excluded, per this project's original knowledge-graph
 design), so no wasted queries are made for those.
+
+## 2026-08-04 — `_build_joins` requires a shared join key to be unambiguous (exactly one other resolved table) before trusting it, rather than joining to every table sharing a column name
+
+Re-testing after item 86 shipped surfaced a real, live wrong-data bug that
+turned out to predate today entirely: "Transaction happens in Market"
+(Phase 9, item 15) joined `TRANSACTIONS` to `STAGING_ASSET_INFORMATION`
+via `MARKETID` whenever both were resolved alongside `MARKETS`, because
+both tables happen to have a real `MARKETID` column for unrelated reasons
+(a transaction's own market vs. the market a security is listed on).
+Deleting item 85's newly-added concept directly from the live graph did
+NOT fix it, conclusively proving the bug was already there, just never
+triggered by a real question before. Two fixes were considered: (a) give
+each `RelationshipConcept` an explicit list of which OTHER tables it's
+allowed to join to (closing the gap precisely, but a bigger data-model
+change under time pressure with an actively-wrong-data bug live), or (b)
+require the shared key to be unambiguous -- refuse to join at all when
+2+ resolved tables share the same column name, since which one is the
+real intended target can't be inferred from the data this function has.
+(b) was chosen for its safety margin: it can only ever make the system
+MORE conservative (more honest failures, never a wrong join), matching
+this session's repeated lesson that a guessed join is worse than a
+refused one. (a) remains the more complete fix and is not ruled out for
+later, but implementing it correctly under the pressure of an active
+wrong-data incident risked repeating the same mistake a third time.
+Separately, "Transaction involves Asset" (a real, correctly-keyed `ISIN`
+relationship) was added so the common "transaction volume by security"
+shape still resolves correctly on its own merits, not as a side effect of
+the safety fix.

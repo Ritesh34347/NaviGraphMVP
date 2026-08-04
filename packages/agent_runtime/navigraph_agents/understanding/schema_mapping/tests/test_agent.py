@@ -289,6 +289,81 @@ class TestJoinAcrossTwoTables:
             "STAGING_MARKETS" in (j.left_table, j.right_table) for j in output.result.joins
         )
 
+    async def test_ambiguous_shared_key_across_two_other_tables_joins_neither(self) -> None:
+        """REAL BUG, live-reproduced: "What is driving the high transaction
+        volume in Athens Exchange -- concentrated in a few securities or
+        accounts?" resolved TRANSACTIONS/ASSET_INFORMATION/MARKETS
+        together. "Transaction happens in Market" (realizing_table=
+        TRANSACTIONS, key=MARKETID) used to connect TRANSACTIONS to EVERY
+        other resolved table sharing a MARKETID column -- and
+        ASSET_INFORMATION genuinely has one (an asset is listed on a
+        market), so it got joined to TRANSACTIONS via MARKETID too. That
+        is NOT the same relationship as "this transaction is for this
+        asset" (the real FK is ISIN) -- it silently fanned every asset in
+        a market out against every transaction in that market, repeating
+        the market's grand total for every security in it. Since which of
+        {ASSET_INFORMATION, MARKETS} is the relationship's REAL object
+        can't be determined from a shared column name alone, neither may
+        be joined via this relationship -- both must stay unjoined."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="transaction volume",
+                    resolved=True,
+                    catalog_column_id="col-1",
+                    column_name="UNITS",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="security",
+                    resolved=True,
+                    catalog_column_id="col-2",
+                    column_name="ISIN",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="market",
+                    resolved=True,
+                    catalog_column_id="col-3",
+                    column_name="NAME",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Transaction",
+                    predicate="HAPPENS_IN",
+                    object_label="Market",
+                    realizing_table="TRANSACTIONS",
+                    subject_key_column="MARKETID",
+                    object_key_column="MARKETID",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-1", "TRANSACTIONS", "UNITS", "NUMBER"),
+                _catalog_entry("col-1b", "TRANSACTIONS", "MARKETID", "TEXT"),
+                _catalog_entry("col-2", "ASSET_INFORMATION", "ISIN", "TEXT"),
+                # ASSET_INFORMATION also has a real MARKETID column -- this
+                # is what makes the shared key ambiguous.
+                _catalog_entry("col-2b", "ASSET_INFORMATION", "MARKETID", "TEXT"),
+                _catalog_entry("col-3", "MARKETS", "NAME", "TEXT"),
+                _catalog_entry("col-3b", "MARKETS", "MARKETID", "TEXT"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert set(output.result.tables) == {"TRANSACTIONS", "ASSET_INFORMATION", "MARKETS"}
+        # The ambiguous MARKETID key connects nobody -- no wrong join, and
+        # no partial-but-misleading join either.
+        assert output.result.joins == []
+
     async def test_no_join_when_realizing_table_not_among_resolved_columns(self) -> None:
         agent = SchemaMappingAgent()
 

@@ -1243,9 +1243,51 @@ reference-data node type (`_REFERENCE_NODE_LABELS`). New tests:
 API coverage, 4 tests). Full suite: 269 tests pass (up from 265), `ruff
 check` clean.
 
-**Live verification**: pending -- this fix is committed and about to go
-through the real CD pipeline (canary bake + promote); the two
-previously-failing named-market questions will be re-tested directly
-against the live gateway once deployed, the same way item 85's fix and
-the earlier grouping-bug fix were each independently confirmed live
-before being considered done.
+**Live verification**: deployed via the real CD pipeline (canary
+10%->50%->100%->promote, confirmed via `gh run watch` and direct
+`kubectl` inspection of canary-weight annotations and deployment image
+SHAs), then re-tested directly against the live gateway. Both
+previously-failing named-market questions now DID resolve a real join
+(confirming item 86's fix itself worked), but re-testing surfaced a
+further, deeper, real wrong-data bug -- see the next entry below.
+
+## 2026-08-04 — Found and fixed a real, PRE-EXISTING wrong-data bug in production: `_build_joins` joined tables via a shared column name that meant different things on each side
+
+Live re-testing of item 86's fix showed "Which securities drove the most
+transaction volume in Athens Exchange?" now returned `outcome="answered"`
+with a real SQL join -- but every one of ~80 distinct securities under
+"Athens Exchange S.A. Cash Market" showed the IDENTICAL total
+(`914679074.6164`). As an immediate live mitigation, item 85's newly-added
+"Asset traded in Market" concept was deleted directly from the live Neo4j
+graph via `kubectl exec` -- the wrong-data behavior persisted completely
+unchanged, conclusively proving it predated today's work. Root cause:
+"Transaction happens in Market" (`TRANSACTIONS`/`MARKETID`, added Phase 9,
+item 15) has always connected `realizing_table` to EVERY other resolved
+table sharing a column with the same name -- and `STAGING_ASSET_INFORMATION`
+genuinely has its own real `MARKETID` column, so `TRANSACTIONS` got joined
+to it directly, fanning every security in a market out against every
+transaction in that market. This bug has been live since Phase 9; it
+simply never surfaced until a real question combined Transaction+Asset+
+Market for the first time today.
+
+**Fix**: `_build_joins` now requires the shared key to be unambiguous --
+a relationship only connects `realizing_table` to `other_table` when
+`other_table` is the SOLE other resolved table with a matching column
+name; 2+ candidates means neither is joined (surfaces as the existing,
+honest `unjoined_table_in_multi_table_query` error). Added a real,
+correctly-keyed `RelationshipConcept` -- "Transaction involves Asset"
+(`TRANSACTIONS.ISIN` = `ASSET_INFORMATION.ISIN`) -- so "transaction
+volume by security" resolves via the real per-row foreign key. New test:
+`test_ambiguous_shared_key_across_two_other_tables_joins_neither`. Full
+suite: 272 tests pass (up from 269), `ruff check` clean.
+
+**What's still open**: the exact live compound question (all three
+tables sharing `MARKETID`) still can't be fully answered -- `MARKETS`
+stays unjoined even after `TRANSACTIONS`/`ASSET_INFORMATION` correctly
+join via `ISIN`, since `MARKETID` remains genuinely ambiguous across all
+three. A real fix needs join-path-resolution logic (prefer extending an
+already-connected component) that doesn't exist yet -- deliberately not
+attempted given how the last two incremental relationship-only fixes each
+turned out to have a real, unforeseen edge case under live testing. This
+is now a safe, honest limitation, not a correctness risk. See
+`LIMITATIONS.md` item 87 and the matching `DECISIONS.md` entry.

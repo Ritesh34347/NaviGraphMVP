@@ -63,8 +63,8 @@ class TestApplyConstraints:
 
 
 class TestRelationshipConcepts:
-    def test_has_exactly_the_five_seed_entries(self) -> None:
-        assert len(RELATIONSHIP_CONCEPTS) == 5
+    def test_has_exactly_the_six_seed_entries(self) -> None:
+        assert len(RELATIONSHIP_CONCEPTS) == 6
 
     def test_every_entry_has_the_expected_keys(self) -> None:
         expected_keys = {
@@ -114,3 +114,15 @@ class TestRelationshipConcepts:
         assert concept["realizing_table"] == "ASSET_INFORMATION"
         assert concept["subject_key_column"] == "MARKETID"
         assert concept["object_key_column"] == "MARKETID"
+
+    def test_contains_transaction_involves_asset(self) -> None:
+        names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
+        assert "Transaction involves Asset" in names
+
+    def test_transaction_involves_asset_uses_isin_as_the_shared_join_key(self) -> None:
+        concept = next(
+            c for c in RELATIONSHIP_CONCEPTS if c["name"] == "Transaction involves Asset"
+        )
+        assert concept["realizing_table"] == "TRANSACTIONS"
+        assert concept["subject_key_column"] == "ISIN"
+        assert concept["object_key_column"] == "ISIN"

@@ -174,6 +174,12 @@ RELATIONSHIP_CONCEPTS: list[dict[str, str]] = [
         # market), the same natural key `_build_joins` already knows how to
         # use. Same subject/object key split as "Transaction happens in
         # Market" above (literal same column name on both sides).
+        #
+        # NOTE: this concept is ONLY safe to use for a plain Asset+Market
+        # pair (no Transaction also resolved) -- see "Transaction involves
+        # Asset" below and `_build_joins`'s ambiguity guard for why joining
+        # Transaction to Asset via this SAME `MARKETID` column produced a
+        # real, live wrong-data bug (item 85's own follow-up finding).
         "name": "Asset traded in Market",
         "subject_label": "Asset",
         "predicate": "TRADED_IN",
@@ -181,5 +187,27 @@ RELATIONSHIP_CONCEPTS: list[dict[str, str]] = [
         "realizing_table": "ASSET_INFORMATION",
         "subject_key_column": "MARKETID",
         "object_key_column": "MARKETID",
+    },
+    {
+        # REAL BUG, found live: once "Asset traded in Market" (above) let
+        # Asset+Market questions resolve, a real compound question ("...is
+        # it concentrated in a few securities or accounts?") resolved
+        # TRANSACTIONS + ASSET_INFORMATION + MARKETS together, and
+        # `_build_joins` joined TRANSACTIONS to ASSET_INFORMATION via the
+        # SAME `MARKETID` column both tables happen to have -- but that
+        # only means "this asset is listed on the same market as this
+        # transaction," NOT "this transaction is FOR this asset." The real
+        # per-row foreign key linking a transaction to its actual security
+        # is `ISIN`, present on both tables. This concept exists
+        # specifically so "transaction volume by security" resolves a
+        # real, correct join instead of the market-scoped fan-out bug that
+        # motivated `_build_joins`'s new ambiguity guard.
+        "name": "Transaction involves Asset",
+        "subject_label": "Transaction",
+        "predicate": "INVOLVES",
+        "object_label": "Asset",
+        "realizing_table": "TRANSACTIONS",
+        "subject_key_column": "ISIN",
+        "object_key_column": "ISIN",
     },
 ]

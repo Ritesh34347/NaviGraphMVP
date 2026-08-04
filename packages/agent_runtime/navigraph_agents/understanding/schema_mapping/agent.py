@@ -293,6 +293,42 @@ class SchemaMappingAgent:
         (`_generate_statements` in `sql_generation`) now correctly reports
         as a real `unjoined_table_in_multi_table_query` error instead of
         ever seeing invalid SQL.
+
+        THIRD REAL BUG, found live via "What is driving the high
+        transaction volume in Athens Exchange -- is it concentrated in a
+        few securities or accounts?": even with the first two fixes above,
+        resolving `STAGING_TRANSACTIONS`/`STAGING_ASSET_INFORMATION`/
+        `STAGING_MARKETS` together produced a real, live, WRONG answer --
+        every security in a market showed the IDENTICAL total units, e.g.
+        "Athens Exchange S.A. Cash Market" repeating `914679074.6164` for
+        every one of ~80 distinct securities. Root cause: "Transaction
+        happens in Market" (`realizing_table=TRANSACTIONS`,
+        `subject_key_column=MARKETID`) connects `TRANSACTIONS` to EVERY
+        other resolved table that happens to have a `MARKETID` column --
+        and `STAGING_ASSET_INFORMATION` genuinely has one (an asset is
+        listed on a market), so this loop joined `TRANSACTIONS` to
+        `ASSET_INFORMATION` via `MARKETID` too. That is NOT the same
+        relationship as "this transaction is FOR this asset" (the real FK
+        for that is `ISIN`, not `MARKETID`) -- joining on `MARKETID`
+        instead fans every asset in a market out against every
+        transaction in that same market, then the `GROUP BY` on `ISIN`
+        just repeats that market's grand total for every security in it.
+        This is a real, PRE-EXISTING gap in "Transaction happens in
+        Market" (live since Phase 9, item 15) -- it was never wrong for a
+        real 2-table (Transaction+Market) question, only once a THIRD
+        table sharing the exact same column name entered the resolved
+        set. Fixed by requiring the shared key to be UNAMBIGUOUS: a
+        relationship only connects `realizing_table` to `other_table` when
+        `other_table` is the ONLY OTHER resolved table with a column named
+        `subject_key_column` -- if 2+ resolved tables share that column
+        name, which one is the relationship's real, intended object cannot
+        be determined from the data available here, so NONE of them are
+        joined via this relationship (they surface, correctly, as
+        `unjoined_table_in_multi_table_query` rather than a confident but
+        wrong per-group breakdown). A real `RelationshipConcept` connecting
+        `TRANSACTIONS` and `ASSET_INFORMATION` via the correct `ISIN` key
+        is a separate, deliberate addition, not a side effect of this
+        safety fix.
         """
 
         def _core_name(table_name: str) -> str:
@@ -332,29 +368,36 @@ class SchemaMappingAgent:
                 table for table in resolved_tables if table != real_realizing_table
             }
 
-            for other_table in sorted(other_tables):
-                if other_table == real_realizing_table:
-                    # Defensive; `other_tables` already excludes this, but
-                    # a self-join is exactly the "nonsensical join" this
-                    # logic must never emit.
-                    continue
+            candidates = [
+                table
+                for table in sorted(other_tables)
+                if _table_has_column(table, rel.subject_key_column)
+            ]
+            if len(candidates) != 1:
+                # Zero candidates: this table's key genuinely isn't shared
+                # by anything else resolved -- nothing to join. Two or
+                # more: the shared column name is ambiguous -- e.g. both
+                # `STAGING_MARKETS` and `STAGING_ASSET_INFORMATION` have a
+                # real `MARKETID` column, but only one of them is what
+                # `realizing_table`'s relationship is actually about; a
+                # third, incidentally-same-named column is NOT the same
+                # relationship. Guessing which one is right would risk
+                # exactly the live, wrong-data fan-out bug this guard
+                # exists to prevent -- so neither is joined via this
+                # relationship, leaving them to surface as a real,
+                # explicit `unjoined_table_in_multi_table_query` error
+                # instead.
+                continue
 
-                if not _table_has_column(other_table, rel.subject_key_column):
-                    # This table doesn't actually share the relationship's
-                    # join key -- e.g. STAGING_CUSTOMER_INFORMATION has no
-                    # MARKETID column. Joining on a nonexistent column
-                    # would produce real, broken SQL; this table simply
-                    # isn't reachable via THIS relationship.
-                    continue
+            other_table = candidates[0]
 
-                join_key = (
-                    other_table,
-                    rel.subject_key_column,
-                    real_realizing_table,
-                    rel.subject_key_column,
-                )
-                if join_key in seen_joins:
-                    continue
+            join_key = (
+                other_table,
+                rel.subject_key_column,
+                real_realizing_table,
+                rel.subject_key_column,
+            )
+            if join_key not in seen_joins:
                 seen_joins.add(join_key)
 
                 joins.append(

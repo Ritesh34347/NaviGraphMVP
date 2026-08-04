@@ -2677,3 +2677,63 @@ or misspelled name). No further gap of this kind is known at this time,
 but none has been exhaustively searched for either -- this was found via
 live testing of two specific real questions, not a systematic audit of
 every `RelationshipConcept`/entity-extraction combination.
+
+### 87. RESOLVED (partially): item 86's fix exposed a real, PRE-EXISTING wrong-data bug live in production -- `_build_joins` joined tables via a shared column name that meant different things on each side
+
+**What was found**: re-testing the two split questions after item 86
+deployed, "Which securities drove the most transaction volume in Athens
+Exchange?" returned `outcome="answered"` with a real generated SQL join
+-- but every distinct security listed under "Athens Exchange S.A. Cash
+Market" showed the IDENTICAL total (`914679074.6164`), across ~80
+different securities. As an immediate mitigation, the newly-added "Asset
+traded in Market" concept (item 85) was deleted directly from the live
+Neo4j graph -- but the wrong-data behavior persisted unchanged, proving
+it was NOT caused by anything added today. Root cause: **"Transaction
+happens in Market"** (`realizing_table=TRANSACTIONS`,
+`subject_key_column=MARKETID`, added in Phase 9, item 15) has been
+live since Phase 9 with this exact defect -- `_build_joins` connects
+`realizing_table` to EVERY other resolved table that happens to have a
+column with the same name, and `STAGING_ASSET_INFORMATION` genuinely has
+its own, real `MARKETID` column (a security is listed on exactly one
+market). So once a question resolves `TRANSACTIONS` + `ASSET_INFORMATION`
++ `MARKETS` together, `TRANSACTIONS` got joined to `ASSET_INFORMATION`
+via `MARKETID` -- which only means "this asset is listed on the same
+market as this transaction," not "this transaction is FOR this asset."
+The real per-row foreign key for that is `ISIN`. The join fanned every
+security in a market out against every transaction in that market,
+repeating the market's grand total under every security's row. This bug
+was live since Phase 9 -- it simply never surfaced because no real
+question had combined Transaction+Asset+Market until today.
+
+**Resolution**: `_build_joins` now requires the shared key to be
+UNAMBIGUOUS: a relationship connects `realizing_table` to `other_table`
+only when `other_table` is the SOLE other resolved table with a column
+named `subject_key_column`. If 2+ resolved tables share that column name,
+which one the relationship is actually about cannot be determined from
+the data available, so NONE of them are joined via that relationship --
+they surface as a real, honest `unjoined_table_in_multi_table_query`
+error instead of a confident-looking but wrong per-group breakdown. This
+does not regress any previously-verified 2-table case (each still has
+exactly one candidate). Separately, a real, correctly-keyed
+`RelationshipConcept` -- **"Transaction involves Asset"**
+(`TRANSACTIONS.ISIN` = `ASSET_INFORMATION.ISIN`) -- was added so
+"transaction volume by security" (without a market also resolved) now
+answers via the real per-row foreign key instead of the market-scoped
+fan-out. New regression test:
+`test_ambiguous_shared_key_across_two_other_tables_joins_neither`.
+272 tests pass (up from 265 before this investigation began), `ruff
+check` clean.
+
+**What full version requires**: the exact live compound question
+(Transaction + Asset + Market, all three sharing `MARKETID`) still cannot
+be fully answered -- with the ambiguity guard in place, `MARKETID` is
+genuinely ambiguous across all three tables regardless of which one is
+treated as `realizing_table`, so `MARKETS` stays unjoined even once
+`TRANSACTIONS`/`ASSET_INFORMATION` correctly join via `ISIN`. Properly
+supporting this would require a real join-path-resolution capability
+(e.g. preferring to extend an already-connected component over
+introducing a new, ambiguous edge) that does not exist in this codebase
+today -- deliberately not attempted here given how fragile the last two
+attempts at incremental, single-relationship fixes turned out to be under
+live testing. This is now a SAFE limitation (an honest failure), not a
+correctness risk.
