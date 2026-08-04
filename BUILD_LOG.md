@@ -1565,3 +1565,42 @@ local `next dev` pointed at the real deployed gateway
 updates the description/example questions and the outgoing request's
 `tenant_id` for both data sources (confirmed via the same live session
 that also surfaced item 93's production incident above).
+
+## 2026-08-05 — Live re-test after item 93's deploy: "revenue by channel" now answers correctly; "revenue by category" still failed, root-caused and fixed
+
+With items 91-93 deployed and both KG syncs re-run against the fixed
+code (`sync_ecommerce_kg.py`: 18 relationship concepts, 4 channels
+crawled; `sync_brokerage_kg.py`: 18 relationship concepts, 835 assets/
+38 markets/etc. re-synced), live-tested "What is the total revenue by
+channel?" against the real deployed gateway: **real success** -- a real
+`JOIN` between `FACT_ORDERS` and `DIM_CHANNEL` on `CHANNEL_ID`, real
+varied per-channel revenue numbers ($902,241 Website / $548,690 Mobile
+App / $317,089 Marketplace / $170,248 In-Store), and a real, correctly
+grounded narrative citing those exact numbers.
+
+Continued testing "What are the top 5 categories by revenue?" --
+**failed** with `unjoined_table_in_multi_table_query` on `['DIM_PRODUCT',
+'FACT_ORDERS']`. Root-caused: my e-commerce glossary mapped "revenue" to
+`FACT_ORDERS.TOTAL_AMOUNT`, which has no join path to `DIM_PRODUCT` at
+all. Fixed by re-pointing "revenue"/"sales" synonyms to
+`FACT_ORDER_ITEMS.LINE_TOTAL` (universally joinable). Re-tested -- still
+failed, now on `['DIM_PRODUCT', 'FACT_ORDER_ITEMS']`: found the SAME
+subject-side bug item 91 fixed, but on the OBJECT side ("categories"
+never says "product"). Fixed by generalizing `OntologyAgent
+._resolve_relationships`'s relaxation to skip BOTH the subject and
+object literal-match checks together once the realizing table is
+implied, not just the subject. 286 tests pass, `ruff check` clean.
+Documented as `LIMITATIONS.md` item 94 and a new `DECISIONS.md` entry.
+
+Also found and explicitly NOT fixed in this same pass (different agent,
+out of scope for today): "How much revenue came from the Mobile App?"
+answered with a full, unfiltered per-channel breakdown rather than a
+Mobile-App-only total -- reproduced twice, so not just LLM
+non-determinism. SQL Generation's predicate-resolution step did not
+recognize "Mobile App" as a filter value. Logged honestly as a real,
+separate gap (item 94's "what full version requires").
+
+Remaining: commit + push this second-round fix (both remotes), deploy,
+re-run both KG syncs once more against the new code, and re-test "top 5
+categories by revenue" plus a broader sample of the ~100-question bank
+-- not yet done as of this entry.

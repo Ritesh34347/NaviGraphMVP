@@ -335,7 +335,15 @@ class TestRelationshipResolution:
         subject check alone can never bridge "revenue" to "Order"; they
         share no lexical or instance overlap. Must now fire because
         "revenue" resolves via the glossary to `FACT_ORDERS.TOTAL_AMOUNT`,
-        and `FACT_ORDERS` is exactly this concept's `realizing_table`."""
+        and `FACT_ORDERS` is exactly this concept's `realizing_table`.
+
+        Once `FACT_ORDERS` is implied, EVERY concept realized by that
+        table fires unconditionally (not just "Order uses Channel") --
+        this is intentional, not over-matching: `_build_joins` is the
+        real correctness gate (it only ever emits a join for a
+        relationship whose OTHER side is genuinely, unambiguously
+        resolved), so firing extra candidates that turn out irrelevant is
+        a safe no-op downstream, not a risk."""
 
         client = MagicMock()
         agent = OntologyAgent(client=client)
@@ -377,12 +385,73 @@ class TestRelationshipResolution:
         ):
             output = await agent.run(_make_input(["revenue", "channel"]))
 
-        assert len(output.result.relationship_resolutions) == 1
-        relationship = output.result.relationship_resolutions[0]
+        # All 3 FACT_ORDERS-realized concepts fire (Order involves
+        # Customer/Order happens on Date/Order uses Channel) -- assert the
+        # specific one this test cares about is among them, correctly
+        # resolved.
+        by_object = {r.object_label: r for r in output.result.relationship_resolutions}
+        assert "Channel" in by_object
+        relationship = by_object["Channel"]
         assert relationship.subject_label == "Order"
-        assert relationship.object_label == "Channel"
         assert relationship.realizing_table == "FACT_ORDERS"
-        mock_get_rel.assert_called_once()
+        assert mock_get_rel.call_count == 3
+
+    async def test_relationship_fires_when_the_object_side_table_is_implied_not_the_subject(
+        self,
+    ) -> None:
+        """REAL BUG, found live re-testing after the fix above shipped:
+        "What are the top 5 categories by revenue?" mentions "revenue"
+        (implying `FACT_ORDER_ITEMS`, matching the subject side of
+        "OrderItem involves Product") but never the word "product" --
+        only "categories", which resolves to `DIM_PRODUCT.CATEGORY`. The
+        object side never got the same relaxation the subject side did,
+        so this fired for the subject check but still failed the object
+        check. Both sides must relax together once the realizing table is
+        implied -- see the method's own docstring for why this is safe."""
+
+        client = MagicMock()
+        agent = OntologyAgent(client=client)
+
+        def fake_resolve(_client, *, tenant_id, term):
+            if term == "revenue":
+                return [
+                    {
+                        "business_concept": "Revenue",
+                        "catalog_column_id": "col-line-total",
+                        "column_name": "LINE_TOTAL",
+                        "table_name": "FACT_ORDER_ITEMS",
+                        "preferred": True,
+                        "source": "manual_ecommerce_poc",
+                    }
+                ]
+            return []
+
+        relationship_record = {
+            "name": "OrderItem involves Product",
+            "realizing_table": "FACT_ORDER_ITEMS",
+            "subject_key_column": "PRODUCT_ID",
+            "object_key_column": "PRODUCT_ID",
+        }
+
+        with (
+            patch(
+                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
+                side_effect=fake_resolve,
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
+                return_value=False,
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
+                return_value=relationship_record,
+            ),
+        ):
+            output = await agent.run(_make_input(["revenue", "categories"]))
+
+        by_object = {r.object_label: r for r in output.result.relationship_resolutions}
+        assert "Product" in by_object
+        assert by_object["Product"].realizing_table == "FACT_ORDER_ITEMS"
 
     async def test_relationship_does_not_fire_with_only_one_label_present(self) -> None:
         client = MagicMock()

@@ -1256,3 +1256,23 @@ general guard while every real question stayed broken. The follow-up is
 logged in `LIMITATIONS.md` item 93 with enough specificity (all 4
 `**model_dump()` conversion sites named) that it's actionable later, not
 just a vague aspiration.
+
+## 2026-08-05 — Relationship-firing relaxation generalized to both subject AND object sides, not just subject
+
+Live re-testing after item 91 shipped found the identical gap on the
+object side ("categories" never says "product", so "OrderItem involves
+Product" never fired even once "revenue" implied `FACT_ORDER_ITEMS`).
+Rather than writing a second, parallel relaxation specific to the object
+side, the fix generalizes: once a concept's `realizing_table` is implied,
+BOTH checks are skipped together. This is a strictly simpler rule (one
+condition gates both sides, not two independent conditions) and is
+provably safe for the same reason the original relaxation was --
+`_build_joins`'s own real-catalog verification is the actual correctness
+gate, not this method. Also re-pointed the e-commerce glossary's
+"revenue" synonyms from `FACT_ORDERS.TOTAL_AMOUNT` to
+`FACT_ORDER_ITEMS.LINE_TOTAL`, since only the line-item-grain fact table
+is joinable to every real dimension (Product/Promotion included) via the
+existing relationship concepts -- a real, deliberate "net merchandise
+revenue" business definition, chosen specifically for universal
+joinability, logged as a debatable choice rather than presented as the
+only correct one.

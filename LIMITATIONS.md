@@ -3141,3 +3141,75 @@ diverge, rather than relying on each individual test author remembering
 to use non-empty mock data. Not built here; logged as a real follow-up
 given the severity of what a silent drift on any of these four pairs can
 do (they are all on the hot path of every real question).
+
+### 94. RESOLVED, SAME DAY: item 91's fix only relaxed the SUBJECT side of relationship matching; the OBJECT side had the identical gap -- plus a glossary miscalibration that made "revenue" unjoinable to Product
+
+**What was found**: after items 91-93 deployed and the e-commerce
+`ColumnGlossary`/Channel crawl were run live, `"What is the total revenue
+by channel?"` answered correctly (real join, real varied per-channel
+numbers). But `"What are the top 5 categories by revenue?"` still failed
+with `unjoined_table_in_multi_table_query` on `['DIM_PRODUCT',
+'FACT_ORDER_ITEMS']`(then, before the second fix below, on
+`['DIM_PRODUCT', 'FACT_ORDERS']`). Two distinct, compounding real gaps:
+
+1. My original e-commerce `ColumnGlossary` mapped "revenue"/"sales" to
+   `FACT_ORDERS.TOTAL_AMOUNT` -- but `FACT_ORDERS` has NO join path to
+   `DIM_PRODUCT` at all (no `PRODUCT_ID` column; only `FACT_ORDER_ITEMS`
+   has one, via "OrderItem involves Product"). Any revenue question
+   combined with a product-level dimension (category/subcategory/brand)
+   was structurally unanswerable through that column. Fixed by
+   re-pointing "revenue"/"total revenue"/"sales"/"total sales" to
+   `FACT_ORDER_ITEMS.LINE_TOTAL` instead (net merchandise revenue,
+   excluding order-level tax/shipping -- a real, common e-commerce
+   definition), since `LINE_TOTAL` is joinable to EVERY dimension
+   (Customer, Date, Channel, Product, Promotion) via the existing
+   "OrderItem ..." relationship concepts. `FACT_ORDERS.TOTAL_AMOUNT` keeps
+   only genuinely order-level synonyms ("order total"/"order value"),
+   which correctly still mean the order-level amount for AOV-style
+   questions.
+2. Even after (1), the join still failed: item 91's fix only relaxed the
+   SUBJECT-label check (`OntologyAgent._resolve_relationships`) when the
+   concept's `realizing_table` is already implied by a resolved concept --
+   the OBJECT-label check was untouched. "top 5 categories by revenue"
+   implies `FACT_ORDER_ITEMS` via "revenue" (subject side now passes) but
+   never says "product" (only "categories"), so "OrderItem involves
+   Product" (`object_label="Product"`) still never fired. This is the
+   exact same class of bug as item 91, just on the other side of the
+   relationship.
+
+**Resolution**: generalized the relaxation to apply symmetrically --
+once a concept's `realizing_table` is implied by a resolved business
+concept, BOTH the subject and object literal/instance checks are skipped
+entirely and the relationship fires unconditionally. This is safe because
+`SchemaMappingAgent._build_joins` (not `_resolve_relationships`) is the
+actual correctness gate: it independently re-verifies, against the real
+live catalog, that the relationship's join key exists on both the
+realizing table and exactly one other resolved table (its own item-87
+ambiguity guard) before ever emitting a `JoinSpec` -- a
+relationship_resolution that turns out irrelevant is just a skipped
+no-op there, never a wrong join. New test:
+`test_relationship_fires_when_the_object_side_table_is_implied_not_the_subject`;
+updated the existing implied-table test to assert against the (now
+larger, correctly so) set of fired relationships rather than exactly one.
+286 tests pass (up from 285), `ruff check` clean. Live-verified: "top 5
+categories by revenue" now needs re-testing after this deploy (pending as
+of this entry -- see BUILD_LOG.md).
+
+**What full version requires**: (1) a separate, smaller gap found in the
+SAME live-testing pass: "How much revenue came from the Mobile App?"
+answered with a full, UNFILTERED per-channel breakdown rather than a
+single Mobile-App-only total -- SQL Generation's LLM-based predicate
+resolution did not recognize "Mobile App" as a filter value needing a
+`WHERE CHANNEL_NAME = 'Mobile App'` clause, reproduced consistently (not
+just once, ruling out ordinary LLM non-determinism as the sole
+explanation). This is a real, un-fixed gap in a DIFFERENT agent
+(`query.sql_generation`'s predicate-resolution step) than anything
+touched by items 90-94 -- not investigated further given time
+constraints; logged honestly rather than silently accepted. (2) the
+"revenue = net merchandise, excludes tax/shipping" business definition
+chosen in fix (1) above is a real, debatable choice -- a user who expects
+"total revenue" to mean the full billed amount (including tax/shipping)
+would get a smaller number than expected for pure order-level questions;
+this tradeoff was accepted specifically because it's what makes
+universal joinability possible, not because it's the only valid
+definition.

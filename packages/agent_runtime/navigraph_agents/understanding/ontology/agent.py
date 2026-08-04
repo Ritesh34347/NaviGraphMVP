@@ -284,39 +284,55 @@ class OntologyAgent:
         `_label_or_instance_matches`), and resolve each match against the
         real graph.
 
-        REAL BUG, found live testing the e-commerce data source: every
-        e-commerce `RelationshipConcept`'s `subject_label` is `"Order"` or
-        `"OrderItem"` (see `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`'s
-        e-commerce block) -- a table-role word real users almost never say.
-        A question like "What is the total revenue by channel?" mentions
-        "channel" (matches `object_label`) but never "order" in any form,
-        so `_label_or_instance_matches(subject_label=...)` never matched,
+        REAL BUG, found live testing the e-commerce data source, in two
+        stages. First: every e-commerce `RelationshipConcept`'s
+        `subject_label` is `"Order"` or `"OrderItem"` (see
+        `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`'s e-commerce block)
+        -- a table-role word real users almost never say. A question like
+        "What is the total revenue by channel?" mentions "channel"
+        (matches `object_label`) but never "order" in any form, so
+        `_label_or_instance_matches(subject_label=...)` never matched,
         "Order uses Channel" never fired, and Schema Mapping's
         `_build_joins` -- which only ever considers relationships Ontology
         actually resolved -- never got a join to build, even though
         `FACT_ORDERS` (the concept's own `realizing_table`) was ALREADY
         one of the resolved tables once "revenue" resolved via the
-        glossary to `FACT_ORDERS.TOTAL_AMOUNT`. No amount of literal-word
-        or reference-node matching on "Order" itself can fix this --
-        "revenue" and "order" share no lexical or instance overlap.
+        glossary. Second, found live re-testing after the first fix
+        shipped: the SAME problem recurs on the OBJECT side -- "What are
+        the top 5 categories by revenue?" mentions "categories" (which
+        resolves to `DIM_PRODUCT.CATEGORY`) but never the word "product",
+        so "OrderItem involves Product" (`object_label="Product"`) never
+        fired either, even after "revenue" correctly implied
+        `FACT_ORDER_ITEMS`. No amount of literal-word or reference-node
+        matching on "Order"/"Product" themselves can fix either direction
+        -- these are table-role words, and there is no bound on how many
+        different real column/dimension names could refer to "that
+        table" without ever saying its role name.
 
-        Fix: the subject-label check also succeeds when the concept's
-        `realizing_table` is already implied by a resolved business
-        concept -- i.e. some OTHER entity in this same question already
-        resolved (via the deterministic glossary path) to a column that
-        lives on that exact table. This requires a real `ColumnGlossary`
+        Fix: once the concept's `realizing_table` is already implied by a
+        resolved business concept (some entity in this question resolved,
+        via the deterministic glossary path, to a column on that exact
+        table -- matched by core table name, `STAGING_` prefix ignored,
+        same normalization `schema_mapping._build_joins` already uses),
+        BOTH the subject and object literal/instance checks are skipped
+        entirely -- the relationship fires unconditionally. This is safe
+        specifically because `_build_joins` is the actual correctness
+        gate, not this method: it independently re-verifies, against the
+        real live catalog, that the relationship's `subject_key_column`
+        exists on both the realizing table AND exactly one other resolved
+        table before ever emitting a `JoinSpec` (its own ambiguity guard,
+        item 87) -- a relationship_resolution that turns out to be
+        irrelevant (its `realizing_table` was never actually resolved, or
+        no other table shares its join key) is simply skipped there as a
+        no-op, never a wrong join. This requires a real `ColumnGlossary`
         entry for the measure/dimension term to exist (Semantic
         Retrieval's LLM-fallback resolutions don't feed back into
         `concept_resolutions`, only Ontology's own glossary path does) --
         see BUILD_LOG.md's e-commerce ColumnGlossary entry for why that
-        glossary is a necessary companion to this fix, not a separate
-        concern. Matched by core table name (`STAGING_` prefix ignored),
-        the same normalization `schema_mapping._build_joins` already
-        uses, so this also fires correctly for the brokerage dataset's
-        `STAGING_`-prefixed tables. This only ever RELAXES the subject
-        check (never the object check) -- it can only cause a relationship
-        to fire in a case that previously silently failed to join, never
-        cause an existing, working match to stop firing.
+        glossary is a necessary companion to this fix. When the realizing
+        table is NOT implied, behavior is unchanged: both labels must
+        still match literally or via a named reference-node instance,
+        exactly as before.
         """
 
         def _core_name(table_name: str) -> str:
@@ -333,14 +349,17 @@ class OntologyAgent:
         for concept in RELATIONSHIP_CONCEPTS:
             subject_label = concept["subject_label"]
             object_label = concept["object_label"]
+            realizing_table_implied = _core_name(concept["realizing_table"]) in implied_tables
 
-            subject_matches = self._label_or_instance_matches(
-                subject_label, entities, tenant_id=tenant_id
-            ) or _core_name(concept["realizing_table"]) in implied_tables
-            if not subject_matches:
-                continue
-            if not self._label_or_instance_matches(object_label, entities, tenant_id=tenant_id):
-                continue
+            if not realizing_table_implied:
+                if not self._label_or_instance_matches(
+                    subject_label, entities, tenant_id=tenant_id
+                ):
+                    continue
+                if not self._label_or_instance_matches(
+                    object_label, entities, tenant_id=tenant_id
+                ):
+                    continue
 
             record = get_relationship_concept(
                 self._client,
