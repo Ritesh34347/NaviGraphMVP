@@ -1183,3 +1183,34 @@ for pairs that still have none (item 15's original gap). Semantic
 Retrieval's non-determinism in which schema variant (`STAGING_` vs bare)
 a term resolves to (item 14) is unaddressed; fix (1) just makes joins
 work correctly regardless of which variant gets picked.
+
+## 2026-08-04 — Fixed a second `_build_joins` bug (blind joins to tables lacking the key column) and added a real "Asset traded in Market" relationship concept
+
+A real, live compound question ("...is it concentrated in a few
+securities or accounts?") correctly hit item 84's new
+`unjoined_table_in_multi_table_query` error -- the system refusing rather
+than lying, as designed. Investigating it surfaced a genuinely separate
+bug: `_build_joins` connected a relationship's `realizing_table` to EVERY
+other resolved table unconditionally, assuming each shares the
+relationship's `subject_key_column` -- untrue here
+(`STAGING_CUSTOMER_INFORMATION` has no `MARKETID`). Fixed by cross-checking
+`payload.catalog_inventory` (the real, live catalog listing) before
+emitting each join; a table lacking the key column is now left unjoined
+rather than joined on a nonexistent column. New regression test
+`test_third_table_lacking_the_join_key_is_not_joined`; existing join
+tests' fixtures extended with the real join-key columns (a real
+`catalog_inventory` always includes every column of every table, not just
+resolved ones). Also added `"Asset traded in Market"`
+(`ASSET_INFORMATION.MARKETID`) as a 5th curated `RelationshipConcept`, and
+re-synced it into the live Neo4j graph via `_sync_relationship_concepts`
+(idempotent, confirmed via a direct `kubectl exec` call against the live
+agent-runtime pod).
+
+Full `packages/agent_runtime/` (222 tests) and `packages/knowledge_graph/`
+(42 tests, up from 40) suites pass; `ruff check` clean. See
+`LIMITATIONS.md` item 85 and the matching `DECISIONS.md` entry for the
+still-open limitation: the exact live question mixes two aggregation
+granularities (per-security and per-account) that no single join graph
+can answer at once given `CUSTOMER_MARKET_AGG` has no security dimension
+-- splitting it into two separate questions is the real, working
+workaround.

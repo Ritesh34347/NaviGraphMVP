@@ -162,4 +162,24 @@ RELATIONSHIP_CONCEPTS: list[dict[str, str]] = [
         "subject_key_column": "MARKETID",
         "object_key_column": "MARKETID",
     },
+    {
+        # Real gap found live: a real question asking what's driving high
+        # transaction volume in a specific market -- concentrated in a few
+        # securities or accounts? -- resolved ASSET_INFORMATION and MARKETS
+        # together with zero relationship concept connecting them, so
+        # Schema Mapping correctly (per the item-84 fix) refused to emit a
+        # Cartesian join rather than lying, but the "which securities" half
+        # of the question still couldn't be answered at all. ASSET_INFORMATION
+        # has a real MARKETID column (a security is listed on exactly one
+        # market), the same natural key `_build_joins` already knows how to
+        # use. Same subject/object key split as "Transaction happens in
+        # Market" above (literal same column name on both sides).
+        "name": "Asset traded in Market",
+        "subject_label": "Asset",
+        "predicate": "TRADED_IN",
+        "object_label": "Market",
+        "realizing_table": "ASSET_INFORMATION",
+        "subject_key_column": "MARKETID",
+        "object_key_column": "MARKETID",
+    },
 ]

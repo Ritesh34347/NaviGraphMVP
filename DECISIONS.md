@@ -996,3 +996,30 @@ usual. This check now runs immediately after Intent Understanding, before
 Metadata Discovery/Ontology/Semantic Retrieval/Schema Mapping ever run,
 both to avoid wasted work and because there is no real intent-independent
 value in resolving entities for a question the system cannot yet classify.
+
+## 2026-08-04 — `_build_joins` now verifies join keys against the real catalog before emitting a join, rather than assuming every resolved table shares the relationship's key column
+
+A real, live compound question ("...concentrated in a few securities or
+accounts?") resolved 4 tables where only some pairs actually shared a
+join key (`STAGING_CUSTOMER_INFORMATION` has no `MARKETID` column at
+all). `_build_joins`'s loop previously connected a relationship's
+`realizing_table` to EVERY other resolved table unconditionally, which
+would have emitted a join on a column that doesn't exist in that table --
+real, broken SQL, not just a missing join. Two fixes were considered: (a)
+trust the curated seed data and hope `RELATIONSHIP_CONCEPTS` is never
+asked to bridge tables it wasn't designed for, or (b) verify against the
+real, live catalog (`payload.catalog_inventory`, already available --
+Metadata Discovery crawls the FULL column list for the data source, not
+just resolved terms) before emitting each join. (b) was chosen -- (a)
+would have kept working by luck until the next question that happens to
+resolve an unexpected 3+-table combination, exactly like the item-84 bug
+this is a direct sibling of. This makes the seed data's correctness
+non-load-bearing for safety: a wrong or incomplete `RelationshipConcept`
+now degrades to "this table stays unjoined" (a real, honest failure) 
+rather than "this table gets joined on a column that doesn't exist"
+(a broken query). Also added one new, safe `RelationshipConcept` --
+"Asset traded in Market" (`ASSET_INFORMATION.MARKETID`) -- to make the
+single-granularity half of real market-concentration questions
+answerable; the compound question's dual-granularity ask (securities AND
+accounts in one query) is left as a real, logged limitation rather than
+force-fit with a fabricated join (see LIMITATIONS.md item 85).

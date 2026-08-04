@@ -272,6 +272,27 @@ class SchemaMappingAgent:
         TRANSACTIONS` referencing whatever table that name resolves to in
         the connection's default schema, which is not guaranteed to be the
         right one.
+
+        SECOND REAL BUG, found live via a compound question spanning 4
+        tables ("...is it concentrated in a few securities or accounts?",
+        resolving `CUSTOMER_MARKET_AGG`/`STAGING_ASSET_INFORMATION`/
+        `STAGING_CUSTOMER_INFORMATION`/`STAGING_MARKETS` together): this
+        loop used to emit a join between `real_realizing_table` and EVERY
+        other resolved table, unconditionally, using `subject_key_column`
+        on both sides -- with 3+ resolved tables that don't all share the
+        same natural key (e.g. `STAGING_CUSTOMER_INFORMATION` has no
+        `MARKETID` column at all), this produces a `JoinSpec` referencing a
+        column that does not exist in that table, which would fail loudly
+        at Snowflake execution time rather than ever building a query that
+        makes sense. Fixed by cross-checking `payload.catalog_inventory`
+        (the real, live catalog listing Metadata Discovery already
+        produced) before emitting each join: `other_table` is only joined
+        via `subject_key_column` if that table genuinely has a column by
+        that name. A table that doesn't share the key with any curated
+        relationship simply stays unjoined -- which the caller
+        (`_generate_statements` in `sql_generation`) now correctly reports
+        as a real `unjoined_table_in_multi_table_query` error instead of
+        ever seeing invalid SQL.
         """
 
         def _core_name(table_name: str) -> str:
@@ -279,6 +300,15 @@ class SchemaMappingAgent:
 
         resolved_tables = {column.table_name for column in columns}
         core_to_real = {_core_name(table): table for table in resolved_tables}
+
+        table_columns: dict[str, set[str]] = {}
+        for entry in payload.catalog_inventory:
+            table_columns.setdefault(entry.table_name.upper(), set()).add(
+                entry.column_name.upper()
+            )
+
+        def _table_has_column(table_name: str, column_name: str) -> bool:
+            return column_name.upper() in table_columns.get(table_name.upper(), set())
 
         joins: list[JoinSpec] = []
         seen_joins: set[tuple[str, str, str, str]] = set()
@@ -293,6 +323,10 @@ class SchemaMappingAgent:
             real_realizing_table = core_to_real.get(_core_name(rel.realizing_table))
             if real_realizing_table is None:
                 continue
+            if not _table_has_column(real_realizing_table, rel.subject_key_column):
+                # Curated seed data disagrees with the real, live catalog --
+                # never trust the seed over the real schema.
+                continue
 
             other_tables = {
                 table for table in resolved_tables if table != real_realizing_table
@@ -303,6 +337,14 @@ class SchemaMappingAgent:
                     # Defensive; `other_tables` already excludes this, but
                     # a self-join is exactly the "nonsensical join" this
                     # logic must never emit.
+                    continue
+
+                if not _table_has_column(other_table, rel.subject_key_column):
+                    # This table doesn't actually share the relationship's
+                    # join key -- e.g. STAGING_CUSTOMER_INFORMATION has no
+                    # MARKETID column. Joining on a nonexistent column
+                    # would produce real, broken SQL; this table simply
+                    # isn't reachable via THIS relationship.
                     continue
 
                 join_key = (

@@ -2568,3 +2568,58 @@ schema variant (`STAGING_` vs bare `FAR_TRANS`) it resolves a term to
 (item 14) remains real and unaddressed -- fix (1) makes joins work
 correctly regardless of which variant gets picked, but the platform still
 has no preference signal steering that choice one way or the other.
+
+### 85. RESOLVED (partially): `_build_joins` could still emit a join referencing a column a table doesn't actually have, when 3+ tables with mismatched keys are resolved together; one real compound question remains only partially answerable
+
+**What was found**: a real, live user question -- "What is driving the
+high transaction volume in the Athens Exchange S.A. Cash Market -- is it
+concentrated in a few securities or accounts?" -- resolved 4 tables
+(`CUSTOMER_MARKET_AGG`, `STAGING_ASSET_INFORMATION`,
+`STAGING_CUSTOMER_INFORMATION`, `STAGING_MARKETS`) and correctly hit
+item 84's new `unjoined_table_in_multi_table_query` error (working as
+designed -- no curated `RelationshipConcept` connected these 4 tables, so
+refusing was correct). Investigating it surfaced a real, SEPARATE bug in
+`_build_joins`, not yet triggered by any previously-tested scenario: the
+loop that connects a matched relationship's `realizing_table` to every
+OTHER resolved table assumed every other table shares the relationship's
+`subject_key_column` -- true in every 2-table case tested so far, but
+false here (`STAGING_CUSTOMER_INFORMATION` has no `MARKETID` column at
+all). Had a qualifying `RelationshipConcept` existed for this exact
+4-table set, this would have emitted a `JoinSpec` referencing a
+nonexistent column, producing a real, broken SQL statement.
+
+**Resolution**: `_build_joins` now cross-checks `payload.catalog_inventory`
+(the real, live catalog listing Metadata Discovery already produced)
+before emitting each join -- both `real_realizing_table` and each
+candidate `other_table` must actually have a column named
+`subject_key_column` per the real catalog, not just be assumed to. A
+table that doesn't share the key with any curated relationship is now
+left unjoined (surfacing as item 84's real, honest
+`unjoined_table_in_multi_table_query` error), never silently given
+invalid SQL. New regression test:
+`test_third_table_lacking_the_join_key_is_not_joined`. Existing join
+tests' `catalog_inventory` fixtures were extended to include the real
+join-key columns (previously only the resolved/selected columns were
+listed, which a real Metadata Discovery crawl never does -- it returns
+every real column of every table).
+
+Separately, one new, safe, high-value `RelationshipConcept` was added --
+**"Asset traded in Market"** (`ASSET_INFORMATION`/`MARKETID`, the same
+same-column-both-sides shape as "Transaction happens in Market") -- so
+"which securities are most active in a given market" questions (a common,
+single-granularity real pattern) now resolve a real join instead of
+failing.
+
+**What's still open**: the exact live compound question above mixes TWO
+different aggregation granularities in one ask -- per-security
+concentration (needs `STAGING_TRANSACTIONS`/`STAGING_ASSET_INFORMATION`)
+and per-account concentration (`CUSTOMER_MARKET_AGG` has no security
+dimension at all, so it cannot answer the "securities" half regardless of
+joins). No single curated `RelationshipConcept` addition can bridge this
+cleanly without either fabricating a non-existent foreign key or
+restructuring how compound multi-part questions get decomposed
+(potentially two separate generated statements, not one) -- neither
+attempted here. The practical workaround is asking the two halves as
+separate questions ("which securities drove the most volume in Athens
+Exchange" / "which customer accounts drove the most volume in Athens
+Exchange"), each of which now has a real, resolvable join path.

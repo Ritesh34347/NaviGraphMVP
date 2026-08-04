@@ -129,7 +129,14 @@ class TestJoinAcrossTwoTables:
             semantic_matches=[],
             catalog_inventory=[
                 _catalog_entry("col-1", "TRANSACTIONS", "TOTALVALUE", "NUMBER"),
+                # The join key (CUSTOMERID) isn't itself a resolved column
+                # for this question, but a real catalog_inventory always
+                # includes every real column of every table Metadata
+                # Discovery crawled -- _build_joins now cross-checks the
+                # join key actually exists on both sides before emitting it.
+                _catalog_entry("col-1b", "TRANSACTIONS", "CUSTOMERID", "TEXT"),
                 _catalog_entry("col-2", "CUSTOMER_INFORMATION", "RISKLEVEL", "VARCHAR"),
+                _catalog_entry("col-2b", "CUSTOMER_INFORMATION", "CUSTOMERID", "TEXT"),
             ],
         )
         input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
@@ -189,7 +196,9 @@ class TestJoinAcrossTwoTables:
             semantic_matches=[],
             catalog_inventory=[
                 _catalog_entry("col-1", "STAGING_TRANSACTIONS", "TOTALVALUE", "NUMBER"),
+                _catalog_entry("col-1b", "STAGING_TRANSACTIONS", "CUSTOMERID", "TEXT"),
                 _catalog_entry("col-2", "STAGING_CUSTOMER_INFORMATION", "RISKLEVEL", "VARCHAR"),
+                _catalog_entry("col-2b", "STAGING_CUSTOMER_INFORMATION", "CUSTOMERID", "TEXT"),
             ],
         )
         input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
@@ -206,6 +215,79 @@ class TestJoinAcrossTwoTables:
         assert join.right_table == "STAGING_CUSTOMER_INFORMATION"
         assert join.left_column == "CUSTOMERID"
         assert join.right_column == "CUSTOMERID"
+
+    async def test_third_table_lacking_the_join_key_is_not_joined(self) -> None:
+        """REAL BUG, live-reproduced via a real compound question spanning
+        4 tables (`CUSTOMER_MARKET_AGG`/`STAGING_ASSET_INFORMATION`/
+        `STAGING_CUSTOMER_INFORMATION`/`STAGING_MARKETS`): this loop used to
+        emit a join between `realizing_table` and EVERY other resolved
+        table unconditionally, even when a table doesn't actually have the
+        join key column at all (e.g. `STAGING_MARKETS` has no `CUSTOMERID`)
+        -- that would have produced a real, broken SQL statement referencing
+        a nonexistent column. A third, key-less table must now be left
+        unjoined rather than joined on a column it doesn't have."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="comparison",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="revenue",
+                    resolved=True,
+                    catalog_column_id="col-1",
+                    column_name="TOTALVALUE",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="risk level",
+                    resolved=True,
+                    catalog_column_id="col-2",
+                    column_name="RISKLEVEL",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="market",
+                    resolved=True,
+                    catalog_column_id="col-3",
+                    column_name="NAME",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Customer",
+                    predicate="HAS",
+                    object_label="RiskLevel",
+                    realizing_table="CUSTOMER_INFORMATION",
+                    subject_key_column="CUSTOMERID",
+                    object_key_column="RISKLEVEL",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-1", "TRANSACTIONS", "TOTALVALUE", "NUMBER"),
+                _catalog_entry("col-1b", "TRANSACTIONS", "CUSTOMERID", "TEXT"),
+                _catalog_entry("col-2", "CUSTOMER_INFORMATION", "RISKLEVEL", "VARCHAR"),
+                _catalog_entry("col-2b", "CUSTOMER_INFORMATION", "CUSTOMERID", "TEXT"),
+                # STAGING_MARKETS has no CUSTOMERID column at all -- a real,
+                # live schema fact.
+                _catalog_entry("col-3", "STAGING_MARKETS", "NAME", "TEXT"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert set(output.result.tables) == {"TRANSACTIONS", "CUSTOMER_INFORMATION", "STAGING_MARKETS"}
+        # Only the real, key-sharing pair is joined; STAGING_MARKETS is left
+        # unjoined rather than being joined on a column it doesn't have.
+        assert len(output.result.joins) == 1
+        join = output.result.joins[0]
+        assert {join.left_table, join.right_table} == {"TRANSACTIONS", "CUSTOMER_INFORMATION"}
+        assert not any(
+            "STAGING_MARKETS" in (j.left_table, j.right_table) for j in output.result.joins
+        )
 
     async def test_no_join_when_realizing_table_not_among_resolved_columns(self) -> None:
         agent = SchemaMappingAgent()
