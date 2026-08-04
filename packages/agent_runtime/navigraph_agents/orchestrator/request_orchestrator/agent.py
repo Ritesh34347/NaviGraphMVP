@@ -514,6 +514,68 @@ class RequestOrchestratorAgent:
                 )
             actual_intent = intent_output.result.intent
 
+            new_turn = SessionConversationTurn(
+                turn_id=request_context.trace_id,
+                raw_question=payload.question,
+                resolved_question=resolved_question,
+                intent=actual_intent,
+                entities=intent_output.result.entities,
+            )
+
+            if actual_intent == "unknown":
+                # REAL BUG, live-reproduced: intent classification is
+                # genuinely non-deterministic (LIMITATIONS.md item 38/44
+                # already documented this) and sometimes lands on
+                # "unknown" -- IntentLabel's own docstring says this is
+                # the safe fallback for a missing/malformed/unrecognized
+                # classification, i.e. this agent genuinely does not know
+                # what shape of answer the question wants. Proceeding
+                # anyway used to silently produce a confident-looking
+                # outcome="answered" result: `schema_mapping._assign_role`
+                # only ever assigns role="measure" when intent is one of
+                # metric_lookup/comparison/trend_analysis, so an "unknown"
+                # intent meant every resolved column stayed a bare
+                # dimension, SQL Generation emitted an unaggregated
+                # `SELECT ... LIMIT 10000` with no GROUP BY at all, and the
+                # narrative agent then confidently (and wrongly) inferred
+                # conclusions from raw, unaggregated rows -- e.g. "a single
+                # asset dominates" from 10,000 rows that were never
+                # deduplicated or counted. Routed through the same
+                # Clarification Coordinator the "no tables resolved" case
+                # below already uses, rather than ever generating a
+                # confident wrong answer for a question this agent does
+                # not actually understand.
+                clarification_output = await self._clarification_coordinator_agent.run(
+                    ClarificationCoordinatorInput(
+                        request_context=request_context,
+                        payload=ClarificationCoordinatorPayload(
+                            original_question=resolved_question,
+                            failed_stage="understanding.intent_understanding",
+                            failure_reason=(
+                                "intent classification returned 'unknown' -- unable to "
+                                "confidently determine what kind of answer this question wants"
+                            ),
+                        ),
+                    )
+                )
+                await self._record_lineage(
+                    request_context, clarification_output.lineage_events
+                )
+                await self._append_turn(request_context, session_id, new_turn)
+                return self._finish(
+                    start=start,
+                    request_context=request_context,
+                    errors=errors + clarification_output.errors,
+                    result=RequestOrchestratorResult(
+                        outcome="needs_clarification",
+                        session_id=session_id,
+                        resolved_question=resolved_question,
+                        actual_intent=actual_intent,
+                        clarifying_question=clarification_output.result.clarifying_question,
+                    ),
+                    span=span,
+                )
+
             metadata_output = await self._metadata_discovery_agent.run(
                 MetadataDiscoveryInput(
                     request_context=request_context,
@@ -596,14 +658,6 @@ class RequestOrchestratorAgent:
             )
             await self._record_lineage(request_context, schema_mapping_output.lineage_events)
             schema_mapping_result = schema_mapping_output.result
-
-            new_turn = SessionConversationTurn(
-                turn_id=request_context.trace_id,
-                raw_question=payload.question,
-                resolved_question=resolved_question,
-                intent=actual_intent,
-                entities=intent_output.result.entities,
-            )
 
             if not schema_mapping_result.tables:
                 # Real Multi-turn Clarification trigger -- the exact real

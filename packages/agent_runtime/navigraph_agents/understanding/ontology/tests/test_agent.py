@@ -237,6 +237,39 @@ class TestRelationshipResolution:
         # reach get_relationship_concept.
         assert mock_get_rel.call_count == 1
 
+    async def test_relationship_fires_for_a_real_two_word_entity_phrasing(self) -> None:
+        """REAL BUG, live-reproduced: golden questions gq_005/gq_009 both
+        extract the entity as "risk level" (a real, natural two-word
+        phrasing -- see eval/golden_set/gq_005_risk_level_distribution.yaml),
+        not the seed data's single-token canonical label "RiskLevel". The
+        space was the only difference, but substring matching alone could
+        never bridge it -- this must now match via `_normalize_label`."""
+
+        client = MagicMock()
+        agent = OntologyAgent(client=client)
+
+        relationship_record = {
+            "name": "Customer has RiskLevel",
+            "realizing_table": "CUSTOMER_INFORMATION",
+            "subject_key_column": "CUSTOMERID",
+            "object_key_column": "RISKLEVEL",
+        }
+
+        with (
+            patch(
+                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
+                return_value=[],
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
+                return_value=relationship_record,
+            ),
+        ):
+            output = await agent.run(_make_input(["customer", "risk level"]))
+
+        assert len(output.result.relationship_resolutions) == 1
+        assert output.result.relationship_resolutions[0].object_label == "RiskLevel"
+
     async def test_relationship_does_not_fire_with_only_one_label_present(self) -> None:
         client = MagicMock()
         agent = OntologyAgent(client=client)

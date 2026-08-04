@@ -146,6 +146,67 @@ class TestJoinAcrossTwoTables:
         assert join.relationship_concept == "Customer HAS RiskLevel"
         assert output.result.unmapped_terms == []
 
+    async def test_join_emitted_when_resolved_tables_are_staging_prefixed(self) -> None:
+        """REAL BUG, live-reproduced: `RELATIONSHIP_CONCEPTS`' `realizing_table`
+        values are bare (e.g. "CUSTOMER_INFORMATION"), but every column
+        resolved via Ontology's business-concept path -- the dominant, real
+        path, since ALL real `SCHEMA_ENRICHMENT` glossary mappings point at
+        `STAGING_`-prefixed tables (LIMITATIONS.md item 14) -- has a
+        `table_name` of e.g. "STAGING_CUSTOMER_INFORMATION". The exact-string
+        match used to silently produce zero joins for this, the MOST common
+        real case, not just an edge case."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="comparison",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="revenue",
+                    resolved=True,
+                    catalog_column_id="col-1",
+                    column_name="TOTALVALUE",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="risk level",
+                    resolved=True,
+                    catalog_column_id="col-2",
+                    column_name="RISKLEVEL",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Customer",
+                    predicate="HAS",
+                    object_label="RiskLevel",
+                    realizing_table="CUSTOMER_INFORMATION",
+                    subject_key_column="CUSTOMERID",
+                    object_key_column="RISKLEVEL",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-1", "STAGING_TRANSACTIONS", "TOTALVALUE", "NUMBER"),
+                _catalog_entry("col-2", "STAGING_CUSTOMER_INFORMATION", "RISKLEVEL", "VARCHAR"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert set(output.result.tables) == {"STAGING_TRANSACTIONS", "STAGING_CUSTOMER_INFORMATION"}
+        assert len(output.result.joins) == 1
+        join = output.result.joins[0]
+        # The emitted join must use the REAL resolved (STAGING_-prefixed)
+        # table names, never the bare RelationshipConcept literal -- SQL
+        # Generation looks up each table's schema by this exact name.
+        assert join.left_table == "STAGING_TRANSACTIONS"
+        assert join.right_table == "STAGING_CUSTOMER_INFORMATION"
+        assert join.left_column == "CUSTOMERID"
+        assert join.right_column == "CUSTOMERID"
+
     async def test_no_join_when_realizing_table_not_among_resolved_columns(self) -> None:
         agent = SchemaMappingAgent()
 

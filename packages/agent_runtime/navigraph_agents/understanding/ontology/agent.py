@@ -40,9 +40,27 @@ from navigraph_agents.understanding.ontology.contracts import (
 AGENT_NAME = "understanding.ontology"
 
 
+def _normalize_label(text: str) -> str:
+    """Strip everything but letters/digits and lowercase, so "RiskLevel"
+    and "risk level" (or "risk-level") compare equal. REAL BUG, found
+    live: `_label_matches_entities` used to compare `label.lower()`
+    against `entity.lower()` verbatim, so a real extracted entity like
+    "risk level" (the natural two-word phrasing a real question and this
+    project's own golden set both use) never matched the seed data's
+    single-token canonical label "RiskLevel" -- the space is the only
+    difference, but substring matching alone can never bridge it. This
+    silently dropped the "Customer has RiskLevel" relationship for every
+    real question phrased with a space, which meant Schema Mapping never
+    got the join it needed.
+    """
+
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
 def _label_matches_entities(label: str, entities: list[str]) -> bool:
-    """Case-insensitive match of a relationship concept's subject/object
-    label against the input entities.
+    """Case-insensitive, whitespace/punctuation-insensitive match of a
+    relationship concept's subject/object label against the input
+    entities.
 
     Uses substring matching in either direction (label-in-entity OR
     entity-in-label), not just exact equality: Intent Understanding's
@@ -56,9 +74,10 @@ def _label_matches_entities(label: str, entities: list[str]) -> bool:
     silently drops a join the Schema Mapping agent needs downstream.
     """
 
-    label_lower = label.lower()
+    label_norm = _normalize_label(label)
     return any(
-        label_lower in entity.lower() or entity.lower() in label_lower for entity in entities
+        label_norm in _normalize_label(entity) or _normalize_label(entity) in label_norm
+        for entity in entities
     )
 
 

@@ -248,9 +248,37 @@ class SchemaMappingAgent:
         Explicitly guards against a self-join (identical left/right table)
         and dedupes identical `(left_table, left_column, right_table,
         right_column)` joins across multiple relationship resolutions.
+
+        REAL BUG, found live: `RELATIONSHIP_CONCEPTS`' `realizing_table`
+        values are bare names (e.g. `"TRANSACTIONS"`, `"CUSTOMER_INFORMATION"`),
+        but every column resolved via Ontology's business-concept path (the
+        dominant, deterministic, no-LLM path -- all real
+        `SCHEMA_ENRICHMENT`-derived glossary mappings point exclusively at
+        `STAGING_`-prefixed tables, see LIMITATIONS.md item 14) has a
+        `table_name` of e.g. `"STAGING_TRANSACTIONS"`, not `"TRANSACTIONS"`.
+        An exact-string `rel.realizing_table not in resolved_tables` check
+        therefore NEVER matched for that path -- it only ever matched by
+        accident when Semantic Retrieval's LLM fallback happened to resolve
+        a bare (`FAR_TRANS`-schema) table name instead. In production this
+        meant almost every real multi-table question silently got zero
+        joins (a Cartesian product before that was separately fixed; a hard
+        `unjoined_table_in_multi_table_query` failure after). Fixed by
+        matching `realizing_table` against resolved tables with a leading
+        `STAGING_` prefix stripped from both sides before comparing, then
+        using the REAL resolved table name (never the bare literal) for the
+        emitted `JoinSpec` -- SQL Generation's `_qualified_table` looks up
+        the schema by the exact resolved table name, so using the wrong
+        (bare) name there would silently produce an unqualified `FROM
+        TRANSACTIONS` referencing whatever table that name resolves to in
+        the connection's default schema, which is not guaranteed to be the
+        right one.
         """
 
+        def _core_name(table_name: str) -> str:
+            return table_name.upper().removeprefix("STAGING_")
+
         resolved_tables = {column.table_name for column in columns}
+        core_to_real = {_core_name(table): table for table in resolved_tables}
 
         joins: list[JoinSpec] = []
         seen_joins: set[tuple[str, str, str, str]] = set()
@@ -260,16 +288,18 @@ class SchemaMappingAgent:
             # resolved columns' tables -- a relationship whose
             # `realizing_table` was never itself selected has nothing to
             # join *to*, so it is skipped rather than emitting a dangling
-            # join.
-            if rel.realizing_table not in resolved_tables:
+            # join. Matched by core name (STAGING_ prefix ignored) so this
+            # fires regardless of which schema variant got resolved.
+            real_realizing_table = core_to_real.get(_core_name(rel.realizing_table))
+            if real_realizing_table is None:
                 continue
 
             other_tables = {
-                table for table in resolved_tables if table != rel.realizing_table
+                table for table in resolved_tables if table != real_realizing_table
             }
 
             for other_table in sorted(other_tables):
-                if other_table == rel.realizing_table:
+                if other_table == real_realizing_table:
                     # Defensive; `other_tables` already excludes this, but
                     # a self-join is exactly the "nonsensical join" this
                     # logic must never emit.
@@ -278,7 +308,7 @@ class SchemaMappingAgent:
                 join_key = (
                     other_table,
                     rel.subject_key_column,
-                    rel.realizing_table,
+                    real_realizing_table,
                     rel.subject_key_column,
                 )
                 if join_key in seen_joins:
@@ -289,7 +319,7 @@ class SchemaMappingAgent:
                     JoinSpec(
                         left_table=other_table,
                         left_column=rel.subject_key_column,
-                        right_table=rel.realizing_table,
+                        right_table=real_realizing_table,
                         right_column=rel.subject_key_column,
                         relationship_concept=(
                             f"{rel.subject_label} {rel.predicate} {rel.object_label}"

@@ -971,3 +971,28 @@ see both the query shape and the actual literal values it ran with. The
 cached demo-fallback path (item 81) intentionally leaves `generated_sql`
 null -- the captured golden-set cache never stored the SQL that produced
 it, and fabricating one would defeat the entire point of this feature.
+
+## 2026-08-04 — A non-deterministic "unknown" intent classification now triggers Multi-turn Clarification, rather than letting the pipeline generate a confident answer it has no real basis for
+
+A live audit (prompted by item 83/84's investigation) found that when
+Intent Understanding's real, already-documented non-determinism
+(LIMITATIONS.md item 38/44) lands on `intent="unknown"` for a question, the
+pipeline used to proceed anyway: `schema_mapping._assign_role` never
+assigns `role="measure"` for an unknown intent, so SQL Generation emitted
+an unaggregated `SELECT ... LIMIT` dump, and the narrative agent then
+confidently drew a wrong conclusion from raw rows. Two options were
+considered: (a) make `_assign_role` default to `measure` for numeric
+columns regardless of intent, or (b) treat "unknown" as a real "we don't
+know what this question wants" signal and route it through the same
+Clarification Coordinator the "zero tables resolved" case already uses.
+(b) was chosen -- `IntentLabel`'s own docstring already defines "unknown"
+as the safe fallback for a classification that is missing, malformed, or
+unrecognized, so it is never a legitimate basis for confidently picking an
+aggregation strategy; widening `_assign_role`'s numeric-heuristic instead
+would risk assigning `measure` to columns that are numeric but not
+additive (an identifier, for instance -- exactly item 80's already-fixed
+failure mode) for a case where the system has even less signal than
+usual. This check now runs immediately after Intent Understanding, before
+Metadata Discovery/Ontology/Semantic Retrieval/Schema Mapping ever run,
+both to avoid wasted work and because there is no real intent-independent
+value in resolving entities for a question the system cannot yet classify.

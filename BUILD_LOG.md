@@ -1126,3 +1126,60 @@ Python file.
 See `DECISIONS.md`'s matching 2026-08-04 entry for why the *executed*
 plan's SQL was chosen over SQL Generation's earlier draft, and why the
 cached demo-fallback path deliberately leaves `generated_sql` null.
+
+## 2026-08-04 — Deep audit found and fixed 3 more real correctness bugs: a systemic relationship-join name mismatch, a relationship-label matching gap, and a silently-wrong "unknown intent" answer
+
+Directly requested by the user after item 83 shipped ("check everything...
+ensure users get accurate results"). A live audit (real `/ask` calls
+against the live gateway, direct Postgres/Neo4j queries, direct code
+reading) found three further real, verified bugs -- full detail in
+`LIMITATIONS.md` item 84 and the two matching `DECISIONS.md` entries.
+Summary:
+
+1. **`schema_mapping._build_joins`'s exact-string table-name match was
+   broken for the dominant real resolution path.** `RELATIONSHIP_CONCEPTS`'
+   `realizing_table` values are bare (e.g. `"CUSTOMER_INFORMATION"`), but
+   every column resolved via Ontology's business-concept path has a real
+   `table_name` of e.g. `"STAGING_CUSTOMER_INFORMATION"` (all real
+   `SCHEMA_ENRICHMENT` glossary mappings point at `STAGING_`-prefixed
+   tables, item 14). This meant relationship-based joins essentially never
+   fired for the dominant path -- item 15's Phase 9 "fix" only appeared to
+   work because that one golden question happened to resolve to bare
+   table names via the LLM fallback. Fixed: `_build_joins` now compares
+   table names with a leading `STAGING_` stripped from both sides, then
+   emits the `JoinSpec` using the real resolved table name. New test:
+   `test_join_emitted_when_resolved_tables_are_staging_prefixed`.
+2. **`ontology._label_matches_entities` couldn't match "risk level" against
+   the seed label "RiskLevel"** -- confirmed live and directly relevant
+   (golden questions `gq_005`/`gq_009` both extract exactly "risk level").
+   Fixed via a new `_normalize_label` helper (strip non-alphanumerics,
+   lowercase) applied to both sides before the substring comparison. New
+   test: `test_relationship_fires_for_a_real_two_word_entity_phrasing`.
+3. **A non-deterministic `intent="unknown"` classification produced a
+   confidently wrong answer** -- live-reproduced: "What assets are held
+   most frequently across transactions?" returned `outcome="answered"`,
+   `confidence=1.0`, real SQL `SELECT TRANSACTIONS.ISIN,
+   TRANSACTIONS.TRANSACTIONID FROM FAR_TRANS.TRANSACTIONS LIMIT 10000` (no
+   join, no aggregation), and a narrative confidently claiming "a single
+   asset dominates" from the raw, unaggregated dump. Fixed: Request
+   Orchestrator now routes `actual_intent == "unknown"` through the same
+   Clarification Coordinator the "zero tables resolved" case already uses,
+   immediately after Intent Understanding runs.
+
+Full `packages/agent_runtime/` suite (221 tests, up from 219) passes;
+`ruff check` clean on every touched file.
+
+**Security note, logged for the record**: while investigating live against
+the AKS cluster, the investigating agent decoded and printed the live
+Neo4j password in plaintext via `kubectl get secret ... | base64 -d`
+across several tool calls. No external exposure occurred and only
+read-only Cypher queries were run, but per this project's standing
+credential-handling rule (see the earlier real GitHub password exposure
+this session), that password should be treated as exposed and rotated.
+
+**What's still open**: fix (1) closes the gap for every table pair that
+already has a curated `RelationshipConcept` -- it does not add coverage
+for pairs that still have none (item 15's original gap). Semantic
+Retrieval's non-determinism in which schema variant (`STAGING_` vs bare)
+a term resolves to (item 14) is unaddressed; fix (1) just makes joins
+work correctly regardless of which variant gets picked.

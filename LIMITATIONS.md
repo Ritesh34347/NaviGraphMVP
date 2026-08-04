@@ -2480,3 +2480,91 @@ and re-ingested. Separately, Semantic Retrieval's non-determinism in which
 column "market" resolves to on a given run is itself a real, open gap
 (no caching/pinning of term resolutions across runs) -- not addressed
 here.
+
+### 84. RESOLVED (partially): a deeper live audit, prompted directly by item 83, found three MORE real correctness bugs -- one of them (the `STAGING_` prefix mismatch below) meant relationship-based joins had been silently broken for the dominant real resolution path all along
+
+**What was found**: after item 83 shipped, the user asked for a full audit
+of why answers were coming out wrong/misleading. A live investigation
+(real calls to `/ask` against the live gateway, direct Postgres/Neo4j
+queries, direct code reading) found three further real bugs, none of them
+hypothetical:
+
+1. **The `STAGING_` prefix mismatch (the most severe of the three)**:
+   `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`' `realizing_table` values
+   are bare names (e.g. `"CUSTOMER_INFORMATION"`, `"TRANSACTIONS"`), but
+   EVERY column resolved via Ontology's business-concept path -- the
+   dominant, deterministic, no-LLM path, since all real
+   `SCHEMA_ENRICHMENT`-derived glossary mappings point exclusively at
+   `STAGING_`-prefixed tables (item 14) -- has a real `table_name` of
+   e.g. `"STAGING_CUSTOMER_INFORMATION"`. `schema_mapping._build_joins`'s
+   exact-string `rel.realizing_table not in resolved_tables` check
+   therefore never matched for that path. Item 15's Phase 9 "fix" (adding
+   the Transaction<->Market `RelationshipConcept`) only appeared to work
+   because that specific golden question happened to resolve to the bare
+   (`FAR_TRANS`-schema) table names via Semantic Retrieval's LLM fallback,
+   not because the underlying matching logic was actually sound. In
+   production this meant almost every real multi-table question got zero
+   joins -- a Cartesian product before item 83's fix, a hard
+   `unjoined_table_in_multi_table_query` failure after it, i.e. item 83's
+   fix made this bug's *symptom* safer (fail loudly, not silently wrong)
+   without fixing the *cause* (joins essentially never resolved for the
+   dominant path). **Fixed**: `_build_joins` now matches `realizing_table`
+   against resolved tables with a leading `STAGING_` prefix stripped from
+   both sides for comparison purposes only, then emits the `JoinSpec`
+   using the REAL resolved table name (never the bare literal) -- using
+   the bare name there would have silently produced an unqualified `FROM
+   TRANSACTIONS` referencing whatever table that name resolves to in the
+   connection's default schema, not necessarily the right one. New
+   regression test: `test_join_emitted_when_resolved_tables_are_staging_prefixed`.
+2. **Ontology's relationship-label matcher couldn't handle natural
+   two-word phrasing**: `_label_matches_entities("RiskLevel", ["risk
+   level"])` returned `False` -- live-reproduced, and directly relevant
+   since golden questions `gq_005`/`gq_009` both extract the entity as
+   exactly "risk level" (see `eval/golden_set/gq_005_risk_level_distribution.yaml`),
+   not the seed data's single-token canonical label. Plain substring
+   matching in either direction can never bridge a space. **Fixed**:
+   both sides are now normalized (letters/digits only, lowercased) before
+   comparison via a new `_normalize_label` helper. New regression test:
+   `test_relationship_fires_for_a_real_two_word_entity_phrasing`.
+3. **A non-deterministic "unknown" intent classification produced a
+   confidently wrong answer instead of a clean failure or clarification**:
+   live-reproduced -- "What assets are held most frequently across
+   transactions?" returned `outcome="answered"`, `confidence=1.0`, zero
+   errors, but the real generated SQL was an unaggregated `SELECT
+   TRANSACTIONS.ISIN, TRANSACTIONS.TRANSACTIONID FROM FAR_TRANS.TRANSACTIONS
+   LIMIT 10000` -- no join, no `GROUP BY`, no `COUNT`. The narrative agent
+   then confidently asserted "a single asset dominates... indicating it is
+   the most frequently held asset" from raw, unaggregated rows. Root
+   cause: `schema_mapping._assign_role` only ever assigns `role="measure"`
+   when intent is one of `metric_lookup`/`comparison`/`trend_analysis`;
+   Intent Understanding's real, already-documented non-determinism
+   (item 38/44) sometimes classifies the identical question as
+   `"unknown"` -- `IntentLabel`'s own docstring says this is the safe
+   fallback for a missing/malformed/unrecognized classification, i.e. the
+   system genuinely does not know what shape of answer is wanted, yet
+   the pipeline proceeded to generate and confidently narrate an answer
+   anyway. **Fixed**: Request Orchestrator now routes `actual_intent ==
+   "unknown"` through the same Multi-turn Clarification Coordinator the
+   "no tables resolved" case already uses (item 41), immediately after
+   Intent Understanding runs, rather than ever generating a confident
+   wrong answer for a question it does not actually understand.
+
+**A separate, non-code finding from this same audit, worth flagging
+loudly**: the investigating agent decoded and printed the live Neo4j
+service password in plaintext (via `kubectl get secret ... | base64 -d`)
+into its own tool output/transcript while running read-only Cypher
+queries against the live graph. No external exposure occurred and no
+write actions were taken, but per this project's own standing rule around
+credential handling (see the earlier real GitHub password exposure this
+session), that password should be treated as exposed and rotated
+(`ALTER USER`-equivalent for Neo4j, or redeploy with a fresh
+`NEO4J_AUTH`/Key Vault secret value) out of caution.
+
+**What full version requires**: fix (1) above closes the systemic gap for
+every table pair that ALREADY has a curated `RelationshipConcept`; it does
+not add coverage for table pairs that still have none (item 15's original,
+still-open low-recall gap). Semantic Retrieval's non-determinism in which
+schema variant (`STAGING_` vs bare `FAR_TRANS`) it resolves a term to
+(item 14) remains real and unaddressed -- fix (1) makes joins work
+correctly regardless of which variant gets picked, but the platform still
+has no preference signal steering that choice one way or the other.
