@@ -322,6 +322,169 @@ async def test_predicate_phrase_is_bind_parameterized_not_interpolated() -> None
 
 
 # ---------------------------------------------------------------------------
+# (b2) REAL BUG, found live: a resolved dimension column whose `.term` names
+# a specific VALUE of that column (e.g. "Mobile App" resolving to
+# CHANNEL_NAME) rather than the column itself must also trigger the
+# predicate-resolution LLM call, even with zero temporal trigger words --
+# see `_resolved_via_named_value`'s own docstring for the full live incident.
+# ---------------------------------------------------------------------------
+
+
+async def test_named_value_dimension_triggers_predicate_resolution_with_no_temporal_words() -> None:
+    fake_llm = FakeLLMClient(
+        response=json.dumps(
+            {
+                "predicates": [
+                    {
+                        "raw_phrase": "the Mobile App",
+                        "column": "CHANNEL_NAME",
+                        "operator": "=",
+                        "value": "Mobile App",
+                        "rationale": "names a specific channel value, not the dimension itself",
+                    }
+                ]
+            }
+        )
+    )
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    revenue_by_channel_columns = [
+        ResolvedColumnRef(
+            term="revenue",
+            catalog_column_id="col_line_total",
+            table_name="FACT_ORDER_ITEMS",
+            schema_name="CORE",
+            column_name="LINE_TOTAL",
+            data_type="NUMBER",
+            role="measure",
+        ),
+        ResolvedColumnRef(
+            term="Mobile App",
+            catalog_column_id="col_channel_name",
+            table_name="DIM_CHANNEL",
+            schema_name="CORE",
+            column_name="CHANNEL_NAME",
+            data_type="TEXT",
+            role="dimension",
+        ),
+    ]
+
+    output = await agent.run(
+        _make_input(
+            question="How much revenue came from the Mobile App?",
+            columns=revenue_by_channel_columns,
+            tables=["FACT_ORDER_ITEMS", "DIM_CHANNEL"],
+            joins=[
+                JoinSpec(
+                    left_table="DIM_CHANNEL",
+                    left_column="CHANNEL_ID",
+                    right_table="FACT_ORDER_ITEMS",
+                    right_column="CHANNEL_ID",
+                    relationship_concept="OrderItem uses Channel",
+                )
+            ],
+            resolved_data_sources=[
+                ResolvedDataSource(
+                    table_name="FACT_ORDER_ITEMS",
+                    data_source_id="ds_snowflake_prod",
+                    source_type="snowflake",
+                    reachable=True,
+                ),
+                ResolvedDataSource(
+                    table_name="DIM_CHANNEL",
+                    data_source_id="ds_snowflake_prod",
+                    source_type="snowflake",
+                    reachable=True,
+                ),
+            ],
+        )
+    )
+
+    # No temporal trigger word anywhere in the question -- the LLM call only
+    # happens because CHANNEL_NAME was resolved via the value "Mobile App",
+    # not via a generic "channel" reference.
+    assert len(fake_llm.calls) == 1
+    assert len(output.result.predicate_resolutions) == 1
+    predicate = output.result.predicate_resolutions[0]
+    assert predicate.column == "CHANNEL_NAME"
+    assert predicate.operator == "="
+    assert predicate.resolved_value == "Mobile App"
+
+    statement = output.result.statements[0]
+    assert statement.params == {"predicate_0": "Mobile App"}
+    assert "Mobile App" not in statement.sql
+    assert "WHERE DIM_CHANNEL.CHANNEL_NAME = %(predicate_0)s" in statement.sql
+
+
+async def test_generic_dimension_reference_does_not_trigger_predicate_resolution() -> None:
+    """The counterpart to the test above: a plain "by channel" phrasing
+    (`term="channel"` resolving to `CHANNEL_NAME`) must NOT trigger the LLM
+    call -- `_resolved_via_named_value` correctly recognizes "channel" as a
+    real substring of "channelname" and treats it as a genuine dimension
+    reference, not a named filter value."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    revenue_by_channel_columns = [
+        ResolvedColumnRef(
+            term="revenue",
+            catalog_column_id="col_line_total",
+            table_name="FACT_ORDER_ITEMS",
+            schema_name="CORE",
+            column_name="LINE_TOTAL",
+            data_type="NUMBER",
+            role="measure",
+        ),
+        ResolvedColumnRef(
+            term="channel",
+            catalog_column_id="col_channel_name",
+            table_name="DIM_CHANNEL",
+            schema_name="CORE",
+            column_name="CHANNEL_NAME",
+            data_type="TEXT",
+            role="dimension",
+        ),
+    ]
+
+    output = await agent.run(
+        _make_input(
+            question="What is the total revenue by channel?",
+            columns=revenue_by_channel_columns,
+            tables=["FACT_ORDER_ITEMS", "DIM_CHANNEL"],
+            joins=[
+                JoinSpec(
+                    left_table="DIM_CHANNEL",
+                    left_column="CHANNEL_ID",
+                    right_table="FACT_ORDER_ITEMS",
+                    right_column="CHANNEL_ID",
+                    relationship_concept="OrderItem uses Channel",
+                )
+            ],
+            resolved_data_sources=[
+                ResolvedDataSource(
+                    table_name="FACT_ORDER_ITEMS",
+                    data_source_id="ds_snowflake_prod",
+                    source_type="snowflake",
+                    reachable=True,
+                ),
+                ResolvedDataSource(
+                    table_name="DIM_CHANNEL",
+                    data_source_id="ds_snowflake_prod",
+                    source_type="snowflake",
+                    reachable=True,
+                ),
+            ],
+        )
+    )
+
+    assert len(fake_llm.calls) == 0
+    assert output.result.predicate_resolutions == []
+    statement = output.result.statements[0]
+    assert "WHERE" not in statement.sql
+
+
+# ---------------------------------------------------------------------------
 # (c) A hallucinated/invalid `column` in the LLM response must be rejected,
 # not silently trusted -- mirrors SemanticRetrievalAgent's hallucination
 # rejection test exactly.
@@ -497,7 +660,16 @@ _UNJOINED_MARKET_DATA_SOURCES = [
 
 
 async def test_unjoined_multi_table_query_is_rejected_not_cartesian_joined() -> None:
-    fake_llm = FakeLLMClient(response="should never be read")
+    # `_UNJOINED_MARKET_COLUMNS`'s "market" -> `NAME` resolution is a real
+    # false positive of `_resolved_via_named_value` (the term "market"
+    # doesn't textually match the column name "NAME" -- `_resolved_via_named_value`
+    # has no visibility into the real glossary synonym linking them,
+    # since `ResolvedColumnRef` deliberately doesn't carry synonyms/
+    # business_name -- see that helper's own docstring for why this
+    # tradeoff is accepted: the extra LLM call is a real cost, not a
+    # correctness risk, since a real LLM would correctly return no
+    # predicates here). A valid, empty response reflects that.
+    fake_llm = FakeLLMClient(response=json.dumps({"predicates": []}))
     agent = SqlGenerationAgent(llm_client=fake_llm)
 
     output = await agent.run(
@@ -525,9 +697,14 @@ async def test_unjoined_multi_table_query_is_rejected_not_cartesian_joined() -> 
 async def test_partially_unjoined_multi_table_query_is_also_rejected() -> None:
     """Three tables where the provided join only connects two of them --
     the trailing table must still trigger the same real error, not a
-    partial comma-join appended to an otherwise-real JOIN clause."""
+    partial comma-join appended to an otherwise-real JOIN clause.
 
-    fake_llm = FakeLLMClient(response="should never be read")
+    Uses a valid, empty-predicates canned response for the same reason as
+    `test_unjoined_multi_table_query_is_rejected_not_cartesian_joined`
+    above -- the "market" -> `NAME` column in this fixture is a real,
+    accepted false positive of `_resolved_via_named_value`."""
+
+    fake_llm = FakeLLMClient(response=json.dumps({"predicates": []}))
     agent = SqlGenerationAgent(llm_client=fake_llm)
 
     columns = _JOIN_COLUMNS + [_UNJOINED_MARKET_COLUMNS[1]]

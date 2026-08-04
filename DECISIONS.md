@@ -1276,3 +1276,27 @@ existing relationship concepts -- a real, deliberate "net merchandise
 revenue" business definition, chosen specifically for universal
 joinability, logged as a debatable choice rather than presented as the
 only correct one.
+
+## 2026-08-05 — SQL Generation's predicate-resolution trigger reuses `ResolvedColumnRef.term` instead of adding new fields, to avoid another sibling-contract drift
+
+Root-causing the "Mobile App" filter gap (isolated diagnostic calls
+proved Semantic Retrieval's resolution was already correct) narrowed the
+real bug down to `_needs_predicate_resolution`'s trigger heuristic never
+considering named-value filters at all, only relative-date/comparison
+phrases. Two ways to detect a named-value resolution were considered:
+(a) give `ResolvedColumnRef` visibility into the column's real
+`business_name`/`synonyms` (already crawled and available upstream) so
+the comparison is semantically precise, or (b) reuse the ALREADY-PRESENT
+`.term` field (the free-text phrase that resolved the column) compared
+against the column's own `column_name` via the same normalize-and-
+substring heuristic Ontology's `_label_matches_entities` already
+established. (b) was chosen specifically because of this same session's
+own item-93 incident: adding a new field to a sibling contract (even a
+clearly-justified one) is exactly the kind of change that silently broke
+production earlier today when the matching sibling wasn't updated in
+lockstep. `.term` already exists on every copy of `ResolvedColumnRef`
+across every agent, so no cross-package field addition was needed at
+all -- a real, deliberate tradeoff accepting a higher false-positive
+rate (e.g. "market" vs `NAME` won't textually match, triggering an
+unneeded but harmless extra LLM call) in exchange for zero new
+inter-agent contract surface to keep in sync.

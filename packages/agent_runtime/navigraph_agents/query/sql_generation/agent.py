@@ -140,34 +140,99 @@ def _load_system_prompt() -> str:
     return _PROMPT_PATH.read_text(encoding="utf-8")
 
 
+def _normalize_label(text: str) -> str:
+    """Strip everything but letters/digits and lowercase -- mirrors
+    `understanding.ontology.agent._normalize_label` exactly, for the same
+    reason: comparing free-text phrasing against a canonical identifier
+    needs to ignore spaces/punctuation/case, not just casing."""
+
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def _resolved_via_named_value(column: ResolvedColumnRef) -> bool:
+    """True when a resolved dimension column's `.term` (the free-text
+    phrase that resolved it) does NOT textually correspond to the column's
+    own name -- i.e. the question named a SPECIFIC VALUE of that column
+    (e.g. "Mobile App", "Gold", "Athens Exchange") rather than the
+    dimension itself (e.g. "channel", "loyalty tier", "market").
+
+    REAL BUG, found live: "How much revenue came from the Mobile App?"
+    resolved "Mobile App" to `DIM_CHANNEL.CHANNEL_NAME` via Semantic
+    Retrieval -- a completely correct column match -- but Schema Mapping
+    then treats that resolution exactly like a plain "channel" reference:
+    a `role="dimension"` column destined for `GROUP BY`, with no signal
+    anywhere that the term itself already names one specific value. SQL
+    Generation's predicate-resolution LLM call (`_needs_predicate_resolution`)
+    only ever fired on relative-date/comparison trigger words, so it was
+    never even asked whether "Mobile App" needed a `WHERE` filter --
+    confirmed live: a direct Semantic Retrieval call for this exact term
+    correctly returns `CHANNEL_NAME`, proving the resolution itself was
+    never the problem, only the missing trigger to reconsider it as a
+    filter.
+
+    This uses `column.term` -- already a real, existing field on every
+    resolved column, carrying the original phrase verbatim -- compared
+    against `column.column_name` via the same normalize-and-substring
+    heuristic `understanding.ontology.agent._label_matches_entities` already
+    uses for the identical class of judgment call (free-text phrasing vs.
+    a canonical identifier). "channel" vs `CHANNEL_NAME` normalizes to
+    "channel"/"channelname" -- a real substring match, so a plain
+    dimension reference correctly does NOT trigger this. "Mobile App" vs
+    `CHANNEL_NAME` normalizes to "mobileapp"/"channelname" -- no overlap,
+    so this correctly flags it. Deliberately favors false positives (e.g.
+    an irregular plural like "categories" vs `CATEGORY` won't
+    substring-match either, triggering an unnecessary but harmless LLM
+    call that itself correctly returns no predicates) over false negatives
+    -- a missed named-value filter produces a silently wrong, misleading
+    answer (exactly what happened live), while an extra LLM call is only
+    a cost, never a correctness risk.
+    """
+
+    if column.role == "measure":
+        return False
+    term_norm = _normalize_label(column.term)
+    column_norm = _normalize_label(column.column_name)
+    if not term_norm or not column_norm:
+        return False
+    return term_norm not in column_norm and column_norm not in term_norm
+
+
 def _needs_predicate_resolution(question: str, columns: list[ResolvedColumnRef]) -> bool:
     """Decide whether the predicate-resolution LLM call is needed at all.
 
     Heuristic (documented here since "does this question have an unresolved
     relative-date/qualitative filter" is inherently judgement-driven, not a
-    hard rule): scan the question, case-insensitively, for a fixed set of
-    trigger words/phrases commonly associated with a relative-date filter
-    ("last quarter", "since March", "this year") or an explicit range/
-    comparison ("between X and Y", "compared to", "vs") --
-    `_TEMPORAL_TRIGGER_PHRASES`. If none of these appear at all, there is
-    nothing an LLM could resolve, so the call is skipped entirely -- this is
-    the common case (e.g. "What is the total transaction volume by market?"
-    has none of these words, so no LLM call is made for it). If a trigger
-    phrase IS present but Schema Mapping already resolved a `role="filter"`
-    column for this request, the phrase's value is presumed already pinned
-    down elsewhere in the upstream pipeline, so the call is skipped there
-    too. This is a real, reasoned heuristic, not a claim of perfect recall
-    or precision -- it can both miss a genuine relative-date phrase phrased
-    unusually and fire on a false positive (e.g. "year" appearing as part of
-    an already-resolved dimension name); both are acceptable given this is
-    an LLM-cost-avoidance short-circuit, not a correctness gate -- a missed
-    trigger just means the predicate stays unresolved rather than producing
-    wrong SQL.
+    hard rule): fires on EITHER of two signals --
+
+    1. The question contains a fixed set of trigger words/phrases commonly
+       associated with a relative-date filter ("last quarter", "since
+       March", "this year") or an explicit range/comparison ("between X
+       and Y", "compared to", "vs") -- `_TEMPORAL_TRIGGER_PHRASES`.
+    2. Any resolved dimension column was reached via a term that names a
+       specific VALUE of that column rather than the column itself (e.g.
+       "Mobile App" resolving to `CHANNEL_NAME`) -- see
+       `_resolved_via_named_value`'s own docstring for the real live bug
+       this closes.
+
+    If neither signal fires, there is nothing an LLM could resolve, so the
+    call is skipped entirely -- this is the common case (e.g. "What is the
+    total transaction volume by market?" has neither, so no LLM call is
+    made for it). If a signal DOES fire but Schema Mapping already
+    resolved a `role="filter"` column for this request, the phrase's value
+    is presumed already pinned down elsewhere in the upstream pipeline, so
+    the call is skipped there too. This is a real, reasoned heuristic, not
+    a claim of perfect recall or precision -- it can both miss a genuine
+    filter phrased unusually and fire on a false positive; both are
+    acceptable given a missed trigger just means the predicate stays
+    unresolved (rather than producing wrong SQL) and an extra trigger costs
+    only one LLM call that itself correctly recognizes when nothing needs
+    resolving.
     """
 
     lowered = question.lower()
-    has_trigger = any(phrase in lowered for phrase in _TEMPORAL_TRIGGER_PHRASES)
-    if not has_trigger:
+    has_temporal_trigger = any(phrase in lowered for phrase in _TEMPORAL_TRIGGER_PHRASES)
+    has_named_value_trigger = any(_resolved_via_named_value(c) for c in columns)
+    if not has_temporal_trigger and not has_named_value_trigger:
         return False
 
     already_has_filter_column = any(c.role == "filter" for c in columns)

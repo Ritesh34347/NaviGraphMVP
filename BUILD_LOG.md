@@ -1641,3 +1641,46 @@ spanning all 4 real `IntentLabel`s, every glossary term, top-N/
 comparison/trend/anomaly/multi-dimension/named-instance phrasing -- a
 representative ~12 of these 100 were actually live-tested this session;
 the rest seed future golden-set/regression coverage.
+
+## 2026-08-05 — Fixed the SQL Generation predicate-resolution gap (item 94's flagged follow-up), on request
+
+Root-caused via direct, isolated diagnostic calls to each real
+Understanding-domain agent in sequence (Intent Understanding -> Ontology
+-> Semantic Retrieval, via `kubectl port-forward` to the live
+`agent-runtime` pod), the same methodology used throughout this session.
+Intent Understanding correctly extracted `entities=["revenue", "Mobile
+App"]`; Ontology correctly left "Mobile App" unresolved; Semantic
+Retrieval **correctly** resolved "Mobile App" to `DIM_CHANNEL.CHANNEL_NAME`
+-- proving the resolution itself was never broken. The actual bug: SQL
+Generation's `_needs_predicate_resolution` only ever fires its
+predicate-resolution LLM call on a fixed set of relative-date/comparison
+trigger words ("last", "quarter", "since", "vs", ...) -- "Mobile App"
+matches none of them, so the LLM was never even asked whether a filter
+was needed, regardless of how well it could have answered.
+
+**Fix**: a new `_resolved_via_named_value` check compares each resolved
+dimension column's `.term` (the free-text phrase that resolved it --
+already a real, existing field) against the column's own `column_name`
+via the same normalize-and-substring heuristic
+`understanding.ontology.agent._label_matches_entities` already uses.
+"channel" vs `CHANNEL_NAME` matches (genuine dimension reference, no
+new LLM call); "Mobile App" vs `CHANNEL_NAME` doesn't (named value,
+triggers the call). `_needs_predicate_resolution` now fires on either
+this OR the existing temporal trigger. Also broadened
+`predicate_resolution.md`'s system prompt (previously framed almost
+entirely around dates) with an explicit named-value example. Chose to
+reuse the existing `.term` field rather than add `business_name`/
+`synonyms` to `ResolvedColumnRef` specifically to avoid repeating
+today's earlier item-93 sibling-contract-drift incident.
+
+Updated 2 existing tests (`_UNJOINED_MARKET_COLUMNS`'s real "market" ->
+`NAME` resolution now also triggers the LLM call -- a genuine, accepted
+false positive) from a placeholder canned response to a valid empty one.
+Added `test_named_value_dimension_triggers_predicate_resolution_with_no_temporal_words`
+and `test_generic_dimension_reference_does_not_trigger_predicate_resolution`.
+288 tests pass (up from 286), `ruff check` clean. Documented as
+`LIMITATIONS.md` item 95 and a new `DECISIONS.md` entry.
+
+Remaining: commit + push (both remotes), deploy, and live-verify "How
+much revenue came from the Mobile App?" now returns a single,
+correctly-filtered row -- not yet done as of this entry.

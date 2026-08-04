@@ -3216,10 +3216,9 @@ single Mobile-App-only total -- SQL Generation's LLM-based predicate
 resolution did not recognize "Mobile App" as a filter value needing a
 `WHERE CHANNEL_NAME = 'Mobile App'` clause, reproduced consistently (not
 just once, ruling out ordinary LLM non-determinism as the sole
-explanation). This is a real, un-fixed gap in a DIFFERENT agent
+explanation). This is a real gap in a DIFFERENT agent
 (`query.sql_generation`'s predicate-resolution step) than anything
-touched by items 90-94 -- not investigated further given time
-constraints; logged honestly rather than silently accepted. (2) the
+touched by items 90-94 -- **RESOLVED, see item 95**. (2) the
 "revenue = net merchandise, excludes tax/shipping" business definition
 chosen in fix (1) above is a real, debatable choice -- a user who expects
 "total revenue" to mean the full billed amount (including tax/shipping)
@@ -3227,3 +3226,69 @@ would get a smaller number than expected for pure order-level questions;
 this tradeoff was accepted specifically because it's what makes
 universal joinability possible, not because it's the only valid
 definition.
+
+### 95. RESOLVED: SQL Generation's predicate-resolution LLM call never fired for named-value filters (only relative-date/comparison phrases), so "revenue from the Mobile App" silently returned every channel instead of one
+
+**What was found**: root-caused item 94's "Mobile App" gap via direct,
+isolated diagnostic calls to each real Understanding-domain agent in
+order (Intent Understanding, Ontology, Semantic Retrieval), not
+assumption. Intent Understanding correctly extracted `entities=["revenue",
+"Mobile App"]`. Ontology correctly left "Mobile App" unresolved (it is a
+value, not a business concept). **Semantic Retrieval correctly resolved
+"Mobile App" to `DIM_CHANNEL.CHANNEL_NAME`** -- a real, correct column
+match, proving that agent was never the problem. The actual bug: once
+Schema Mapping turns that match into a `ResolvedColumnRef(term="Mobile
+App", column_name="CHANNEL_NAME", role="dimension")`, SQL Generation
+treats it EXACTLY like a plain "channel" reference destined for `GROUP
+BY` -- `_needs_predicate_resolution` (`sql_generation/agent.py`) only
+ever fires its predicate-resolution LLM call when the question contains
+one of a fixed set of relative-date/comparison trigger words ("last",
+"quarter", "since", "vs", ...). "Mobile App" contains none of them, so
+the LLM was never even asked whether a filter was needed -- the gap was
+never in the LLM's judgment, only in whether it was ever consulted at all.
+
+**Resolution**: `ResolvedColumnRef.term` -- an existing field that
+already carries the original free-text phrase that resolved each column
+-- is compared against the column's own `column_name` via the same
+normalize-and-substring heuristic `understanding.ontology.agent
+._normalize_label`/`_label_matches_entities` already use for the
+identical class of judgment call (free-text phrasing vs. a canonical
+identifier). A new `_resolved_via_named_value` check: "channel" vs
+`CHANNEL_NAME` normalizes to "channel"/"channelname" -- a real substring
+match, so a genuine dimension reference correctly does NOT trigger
+predicate resolution. "Mobile App" vs `CHANNEL_NAME` normalizes to
+"mobileapp"/"channelname" -- no overlap, so this correctly flags it.
+`_needs_predicate_resolution` now fires on EITHER the existing temporal
+trigger OR any resolved dimension column matching this new check.
+Also broadened `predicate_resolution.md`'s system prompt (previously
+framed almost entirely around relative dates, with only one date-shaped
+worked example) to explicitly cover named-value filters, with a second,
+non-date worked example.
+
+Deliberately favors false positives over false negatives, same
+philosophy as `_label_matches_entities`'s own documented tradeoff: an
+irregular plural like "categories" vs `CATEGORY` also won't
+substring-match, triggering an unnecessary but harmless extra LLM call
+(which itself correctly returns no predicates) -- confirmed via 2
+existing tests (`_UNJOINED_MARKET_COLUMNS`'s real "market" -> `NAME`
+resolution, a genuine false positive since `ResolvedColumnRef` has no
+visibility into the real glossary synonym linking them) needing their
+canned LLM response updated from a placeholder string to a valid empty
+`{"predicates": []}`. New tests:
+`test_named_value_dimension_triggers_predicate_resolution_with_no_temporal_words`,
+`test_generic_dimension_reference_does_not_trigger_predicate_resolution`.
+288 tests pass (up from 286), `ruff check` clean.
+
+**What full version requires**: (1) the false-positive rate for generic
+dimension words whose real column name doesn't textually resemble them
+(item 95's own "market"/`NAME` example) could be reduced by giving
+`_resolved_via_named_value` visibility into the column's real
+`business_name`/`synonyms` (already crawled and available in the
+catalog) -- deliberately not done here, since `ResolvedColumnRef` was
+kept minimal by design (see its module docstring's "known contract gap"
+section) and adding fields risks the exact kind of sibling-contract
+drift that caused item 93's production incident; the cost of the
+false positive (one extra, harmless LLM call) was judged lower than that
+risk. (2) live end-to-end re-verification (a real "revenue from the
+Mobile App" question showing a real, single-row, correctly-filtered
+answer) is pending this fix's deploy -- see BUILD_LOG.md's matching entry.
