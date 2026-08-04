@@ -1684,3 +1684,36 @@ and `test_generic_dimension_reference_does_not_trigger_predicate_resolution`.
 Remaining: commit + push (both remotes), deploy, and live-verify "How
 much revenue came from the Mobile App?" now returns a single,
 correctly-filtered row -- not yet done as of this entry.
+
+## 2026-08-05 — Deployed item 95's fix; live-verified "Mobile App" works, immediately found and fixed a second, related bug
+
+Pushed, deployed (`30a5b7d`, promoted), live-tested against the real
+deployed gateway: "How much revenue came from the Mobile App?" now
+produces `WHERE DIM_CHANNEL.CHANNEL_NAME = %(predicate_0)s` bound to
+`'Mobile App'`, returning exactly one row (`$511,654.77`) with a
+correctly grounded narrative -- the original bug is fixed.
+
+Continued testing (following the same rigor -- verify beyond the single
+reported case) immediately found a second bug: "revenue from the Gold
+loyalty tier" and "revenue from the Electronics category" both STILL
+returned the full unfiltered breakdown. A direct diagnostic call to
+Intent Understanding (`kubectl port-forward` to the live agent-runtime,
+same methodology as before) showed why: it extracts the COMPOUND phrase
+(`entities=["revenue", "Gold loyalty tier"]`), and
+`_resolved_via_named_value`'s bidirectional substring check was wrongly
+satisfied since the real column name `LOYALTY_TIER` is a genuine suffix
+of the compound term `GOLDLOYALTYTIER`.
+
+**Fix**: made the check one-directional (safe only when the term is
+fully contained within the column name, never the reverse) -- simpler
+than the original two-direction check and correctly handles compound
+phrasing. Updated `test_multi_table_join_produces_correct_join_clause`
+(its "customer risk level"/`RISKLEVEL` fixture is the same class of
+accepted false positive) and added
+`test_compound_named_value_phrase_triggers_predicate_resolution`. 289
+tests pass (up from 288), `ruff check` clean.
+
+Remaining: commit + push this second fix (both remotes), deploy, and
+live-verify both "Gold loyalty tier" and "Electronics category" now
+return a single, correctly-filtered row each -- not yet done as of this
+entry.

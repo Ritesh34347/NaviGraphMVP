@@ -484,6 +484,95 @@ async def test_generic_dimension_reference_does_not_trigger_predicate_resolution
     assert "WHERE" not in statement.sql
 
 
+async def test_compound_named_value_phrase_triggers_predicate_resolution() -> None:
+    """REAL BUG #2, found live re-testing bug #1's own fix: Intent
+    Understanding extracts the COMPOUND phrase ("Gold loyalty tier"), not
+    the bare value ("Gold") -- confirmed via a direct diagnostic call.
+    A bidirectional substring check was wrongly satisfied here (the column
+    name "LOYALTYTIER" is a real suffix of the term "GOLDLOYALTYTIER"), so
+    this must use the one-directional check instead: "goldloyaltytier" is
+    NOT contained in "loyaltytier" (it's the other way around), so this
+    correctly triggers."""
+
+    fake_llm = FakeLLMClient(
+        response=json.dumps(
+            {
+                "predicates": [
+                    {
+                        "raw_phrase": "the Gold loyalty tier",
+                        "column": "LOYALTY_TIER",
+                        "operator": "=",
+                        "value": "Gold",
+                        "rationale": "names a specific loyalty tier value, not the dimension itself",
+                    }
+                ]
+            }
+        )
+    )
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    columns = [
+        ResolvedColumnRef(
+            term="revenue",
+            catalog_column_id="col_line_total",
+            table_name="FACT_ORDER_ITEMS",
+            schema_name="CORE",
+            column_name="LINE_TOTAL",
+            data_type="NUMBER",
+            role="measure",
+        ),
+        ResolvedColumnRef(
+            term="Gold loyalty tier",
+            catalog_column_id="col_loyalty_tier",
+            table_name="DIM_CUSTOMER",
+            schema_name="CORE",
+            column_name="LOYALTY_TIER",
+            data_type="TEXT",
+            role="dimension",
+        ),
+    ]
+
+    output = await agent.run(
+        _make_input(
+            question="How much revenue came from customers in the Gold loyalty tier?",
+            columns=columns,
+            tables=["FACT_ORDER_ITEMS", "DIM_CUSTOMER"],
+            joins=[
+                JoinSpec(
+                    left_table="DIM_CUSTOMER",
+                    left_column="CUSTOMER_ID",
+                    right_table="FACT_ORDER_ITEMS",
+                    right_column="CUSTOMER_ID",
+                    relationship_concept="OrderItem involves Customer",
+                )
+            ],
+            resolved_data_sources=[
+                ResolvedDataSource(
+                    table_name="FACT_ORDER_ITEMS",
+                    data_source_id="ds_snowflake_prod",
+                    source_type="snowflake",
+                    reachable=True,
+                ),
+                ResolvedDataSource(
+                    table_name="DIM_CUSTOMER",
+                    data_source_id="ds_snowflake_prod",
+                    source_type="snowflake",
+                    reachable=True,
+                ),
+            ],
+        )
+    )
+
+    assert len(fake_llm.calls) == 1
+    assert len(output.result.predicate_resolutions) == 1
+    predicate = output.result.predicate_resolutions[0]
+    assert predicate.column == "LOYALTY_TIER"
+    assert predicate.resolved_value == "Gold"
+    statement = output.result.statements[0]
+    assert statement.params == {"predicate_0": "Gold"}
+    assert "WHERE DIM_CUSTOMER.LOYALTY_TIER = %(predicate_0)s" in statement.sql
+
+
 # ---------------------------------------------------------------------------
 # (c) A hallucinated/invalid `column` in the LLM response must be rejected,
 # not silently trusted -- mirrors SemanticRetrievalAgent's hallucination
@@ -585,7 +674,13 @@ _JOIN_DATA_SOURCES = [
 
 
 async def test_multi_table_join_produces_correct_join_clause() -> None:
-    fake_llm = FakeLLMClient(response="should never be read")
+    # `_JOIN_COLUMNS`'s "customer risk level" -> `RISKLEVEL` resolution is a
+    # real, accepted false positive of `_resolved_via_named_value` (the
+    # compound term is longer than, and not contained in, "risklevel" --
+    # see that helper's own docstring, "REAL BUG #2", for why the
+    # one-directional check accepts this tradeoff). A valid, empty response
+    # reflects the resulting (harmless) extra LLM call.
+    fake_llm = FakeLLMClient(response=json.dumps({"predicates": []}))
     agent = SqlGenerationAgent(llm_client=fake_llm)
 
     output = await agent.run(
@@ -598,7 +693,6 @@ async def test_multi_table_join_produces_correct_join_clause() -> None:
         )
     )
 
-    assert fake_llm.calls == []
     assert output.errors == []
 
     assert len(output.result.statements) == 1

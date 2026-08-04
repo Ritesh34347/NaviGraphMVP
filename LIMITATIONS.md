@@ -3292,3 +3292,34 @@ false positive (one extra, harmless LLM call) was judged lower than that
 risk. (2) live end-to-end re-verification (a real "revenue from the
 Mobile App" question showing a real, single-row, correctly-filtered
 answer) is pending this fix's deploy -- see BUILD_LOG.md's matching entry.
+
+**Live-verified after deploy**: "How much revenue came from the Mobile
+App?" now produces a real `WHERE DIM_CHANNEL.CHANNEL_NAME = %(predicate_0)s`
+clause, bound to `'Mobile App'`, returning exactly one correct row
+(`$511,654.77`) with a correctly grounded narrative.
+
+Continued testing immediately surfaced a SECOND, related bug with the
+same live-test-then-fix rigor: "How much revenue came from customers in
+the Gold loyalty tier?" and "What is the total revenue from the
+Electronics category?" BOTH still returned the full, unfiltered
+breakdown. A direct diagnostic call to Intent Understanding showed why:
+it extracts the COMPOUND phrase (`entities=["revenue", "Gold loyalty
+tier"]`, not the bare value `"Gold"`) -- and `_resolved_via_named_value`'s
+original BIDIRECTIONAL substring check (safe if either term contains the
+column name or vice versa) was wrongly satisfied, since `"loyaltytier"`
+(the column) IS a real suffix of `"goldloyaltytier"` (the term). **Fixed
+by making the check one-directional**: safe only when the (normalized)
+term is fully CONTAINED WITHIN the column name -- i.e. the term adds
+nothing beyond what the column's own name already says. A term with
+extra content beyond the column name (the "gold"/"electronics" prefix)
+can only be a value modifier, so it now always triggers. This actually
+simplifies the check (one substring test instead of two) while fixing
+both compound-phrase cases. One additional existing test
+(`test_multi_table_join_produces_correct_join_clause`, whose
+"customer risk level" -> `RISKLEVEL` fixture is the same class of
+accepted false positive) needed its canned response updated the same
+way as item 95's earlier two. New test:
+`test_compound_named_value_phrase_triggers_predicate_resolution`. 289
+tests pass (up from 288), `ruff check` clean. Live re-verification of
+"Gold loyalty tier" and "Electronics category" is pending this second
+fix's deploy -- see BUILD_LOG.md's matching entry.

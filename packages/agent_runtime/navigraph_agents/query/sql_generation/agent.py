@@ -172,20 +172,49 @@ def _resolved_via_named_value(column: ResolvedColumnRef) -> bool:
 
     This uses `column.term` -- already a real, existing field on every
     resolved column, carrying the original phrase verbatim -- compared
-    against `column.column_name` via the same normalize-and-substring
-    heuristic `understanding.ontology.agent._label_matches_entities` already
-    uses for the identical class of judgment call (free-text phrasing vs.
-    a canonical identifier). "channel" vs `CHANNEL_NAME` normalizes to
-    "channel"/"channelname" -- a real substring match, so a plain
-    dimension reference correctly does NOT trigger this. "Mobile App" vs
-    `CHANNEL_NAME` normalizes to "mobileapp"/"channelname" -- no overlap,
-    so this correctly flags it. Deliberately favors false positives (e.g.
-    an irregular plural like "categories" vs `CATEGORY` won't
-    substring-match either, triggering an unnecessary but harmless LLM
-    call that itself correctly returns no predicates) over false negatives
-    -- a missed named-value filter produces a silently wrong, misleading
-    answer (exactly what happened live), while an extra LLM call is only
-    a cost, never a correctness risk.
+    against `column.column_name`. The check is deliberately ONE-DIRECTIONAL:
+    safe (not a named value) only when the normalized `term` is fully
+    contained within the normalized `column_name` -- i.e. the term adds
+    NOTHING beyond what the column's own name already says. "channel" is
+    contained in "channelname" -- nothing extra, a genuine dimension
+    reference. "market" is contained in "marketid" -- likewise safe.
+
+    REAL BUG #1, found live: "How much revenue came from the Mobile App?"
+    resolved "Mobile App" to `DIM_CHANNEL.CHANNEL_NAME` via Semantic
+    Retrieval -- a completely correct column match -- but Schema Mapping
+    then treats that resolution exactly like a plain "channel" reference:
+    a `role="dimension"` column destined for `GROUP BY`, with no signal
+    anywhere that the term itself already names one specific value. SQL
+    Generation's predicate-resolution LLM call (`_needs_predicate_resolution`)
+    only ever fired on relative-date/comparison trigger words, so it was
+    never even asked whether "Mobile App" needed a `WHERE` filter --
+    confirmed live: a direct Semantic Retrieval call for this exact term
+    correctly returns `CHANNEL_NAME`, proving the resolution itself was
+    never the problem, only the missing trigger to reconsider it as a
+    filter. "mobileapp" is NOT contained in "channelname" -- correctly
+    flagged.
+
+    REAL BUG #2, found live testing bug #1's own fix: a BIDIRECTIONAL
+    substring check (safe if EITHER string contains the other) was tried
+    first and still missed "How much revenue came from customers in the
+    Gold loyalty tier?" and "...from the Electronics category?" -- Intent
+    Understanding extracts the COMPOUND phrase (`"Gold loyalty tier"`,
+    `"Electronics category"`), not the bare value, confirmed via a direct
+    diagnostic call. `"goldloyaltytier"` CONTAINS `"loyaltytier"` (the
+    column name is a real suffix of the term), so a bidirectional check
+    wrongly called this safe. The one-directional form fixes this: only
+    "term is contained in column name" counts as safe, never the reverse
+    -- a term with EXTRA content beyond the column's own name (the "gold"/
+    "electronics" prefix) is always treated as naming a value, since that
+    extra content cannot be anything else.
+
+    Deliberately favors false positives over false negatives (e.g. a
+    generic compound phrase like "customer risk level" vs `RISKLEVEL` also
+    won't fit inside the column name, triggering an unnecessary but
+    harmless LLM call that itself correctly returns no predicates) -- a
+    missed named-value filter produces a silently wrong, misleading answer
+    (exactly what happened live, twice), while an extra LLM call is only a
+    cost, never a correctness risk.
     """
 
     if column.role == "measure":
@@ -194,7 +223,7 @@ def _resolved_via_named_value(column: ResolvedColumnRef) -> bool:
     column_norm = _normalize_label(column.column_name)
     if not term_norm or not column_norm:
         return False
-    return term_norm not in column_norm and column_norm not in term_norm
+    return term_norm not in column_norm
 
 
 def _needs_predicate_resolution(question: str, columns: list[ResolvedColumnRef]) -> bool:

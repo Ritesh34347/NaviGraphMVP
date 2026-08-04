@@ -1300,3 +1300,23 @@ all -- a real, deliberate tradeoff accepting a higher false-positive
 rate (e.g. "market" vs `NAME` won't textually match, triggering an
 unneeded but harmless extra LLM call) in exchange for zero new
 inter-agent contract surface to keep in sync.
+
+## 2026-08-05 — `_resolved_via_named_value`'s substring check made one-directional, not two, after live testing found a real gap in the bidirectional version
+
+Live-tested immediately after the bidirectional-check fix above deployed:
+"revenue from the Gold loyalty tier" and "revenue from the Electronics
+category" both still silently returned every group instead of filtering.
+A direct diagnostic call showed Intent Understanding extracts the
+COMPOUND phrase (`"Gold loyalty tier"`, not `"Gold"`), and the
+bidirectional check (safe if EITHER string contains the other) was
+wrongly satisfied since the real column name (`LOYALTY_TIER`) is a
+genuine suffix of the compound term. Fixed by making the check
+one-directional: safe only when the term is fully contained within the
+column name, never the reverse. This is a strictly SIMPLER rule (one
+substring test, not two) that happens to also be more correct -- a term
+with content beyond the column's own name can only be naming a value,
+regardless of which end the extra content is on. Re-verified this
+doesn't regress any of item 95's own established behavior (the "channel"/
+"market" worked-example cases remain safe; the "market"/`NAME` and
+"customer risk level"/`RISKLEVEL` accepted false positives remain
+false positives, unaffected either way) before shipping.
