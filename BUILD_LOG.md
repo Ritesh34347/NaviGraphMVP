@@ -1338,3 +1338,32 @@ column set), and the item-87 ambiguity guard provides a real safety net
 even if they had been -- logged honestly in `LIMITATIONS.md` item 88
 rather than silently accepted, not fixed here since no live question has
 yet shown it producing an actual wrong result.
+
+## 2026-08-04 — Re-verified the over-resolution fix live; found and fixed a second, related gap: merging genuine same-table schema duplicates
+
+Re-tested `gq_002` and `gq_009` against the deployed fix above. `gq_002`
+now answers correctly for real: `SELECT STAGING_TRANSACTIONS.CUSTOMERID,
+COUNT(*) FROM STAGING.STAGING_TRANSACTIONS GROUP BY CUSTOMERID` -- real,
+varied per-customer counts (40, 262, 4, ...), confirmed live. `gq_009`
+still failed, naming `CUSTOMER_INFORMATION` + `STAGING_CUSTOMER_INFORMATION`.
+Root-caused via the same direct, isolated diagnostic technique (real
+calls to Ontology and Semantic Retrieval with the exact question and
+candidate list): "risk level" resolved to
+`STAGING_CUSTOMER_INFORMATION.RISKLEVEL` (item 14's glossary anchor),
+while "customer"/"trend" resolved to
+`CUSTOMER_INFORMATION.CUSTOMERID`/`.TIMESTAMP` -- different column
+names each, so the just-shipped redundant-key-only collapse correctly
+didn't touch them, even though the two tables are the literal same real
+Snowflake data (item 14).
+
+**Fix**: a new `_merge_staging_schema_duplicate_tables` pass (runs before
+the redundant-key-only collapse) detects a resolved bare table and its
+`STAGING_`-prefixed duplicate both present, and redirects every column
+from the bare table to the `STAGING_`-prefixed table's own real copy
+(verified per-column against the live catalog). Unlike the redundant-key
+fix, this isn't inferring redundancy from a coincidental shared column
+name -- `STAGING_X`/`X` being the same real table is an already-confirmed
+fact about this dataset (item 14), so merging is the correct default
+whenever this exact pattern is detected. New test:
+`test_bare_table_columns_redirect_to_the_staging_prefixed_duplicate`.
+275 tests pass (up from 274), `ruff check` clean.

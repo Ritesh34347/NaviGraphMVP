@@ -94,6 +94,88 @@ class TestAllResolvedSingleTable:
         assert output.metadata.model_version is None
 
 
+class TestMergeStagingSchemaDuplicateTables:
+    async def test_bare_table_columns_redirect_to_the_staging_prefixed_duplicate(
+        self,
+    ) -> None:
+        """REAL BUG, live-reproduced (golden-set gq_009: "How has the
+        customer base's risk profile changed over time?"): "risk level"
+        resolved via Ontology's glossary to
+        `STAGING_CUSTOMER_INFORMATION.RISKLEVEL` (item 14's established
+        anchor), while "customer"/"trend" resolved via Semantic
+        Retrieval's LLM to `CUSTOMER_INFORMATION.CUSTOMERID`/`.TIMESTAMP`
+        -- two DIFFERENT column names, so the redundant-key-only collapse
+        alone can't merge them, even though `CUSTOMER_INFORMATION` and
+        `STAGING_CUSTOMER_INFORMATION` are the literal same real table.
+        Both bare-table columns must redirect to the STAGING_-prefixed
+        table's own real copies, collapsing to one table with no join
+        needed."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="trend_analysis",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="risk level",
+                    resolved=True,
+                    catalog_column_id="col-risklevel-staging",
+                    column_name="RISKLEVEL",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[],
+            semantic_matches=[
+                TermMatch(
+                    term="customer",
+                    matched=True,
+                    catalog_column_id="col-customerid-bare",
+                    table_name="CUSTOMER_INFORMATION",
+                    column_name="CUSTOMERID",
+                ),
+                TermMatch(
+                    term="trend",
+                    matched=True,
+                    catalog_column_id="col-timestamp-bare",
+                    table_name="CUSTOMER_INFORMATION",
+                    column_name="TIMESTAMP",
+                ),
+            ],
+            catalog_inventory=[
+                _catalog_entry(
+                    "col-risklevel-staging", "STAGING_CUSTOMER_INFORMATION", "RISKLEVEL", "TEXT"
+                ),
+                _catalog_entry("col-customerid-bare", "CUSTOMER_INFORMATION", "CUSTOMERID", "TEXT"),
+                _catalog_entry("col-timestamp-bare", "CUSTOMER_INFORMATION", "TIMESTAMP", "DATE"),
+                # The STAGING_-prefixed table's own real copies of these
+                # same columns -- present in the catalog even though
+                # nothing explicitly resolved them as terms.
+                _catalog_entry(
+                    "col-customerid-staging", "STAGING_CUSTOMER_INFORMATION", "CUSTOMERID", "TEXT"
+                ),
+                _catalog_entry(
+                    "col-timestamp-staging", "STAGING_CUSTOMER_INFORMATION", "TIMESTAMP", "DATE"
+                ),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.tables == ["STAGING_CUSTOMER_INFORMATION"]
+        assert output.result.joins == []
+        assert {c.column_name for c in output.result.columns} == {
+            "RISKLEVEL",
+            "CUSTOMERID",
+            "TIMESTAMP",
+        }
+        assert all(c.table_name == "STAGING_CUSTOMER_INFORMATION" for c in output.result.columns)
+        customer_column = next(
+            c for c in output.result.columns if c.column_name == "CUSTOMERID"
+        )
+        assert customer_column.catalog_column_id == "col-customerid-staging"
+
+
 class TestCollapseRedundantKeyOnlyTables:
     async def test_redundant_customer_id_from_a_second_table_collapses_to_one_table(
         self,

@@ -91,6 +91,9 @@ class SchemaMappingAgent:
             columns, unmapped_from_lookup = self._resolve_columns(
                 payload, inventory_by_id, intent=payload.intent
             )
+            columns = self._merge_staging_schema_duplicate_tables(
+                columns, payload.catalog_inventory
+            )
             columns = self._collapse_redundant_key_only_tables(
                 columns, payload.catalog_inventory
             )
@@ -204,6 +207,115 @@ class SchemaMappingAgent:
             )
 
         return columns, unmapped_terms
+
+    @staticmethod
+    def _merge_staging_schema_duplicate_tables(
+        columns: list[ResolvedColumnRef],
+        catalog_inventory: list[CatalogInventoryEntry],
+    ) -> list[ResolvedColumnRef]:
+        """Merge two resolved tables that are really the SAME real
+        Snowflake table crawled under two different catalog registrations
+        -- e.g. `CUSTOMER_INFORMATION` and `STAGING_CUSTOMER_INFORMATION`
+        (see LIMITATIONS.md item 14: every real business-glossary mapping
+        anchors to the `STAGING_`-prefixed copy, but Semantic Retrieval's
+        LLM fallback can freely resolve a term to the bare copy instead).
+
+        REAL BUG, found live (golden-set `gq_009`, "How has the customer
+        base's risk profile changed over time?"): "risk level" resolved
+        via Ontology's glossary to `STAGING_CUSTOMER_INFORMATION.RISKLEVEL`,
+        while "customer"/"trend" resolved via Semantic Retrieval's LLM to
+        `CUSTOMER_INFORMATION.CUSTOMERID`/`.TIMESTAMP` -- two DIFFERENT
+        column names each, so `_collapse_redundant_key_only_tables` (which
+        only ever collapses an IDENTICALLY-named duplicate key) correctly
+        left both tables in place, and the question failed with
+        `unjoined_table_in_multi_table_query` even though both tables are
+        the literal same underlying data.
+
+        Unlike an incidental same-named-column coincidence, `STAGING_X`
+        and `X` being the same real table is an established, confirmed
+        structural fact about this specific dataset (item 14), not a
+        guess -- so whenever a resolved `STAGING_`-prefixed table and its
+        bare counterpart are BOTH present among the resolved tables, every
+        column resolved from the bare table is redirected to the
+        `STAGING_`-prefixed one (the convention every other curated
+        resolution already anchors to), verified against the real catalog
+        inventory for that exact column name -- a table pair sharing this
+        exact core name but where the target genuinely lacks that column
+        name is left untouched rather than guessed at.
+        """
+
+        if len(columns) < 2:
+            return columns
+
+        resolved_tables = {c.table_name for c in columns}
+        if len(resolved_tables) < 2:
+            return columns
+
+        def _core_name(table_name: str) -> str:
+            return table_name.upper().removeprefix("STAGING_")
+
+        staging_by_core: dict[str, str] = {}
+        bare_by_core: dict[str, str] = {}
+        for table in resolved_tables:
+            core = _core_name(table)
+            if table.upper().startswith("STAGING_"):
+                staging_by_core[core] = table
+            else:
+                bare_by_core[core] = table
+
+        duplicate_pairs = {
+            core: (bare_by_core[core], staging_by_core[core])
+            for core in bare_by_core
+            if core in staging_by_core
+        }
+        if not duplicate_pairs:
+            return columns
+
+        catalog_by_table: dict[str, set[str]] = {}
+        for entry in catalog_inventory:
+            catalog_by_table.setdefault(entry.table_name, set()).add(
+                entry.column_name.upper()
+            )
+        catalog_entry_by_table_column: dict[tuple[str, str], CatalogInventoryEntry] = {
+            (entry.table_name, entry.column_name.upper()): entry for entry in catalog_inventory
+        }
+
+        bare_to_staging = {bare: staging for bare, staging in duplicate_pairs.values()}
+
+        merged: list[ResolvedColumnRef] = []
+        for c in columns:
+            canonical_table = bare_to_staging.get(c.table_name)
+            if canonical_table is None:
+                merged.append(c)
+                continue
+
+            if c.column_name.upper() not in catalog_by_table.get(canonical_table, set()):
+                # The canonical copy genuinely doesn't have this column --
+                # don't guess, leave it pointed at the bare table.
+                merged.append(c)
+                continue
+
+            entry = catalog_entry_by_table_column[(canonical_table, c.column_name.upper())]
+            merged.append(
+                ResolvedColumnRef(
+                    term=c.term,
+                    catalog_column_id=entry.catalog_column_id,
+                    table_name=entry.table_name,
+                    schema_name=entry.schema_name,
+                    column_name=entry.column_name,
+                    data_type=entry.data_type,
+                    role=c.role,
+                )
+            )
+
+        seen_ids: set[str] = set()
+        deduped: list[ResolvedColumnRef] = []
+        for c in merged:
+            if c.catalog_column_id in seen_ids:
+                continue
+            seen_ids.add(c.catalog_column_id)
+            deduped.append(c)
+        return deduped
 
     @staticmethod
     def _collapse_redundant_key_only_tables(

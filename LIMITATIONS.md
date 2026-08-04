@@ -2797,3 +2797,47 @@ logged honestly rather than assumed away. Tightening
 requiring a whole-word match rather than a bidirectional substring
 check) is a reasonable follow-up, not attempted here since no live
 question has yet been found where it actually produces a wrong result.
+
+### 89. RESOLVED: two resolved tables that are really the same real Snowflake table (bare vs `STAGING_`-prefixed) needlessly failed instead of merging
+
+**What was found**: after item 88's fix, live re-testing confirmed
+`gq_002` now answers correctly (a real, single-table `COUNT(*) GROUP BY
+CUSTOMERID` against `STAGING_TRANSACTIONS`, real varied counts per
+customer). `gq_009` ("How has the customer base's risk profile changed
+over time?") still failed with the same
+`unjoined_table_in_multi_table_query`, naming `CUSTOMER_INFORMATION` and
+`STAGING_CUSTOMER_INFORMATION`. Root-caused via the same direct,
+isolated Ontology/Semantic-Retrieval diagnostic technique used for item
+88: "risk level" resolved via Ontology's glossary to
+`STAGING_CUSTOMER_INFORMATION.RISKLEVEL` (item 14's established anchor),
+while "customer"/"trend" resolved via Semantic Retrieval's LLM to
+`CUSTOMER_INFORMATION.CUSTOMERID`/`.TIMESTAMP` -- two DIFFERENT column
+names, so item 88's identical-column-name collapse correctly left both
+tables in place. But `CUSTOMER_INFORMATION` and
+`STAGING_CUSTOMER_INFORMATION` are not two independent tables that
+happen to share a coincidental column -- per item 14, they are the
+LITERAL SAME real Snowflake data, crawled under two different catalog
+registrations.
+
+**Resolution**: a new `SchemaMappingAgent._merge_staging_schema_duplicate_tables`
+pass (run before the item-88 collapse) detects when a resolved
+`STAGING_`-prefixed table and its bare counterpart are BOTH present among
+the resolved tables, and redirects every column resolved from the bare
+table to the `STAGING_`-prefixed table's own real copy (verified against
+the live catalog inventory for that exact column name -- a pair sharing
+this exact core name where the target genuinely lacks that column is left
+untouched rather than guessed at). This is not a heuristic guess the way
+item 88's "thin table" collapse partly was -- `STAGING_X`/`X` being the
+same real table is an already-established, confirmed structural fact
+about this dataset (item 14), not a coincidence. New regression test:
+`test_bare_table_columns_redirect_to_the_staging_prefixed_duplicate`.
+275 tests pass (up from 274), `ruff check` clean. Live verification of
+`gq_009` against the deployed system is pending this fix's deployment.
+
+**What full version requires**: this merge only fires when BOTH the bare
+and `STAGING_`-prefixed copies are ALREADY resolved as distinct tables in
+the SAME query -- it does not (and cannot) prevent Semantic Retrieval from
+non-deterministically picking one schema variant over the other in the
+first place; item 14's underlying question (which schema should be
+canonical for business-term resolution going forward) remains open and
+unaddressed by this fix.

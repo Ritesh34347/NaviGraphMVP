@@ -1101,3 +1101,26 @@ in the first place. (b) is deterministic, narrowly scoped (only ever
 touches a table whose ENTIRE contribution is one duplicated key column,
 verified against the real, live catalog inventory already available),
 and directly testable.
+
+## 2026-08-04 — A resolved bare table is merged into its already-resolved `STAGING_`-prefixed duplicate, rather than treated as a genuinely separate table needing a join
+
+Re-testing after the redundant-key-only fix above showed `gq_002` now
+answers correctly, but `gq_009` still failed -- for a structurally
+different reason: `CUSTOMER_INFORMATION` and `STAGING_CUSTOMER_INFORMATION`
+each contributed a DIFFERENT real column (not the same name twice), so
+the identical-column-name collapse correctly didn't touch them, yet they
+are the literal same real table (item 14). This is a stronger, more
+certain case than the redundant-key-only fix: that fix inferred
+redundancy from a coincidental shared column name; this one is grounded
+in an already-established, confirmed fact about this specific dataset --
+`STAGING_X` and `X` are known to be the same crawled Snowflake table
+under two catalog registrations, not merely similar. Given that
+certainty, merging is the correct default (redirect the bare table's
+columns to the `STAGING_`-prefixed table's own real copies, verified per
+column against the live catalog) rather than requiring a real
+`RelationshipConcept` to bridge them, which would incorrectly frame two
+copies of the same data as a genuine foreign-key relationship. The merge
+only fires for a table pair matching this specific, confirmed pattern --
+it does not generalize to unrelated same-named tables, and does not
+address why Semantic Retrieval picked the bare schema in the first place
+(item 14's canonical-schema question remains open).
