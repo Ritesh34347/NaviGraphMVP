@@ -1717,3 +1717,25 @@ Remaining: commit + push this second fix (both remotes), deploy, and
 live-verify both "Gold loyalty tier" and "Electronics category" now
 return a single, correctly-filtered row each -- not yet done as of this
 entry.
+
+## 2026-08-05 — Deployed the compound-phrase fix; live-verified all three predicate-resolution cases, plus a no-regression check
+
+Pushed, deployed (`a11a381`, promoted), live-tested against the real
+gateway:
+
+- "How much revenue came from customers in the Gold loyalty tier?" ->
+  real `WHERE DIM_CUSTOMER.LOYALTY_TIER = %(predicate_0)s` bound to
+  `'Gold'`, one row, `$398,375.29`.
+- "What is the total revenue from the Electronics category?" -> real
+  `WHERE DIM_PRODUCT.CATEGORY = %(predicate_0)s` bound to `'Electronics'`,
+  one row, `$652,267.27`.
+- "How much revenue came from the Mobile App?" (item 95's original case)
+  -- re-confirmed still correct after this second deploy.
+- "What is the total revenue by channel?" (a genuine, generic group-by
+  question with no named value) -- re-confirmed it still correctly
+  returns the FULL, unfiltered per-channel breakdown, proving the fix
+  doesn't over-trigger and break ordinary group-by questions.
+
+All three real bugs found and fixed this session in the SQL Generation
+predicate-resolution path (items 95 and this entry) are now live and
+verified. Documented the final live results in `LIMITATIONS.md` item 95.

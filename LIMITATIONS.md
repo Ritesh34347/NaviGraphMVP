@@ -3320,6 +3320,14 @@ both compound-phrase cases. One additional existing test
 accepted false positive) needed its canned response updated the same
 way as item 95's earlier two. New test:
 `test_compound_named_value_phrase_triggers_predicate_resolution`. 289
-tests pass (up from 288), `ruff check` clean. Live re-verification of
-"Gold loyalty tier" and "Electronics category" is pending this second
-fix's deploy -- see BUILD_LOG.md's matching entry.
+tests pass (up from 288), `ruff check` clean.
+
+**Live-verified after this second deploy**: both "How much revenue came
+from customers in the Gold loyalty tier?" and "What is the total revenue
+from the Electronics category?" now produce a real, single-row,
+correctly bound `WHERE` filter (`LOYALTY_TIER = 'Gold'` ->
+`$398,375.29`; `CATEGORY = 'Electronics'` -> `$652,267.27`). Re-confirmed
+"What is the total revenue by channel?" (no named value, generic
+dimension reference) still correctly returns the full, unfiltered
+per-channel breakdown -- the fix does not over-trigger on genuine
+group-by questions.
