@@ -1291,3 +1291,50 @@ attempted given how the last two incremental relationship-only fixes each
 turned out to have a real, unforeseen edge case under live testing. This
 is now a safe, honest limitation, not a correctness risk. See
 `LIMITATIONS.md` item 87 and the matching `DECISIONS.md` entry.
+
+## 2026-08-04 — Full live golden-set sweep (all 10 real business questions) + fixed a real over-resolution gap it found
+
+Ran all 10 real golden-set questions directly against the live deployment
+to comprehensively check "is everything working as expected" after the
+day's run of fixes. Result: 5 answered correctly with real, sensible SQL
+(including `gq_007`, broken since Phase 9 until today's earlier fixes),
+2 safely failed, 3 correctly asked for clarification -- **zero wrong-data
+instances across all 10**, confirming today's earlier fixes hold under
+real, comprehensive testing, not just the individual questions that
+originally surfaced each bug.
+
+The 2 safe failures (`gq_002`, `gq_009`) were both genuinely fixable, not
+just honest refusals: `unjoined_table_in_multi_table_query` named two
+tables that are really the same conceptual entity resolved twice (e.g.
+`CUSTOMER_INFORMATION` and `STAGING_CUSTOMER_INFORMATION`). Root-caused
+via direct, isolated live calls to Intent Understanding, Ontology, and
+Semantic Retrieval with `gq_002`'s exact real question and candidate
+list: Semantic Retrieval's real LLM call resolved "customer" to
+`STAGING_TRANSACTIONS.CUSTOMERID` on this direct call, but the earlier
+golden-sweep run had resolved it to `CUSTOMER_INFORMATION.CUSTOMERID`
+instead -- confirming genuine, already-documented LLM non-determinism
+(items 38/44) as the cause, not a deterministic bug worth chasing at the
+LLM level.
+
+**Fix**: a new `SchemaMappingAgent._collapse_redundant_key_only_tables`
+pass redirects a resolved column away from a table whose ENTIRE
+contribution is that one column, when another already-resolved table has
+a real column of the identical name per the live catalog inventory --
+collapsing the question to a single table with no join needed, instead
+of requiring one for a purely redundant duplicate key. A table
+contributing any other real attribute (e.g. `RISKLEVEL`) is never
+touched. New tests:
+`test_redundant_customer_id_from_a_second_table_collapses_to_one_table`,
+`test_genuinely_needed_second_table_is_never_collapsed`. 274 tests pass
+(up from 272), `ruff check` clean.
+
+**Also found, not yet fixed**: the same diagnostic pass surfaced a real
+over-matching risk in today's earlier `entity_matches_reference_node`
+(item 86) -- generic English-word entities ("transactions", "customer")
+spuriously matched real Asset reference-node values via substring
+overlap, producing 2 bogus `relationship_resolutions`. Harmless in this
+specific case (their `realizing_table`s were never part of the resolved
+column set), and the item-87 ambiguity guard provides a real safety net
+even if they had been -- logged honestly in `LIMITATIONS.md` item 88
+rather than silently accepted, not fixed here since no live question has
+yet shown it producing an actual wrong result.

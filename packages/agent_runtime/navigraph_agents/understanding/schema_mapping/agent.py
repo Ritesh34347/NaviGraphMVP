@@ -91,6 +91,9 @@ class SchemaMappingAgent:
             columns, unmapped_from_lookup = self._resolve_columns(
                 payload, inventory_by_id, intent=payload.intent
             )
+            columns = self._collapse_redundant_key_only_tables(
+                columns, payload.catalog_inventory
+            )
 
             tables = sorted({column.table_name for column in columns})
 
@@ -201,6 +204,112 @@ class SchemaMappingAgent:
             )
 
         return columns, unmapped_terms
+
+    @staticmethod
+    def _collapse_redundant_key_only_tables(
+        columns: list[ResolvedColumnRef],
+        catalog_inventory: list[CatalogInventoryEntry],
+    ) -> list[ResolvedColumnRef]:
+        """Redirect a resolved column away from a table that contributes
+        NOTHING beyond that one column, when another already-resolved
+        table has a real column of the identical name.
+
+        REAL BUG, found live in the golden set (gq_002 "How many
+        transactions has each customer made?", gq_009 "How has the
+        customer base's risk profile changed over time?"): Semantic
+        Retrieval's real LLM call is non-deterministic (see LIMITATIONS.md
+        item 38/44) and can resolve a bare entity like "customer" to a
+        DIFFERENT table's copy of the same natural key than the table the
+        question's other terms already anchor on -- e.g. resolving
+        "transactions" to `STAGING_TRANSACTIONS.TRANSACTIONID` and
+        "customer" to `CUSTOMER_INFORMATION.CUSTOMERID` instead of
+        `STAGING_TRANSACTIONS.CUSTOMERID` (confirmed live: a direct,
+        repeated call to Semantic Retrieval with the identical real
+        candidate list resolved "customer" to `STAGING_TRANSACTIONS.CUSTOMERID`
+        on one run). Both resolutions are real, valid columns -- `_resolve_columns`'s
+        dedupe-by-`catalog_column_id` can't collapse them, since they're
+        different physical columns -- so the extra table pulled in
+        `CUSTOMER_INFORMATION` for a question that never needed anything
+        from it beyond a key value the anchor table (`STAGING_TRANSACTIONS`)
+        already has natively. That correctly (per this agent's own
+        ambiguous/missing-join safety guards) surfaced as a real
+        `unjoined_table_in_multi_table_query` failure rather than ever
+        guessing a join -- but the question was answerable all along
+        using a single table.
+
+        A resolved column's table is a "key-only" candidate for collapsing
+        when it contributes NO other resolved column. If some OTHER
+        already-resolved table (one that itself has a resolved column, so
+        it's genuinely needed) has a REAL column of the identical name per
+        `catalog_inventory` -- even if that column was never itself
+        explicitly resolved as a term -- the key-only table's column is
+        redirected to that other table's copy, and the key-only table
+        drops out of the resolved set entirely. A table that contributes
+        any OTHER attribute (e.g. `RISKLEVEL`, which no other resolved
+        table happens to also have) is never touched -- it is genuinely
+        needed and must still go through `_build_joins` normally.
+        """
+
+        if len(columns) < 2:
+            return columns
+
+        columns_by_table: dict[str, list[ResolvedColumnRef]] = {}
+        for c in columns:
+            columns_by_table.setdefault(c.table_name, []).append(c)
+
+        if len(columns_by_table) < 2:
+            return columns
+
+        catalog_by_table: dict[str, dict[str, CatalogInventoryEntry]] = {}
+        for entry in catalog_inventory:
+            catalog_by_table.setdefault(entry.table_name, {})[
+                entry.column_name.upper()
+            ] = entry
+
+        rewritten: list[ResolvedColumnRef] = []
+        for c in columns:
+            if len(columns_by_table[c.table_name]) > 1:
+                # This table already contributes something beyond `c` --
+                # a real, needed table, never a redundant duplicate.
+                rewritten.append(c)
+                continue
+
+            replacement_table = next(
+                (
+                    other_table
+                    for other_table in columns_by_table
+                    if other_table != c.table_name
+                    and c.column_name.upper() in catalog_by_table.get(other_table, {})
+                ),
+                None,
+            )
+            if replacement_table is None:
+                rewritten.append(c)
+                continue
+
+            entry = catalog_by_table[replacement_table][c.column_name.upper()]
+            rewritten.append(
+                ResolvedColumnRef(
+                    term=c.term,
+                    catalog_column_id=entry.catalog_column_id,
+                    table_name=entry.table_name,
+                    schema_name=entry.schema_name,
+                    column_name=entry.column_name,
+                    data_type=entry.data_type,
+                    role=c.role,
+                )
+            )
+
+        seen_ids: set[str] = set()
+        deduped: list[ResolvedColumnRef] = []
+        for c in rewritten:
+            if c.catalog_column_id in seen_ids:
+                # The rewrite pointed two different terms at the same real
+                # column -- keep only the first.
+                continue
+            seen_ids.add(c.catalog_column_id)
+            deduped.append(c)
+        return deduped
 
     @staticmethod
     def _unmapped_concept_terms(payload: SchemaMappingPayload) -> list[str]:

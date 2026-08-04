@@ -2737,3 +2737,63 @@ today -- deliberately not attempted here given how fragile the last two
 attempts at incremental, single-relationship fixes turned out to be under
 live testing. This is now a SAFE limitation (an honest failure), not a
 correctness risk.
+
+### 88. RESOLVED: Semantic Retrieval's non-determinism could resolve a bare entity to a redundant duplicate table, needlessly failing an otherwise single-table question
+
+**What was found**: a full live sweep of all 10 real golden-set questions
+against the deployed system (prompted directly by a request to verify
+"everything is working as expected") found 2 real questions safely
+failing that should have answered: `gq_002` ("How many transactions has
+each customer made?") and `gq_009` ("How has the customer base's risk
+profile changed over time?"), both with
+`unjoined_table_in_multi_table_query` naming two tables that are really
+the SAME conceptual entity (e.g. `CUSTOMER_INFORMATION` and
+`STAGING_CUSTOMER_INFORMATION`, or `CUSTOMER_INFORMATION` alongside
+`STAGING_TRANSACTIONS`). Root-caused via direct, live diagnostic calls to
+Intent Understanding/Ontology/Semantic Retrieval in isolation with
+`gq_002`'s real question and real candidate list: Semantic Retrieval's
+LLM call correctly resolved "customer" to `STAGING_TRANSACTIONS.CUSTOMERID`
+on this direct call -- but the real golden-sweep run had resolved
+"customer" to `CUSTOMER_INFORMATION.CUSTOMERID` instead, a different real,
+valid column, confirming genuine LLM non-determinism (the same class
+already documented in items 38/44) as the root cause, not a
+deterministic bug. Both resolutions are real, valid catalog columns, so
+`_resolve_columns`'s existing dedupe-by-`catalog_column_id` could never
+collapse them -- they're different physical columns -- pulling in a
+second table that offered nothing the anchor table (already resolved via
+a different term, e.g. "transactions" -> `STAGING_TRANSACTIONS.TRANSACTIONID`)
+didn't already have natively.
+
+**Resolution**: a new `SchemaMappingAgent._collapse_redundant_key_only_tables`
+pass runs after column resolution. A resolved column's table is a
+"key-only" candidate for collapsing when it contributes NO other resolved
+column; if some OTHER already-resolved table has a REAL column of the
+identical name per `payload.catalog_inventory` (even one never itself
+explicitly resolved as a term), the key-only column is redirected to that
+table's own copy, and the key-only table drops out of the resolved set
+entirely -- collapsing the question to a single table with no join
+needed. A table that contributes any OTHER, non-duplicated attribute
+(e.g. `RISKLEVEL`, which no other resolved table also has) is never
+touched -- verified by a dedicated regression test alongside the new
+"redundant duplicate" one. Two new tests:
+`test_redundant_customer_id_from_a_second_table_collapses_to_one_table`,
+`test_genuinely_needed_second_table_is_never_collapsed`. 274 tests pass
+(up from 272), `ruff check` clean.
+
+**A separate, lower-priority hardening note found during this same
+diagnostic pass, not yet acted on**: the same direct Ontology call
+surfaced 2 spurious `relationship_resolutions` ("Customer holds Asset",
+"Transaction involves Asset") for entities that are plainly NOT about
+assets at all ("transactions", "customer") -- almost certainly a false
+positive from item 86's new `entity_matches_reference_node` substring
+matching against a real Asset name/short-name/ISIN that happens to
+overlap a generic English word. This did not cause any real failure here
+(the spuriously-matched relationships' `realizing_table`s were never
+actually part of the resolved column set for this question), and the
+ambiguous-key guard (item 87) provides a real safety net even if it had
+been -- but it is a real, confirmed over-matching gap in a same-day fix,
+logged honestly rather than assumed away. Tightening
+`entity_matches_reference_node` (e.g. a minimum entity length, or
+requiring a whole-word match rather than a bidirectional substring
+check) is a reasonable follow-up, not attempted here since no live
+question has yet been found where it actually produces a wrong result.

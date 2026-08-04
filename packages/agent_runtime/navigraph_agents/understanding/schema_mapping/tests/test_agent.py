@@ -94,6 +94,119 @@ class TestAllResolvedSingleTable:
         assert output.metadata.model_version is None
 
 
+class TestCollapseRedundantKeyOnlyTables:
+    async def test_redundant_customer_id_from_a_second_table_collapses_to_one_table(
+        self,
+    ) -> None:
+        """REAL BUG, live-reproduced (golden-set gq_002: "How many
+        transactions has each customer made?"): Semantic Retrieval's real
+        LLM call is non-deterministic and can resolve "customer" to
+        `CUSTOMER_INFORMATION.CUSTOMERID` instead of the anchor table's own
+        `STAGING_TRANSACTIONS.CUSTOMERID` -- both are real, valid columns,
+        so the usual dedupe-by-`catalog_column_id` can't collapse them,
+        and the question ends up needlessly requiring an unresolvable
+        join. Since `CUSTOMER_INFORMATION` contributes nothing beyond that
+        one redundant key, and `STAGING_TRANSACTIONS` (already anchored by
+        the "transactions" resolution) genuinely has its own real
+        `CUSTOMERID` column, the resolution must redirect there instead --
+        collapsing to a single table with no join needed at all."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            concept_resolutions=[],
+            relationship_resolutions=[],
+            semantic_matches=[
+                TermMatch(
+                    term="transactions",
+                    matched=True,
+                    catalog_column_id="col-txn-id",
+                    table_name="STAGING_TRANSACTIONS",
+                    column_name="TRANSACTIONID",
+                ),
+                TermMatch(
+                    term="customer",
+                    matched=True,
+                    catalog_column_id="col-cust-id-wrong-table",
+                    table_name="CUSTOMER_INFORMATION",
+                    column_name="CUSTOMERID",
+                ),
+            ],
+            catalog_inventory=[
+                _catalog_entry("col-txn-id", "STAGING_TRANSACTIONS", "TRANSACTIONID", "NUMBER"),
+                _catalog_entry("col-cust-id-wrong-table", "CUSTOMER_INFORMATION", "CUSTOMERID", "TEXT"),
+                # The real column Semantic Retrieval SHOULD have picked --
+                # present in the catalog even though nothing explicitly
+                # resolved it as a term.
+                _catalog_entry("col-cust-id-real", "STAGING_TRANSACTIONS", "CUSTOMERID", "TEXT"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.tables == ["STAGING_TRANSACTIONS"]
+        assert output.result.joins == []
+        assert {c.column_name for c in output.result.columns} == {"TRANSACTIONID", "CUSTOMERID"}
+        assert all(c.table_name == "STAGING_TRANSACTIONS" for c in output.result.columns)
+        customer_column = next(
+            c for c in output.result.columns if c.column_name == "CUSTOMERID"
+        )
+        assert customer_column.catalog_column_id == "col-cust-id-real"
+
+    async def test_genuinely_needed_second_table_is_never_collapsed(self) -> None:
+        """A real, needed attribute (RISKLEVEL, which no other resolved
+        table has) must never be collapsed away -- the redundant-key
+        collapse only ever touches a table whose ENTIRE contribution is a
+        single, duplicated key column."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="comparison",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="revenue",
+                    resolved=True,
+                    catalog_column_id="col-1",
+                    column_name="TOTALVALUE",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="risk level",
+                    resolved=True,
+                    catalog_column_id="col-2",
+                    column_name="RISKLEVEL",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Customer",
+                    predicate="HAS",
+                    object_label="RiskLevel",
+                    realizing_table="CUSTOMER_INFORMATION",
+                    subject_key_column="CUSTOMERID",
+                    object_key_column="RISKLEVEL",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-1", "TRANSACTIONS", "TOTALVALUE", "NUMBER"),
+                _catalog_entry("col-1b", "TRANSACTIONS", "CUSTOMERID", "TEXT"),
+                _catalog_entry("col-2", "CUSTOMER_INFORMATION", "RISKLEVEL", "VARCHAR"),
+                _catalog_entry("col-2b", "CUSTOMER_INFORMATION", "CUSTOMERID", "TEXT"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert set(output.result.tables) == {"TRANSACTIONS", "CUSTOMER_INFORMATION"}
+        assert len(output.result.joins) == 1
+
+
 class TestJoinAcrossTwoTables:
     async def test_join_emitted_when_relationship_spans_two_resolved_tables(self) -> None:
         agent = SchemaMappingAgent()

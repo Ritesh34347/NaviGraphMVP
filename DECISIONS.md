@@ -1076,3 +1076,28 @@ Separately, "Transaction involves Asset" (a real, correctly-keyed `ISIN`
 relationship) was added so the common "transaction volume by security"
 shape still resolves correctly on its own merits, not as a side effect of
 the safety fix.
+
+## 2026-08-04 — A resolved column redirects to another already-resolved table's identically-named real column when its own table contributes nothing else, rather than requiring a join for a purely redundant duplicate
+
+A full live sweep of all 10 golden-set questions found 2 safely-failing
+that shouldn't have: Semantic Retrieval's real, non-deterministic LLM
+call had resolved a bare entity like "customer" to a DIFFERENT table's
+copy of the identical natural key than the table the question's other
+terms already anchored on (confirmed via direct, isolated live calls to
+Ontology/Semantic Retrieval with the exact real question and candidate
+list -- the same call resolved it correctly on a repeat run, proving
+genuine non-determinism, not a deterministic mis-resolution). Two fixes
+were considered: (a) make Semantic Retrieval's real LLM call deterministic
+or add a preference signal steering it toward whichever table the
+question's other terms already anchor on, or (b) detect and collapse the
+redundancy after the fact in Schema Mapping, using the real catalog to
+verify the "extra" table truly offers nothing new. (b) was chosen --
+(a) would mean changing a non-deterministic LLM-backed agent's prompt/
+behavior to fix what is, in the end, a downstream consequence (the LLM's
+choice is a real, valid resolution on its own merits; the redundancy only
+becomes visible once Schema Mapping sees BOTH resolutions together), and
+is harder to verify given the same non-determinism that caused the bug
+in the first place. (b) is deterministic, narrowly scoped (only ever
+touches a table whose ENTIRE contribution is one duplicated key column,
+verified against the real, live catalog inventory already available),
+and directly testable.
