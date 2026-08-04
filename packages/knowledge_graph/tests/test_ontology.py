@@ -63,8 +63,8 @@ class TestApplyConstraints:
 
 
 class TestRelationshipConcepts:
-    def test_has_exactly_the_fifteen_seed_entries(self) -> None:
-        assert len(RELATIONSHIP_CONCEPTS) == 15
+    def test_has_exactly_the_eighteen_seed_entries(self) -> None:
+        assert len(RELATIONSHIP_CONCEPTS) == 18
 
     def test_every_entry_has_the_expected_keys(self) -> None:
         expected_keys = {
@@ -150,3 +150,35 @@ class TestRelationshipConcepts:
         assert concept["realizing_table"] == "TRANSACTIONS"
         assert concept["subject_key_column"] == "ISIN"
         assert concept["object_key_column"] == "ISIN"
+
+    def test_contains_the_three_newly_bridged_brokerage_tables(self) -> None:
+        names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
+        assert names.issuperset(
+            {
+                "Asset has ClosingPrice",
+                "Asset has LimitPrice",
+                "Customer active in Market",
+            }
+        )
+
+    def test_asset_has_closingprice_uses_isin_and_realizes_close_prices(self) -> None:
+        concept = next(
+            c for c in RELATIONSHIP_CONCEPTS if c["name"] == "Asset has ClosingPrice"
+        )
+        assert concept["realizing_table"] == "CLOSE_PRICES"
+        assert concept["subject_key_column"] == "ISIN"
+        assert concept["object_key_column"] == "ISIN"
+
+    def test_asset_has_limitprice_uses_isin_and_realizes_limit_prices(self) -> None:
+        concept = next(c for c in RELATIONSHIP_CONCEPTS if c["name"] == "Asset has LimitPrice")
+        assert concept["realizing_table"] == "LIMIT_PRICES"
+        assert concept["subject_key_column"] == "ISIN"
+        assert concept["object_key_column"] == "ISIN"
+
+    def test_customer_active_in_market_uses_customerid_and_marketid(self) -> None:
+        concept = next(
+            c for c in RELATIONSHIP_CONCEPTS if c["name"] == "Customer active in Market"
+        )
+        assert concept["realizing_table"] == "CUSTOMER_MARKET_AGG"
+        assert concept["subject_key_column"] == "CUSTOMERID"
+        assert concept["object_key_column"] == "MARKETID"

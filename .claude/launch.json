@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "navigraph-web-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "cwd": "web",
+      "env": {
+        "NEXT_PUBLIC_GATEWAY_URL": "https://api.navigraph.51-8-46-125.nip.io",
+        "GATEWAY_URL": "https://api.navigraph.51-8-46-125.nip.io"
+      }
+    }
+  ]
+}

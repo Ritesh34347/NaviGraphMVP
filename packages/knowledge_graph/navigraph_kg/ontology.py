@@ -210,6 +210,67 @@ RELATIONSHIP_CONCEPTS: list[dict[str, str]] = [
         "subject_key_column": "ISIN",
         "object_key_column": "ISIN",
     },
+    {
+        # NEW, found reviewing the real live catalog for gaps analogous to
+        # the e-commerce dataset's: `CLOSE_PRICES`/`STAGING_CLOSE_PRICES`
+        # (real, already-populated Snowflake tables -- ISIN, TIMESTAMP,
+        # CLOSEPRICE) had a real `ColumnGlossary` entry ("Closing Price")
+        # but ZERO `RelationshipConcept`, so a compound question mixing a
+        # security's closing price with its name/sector/market (e.g.
+        # "closing price trend for Technology sector assets") would
+        # resolve `STAGING_CLOSE_PRICES` and `STAGING_ASSET_INFORMATION`
+        # together with no way to join them, surfacing (correctly, per the
+        # item-84 safety fix) as `unjoined_table_in_multi_table_query`
+        # rather than a wrong answer -- but the question was answerable
+        # all along via the real, shared `ISIN` key. `object_label` is the
+        # generic "Price" (not "ClosingPrice") specifically so it
+        # substring-matches real phrasings like "closing price"/"close
+        # price"/"limit price" (see the next entry) -- `_build_joins`'s
+        # own "is the realizing_table actually resolved" gate is what
+        # keeps this safe even though both this and "Asset has LimitPrice"
+        # below share the same object_label.
+        "name": "Asset has ClosingPrice",
+        "subject_label": "Asset",
+        "predicate": "HAS_CLOSING_PRICE",
+        "object_label": "Price",
+        "realizing_table": "CLOSE_PRICES",
+        "subject_key_column": "ISIN",
+        "object_key_column": "ISIN",
+    },
+    {
+        # NEW, same real gap as "Asset has ClosingPrice" above but for
+        # `LIMIT_PRICES`/`STAGING_LIMIT_PRICES` (ISIN, MINDATE, MAXDATE,
+        # PRICEMINDATE, PRICEMAXDATE, PROFITABILITY -- also already
+        # glossary-covered, also zero `RelationshipConcept`). A question
+        # like "which assets have the highest profitability, and what
+        # sector are they in?" needed exactly this join.
+        "name": "Asset has LimitPrice",
+        "subject_label": "Asset",
+        "predicate": "HAS_LIMIT_PRICE",
+        "object_label": "Price",
+        "realizing_table": "LIMIT_PRICES",
+        "subject_key_column": "ISIN",
+        "object_key_column": "ISIN",
+    },
+    {
+        # NEW, same real gap: `CUSTOMER_MARKET_AGG` (CUSTOMERID, MARKETID,
+        # TOTAL_VALUE, TXN_COUNT, LAST_DATE -- a real, already-populated
+        # pre-aggregated table, the direct market-level sibling of
+        # `CUSTOMER_ASSET_AGG`, which "Customer holds Asset" above already
+        # covers) had NEITHER a `RelationshipConcept` NOR any
+        # `ColumnGlossary` entry at all -- see BUILD_LOG.md's 2026-08-05
+        # entry for the matching new glossary rows added alongside this.
+        # Without this, "which markets does each customer trade in most?"
+        # had no way to connect a customer's market-level activity to a
+        # real `Market` name.
+        "name": "Customer active in Market",
+        "subject_label": "Customer",
+        "predicate": "ACTIVE_IN",
+        "object_label": "Market",
+        "realizing_table": "CUSTOMER_MARKET_AGG",
+        "subject_key_column": "CUSTOMERID",
+        "object_key_column": "MARKETID",
+    },
     # ------------------------------------------------------------------
     # ECOMMERCE_POC star schema (a second, separate real data source --
     # tenant_id="ecommerce-poc" -- registered alongside the brokerage

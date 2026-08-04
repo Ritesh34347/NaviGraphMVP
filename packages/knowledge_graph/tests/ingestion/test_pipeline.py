@@ -320,7 +320,7 @@ class TestSyncReferenceData:
 
 
 class TestSyncRelationshipConcepts:
-    def test_merges_all_fifteen_seed_concepts_with_realizes_and_key_edges(self) -> None:
+    def test_merges_all_eighteen_seed_concepts_with_realizes_and_key_edges(self) -> None:
         client, _summary, *_ = _run_pipeline()
 
         concept_calls = [
@@ -328,7 +328,7 @@ class TestSyncRelationshipConcepts:
             for call in client.run.call_args_list
             if "MERGE (rc:RelationshipConcept" in call.args[0]
         ]
-        assert len(concept_calls) == 15
+        assert len(concept_calls) == 18
         names = {call.kwargs["name"] for call in concept_calls}
         assert names == {
             "Customer holds Asset",
@@ -337,6 +337,9 @@ class TestSyncRelationshipConcepts:
             "Transaction happens in Market",
             "Asset traded in Market",
             "Transaction involves Asset",
+            "Asset has ClosingPrice",
+            "Asset has LimitPrice",
+            "Customer active in Market",
             "Order involves Customer",
             "Order happens on Date",
             "Order uses Channel",
@@ -370,7 +373,7 @@ class TestRunIngestionSummary:
         assert summary.customer_types_synced == 2
         assert summary.risk_levels_synced == 2
         assert summary.investment_capacity_bands_synced == 1
-        assert summary.relationship_concepts_synced == 15
+        assert summary.relationship_concepts_synced == 18
 
 
 class TestRunEcommerceIngestion:
@@ -428,7 +431,7 @@ class TestRunEcommerceIngestion:
         assert summary.business_concepts_synced == 1
         assert summary.concept_mappings_synced == 1
         assert summary.channels_synced == 4
-        assert summary.relationship_concepts_synced == 15
+        assert summary.relationship_concepts_synced == 18
         # No brokerage-only reference data is ever touched by this path.
         assert summary.assets_synced == 0
         assert summary.markets_synced == 0

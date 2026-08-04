@@ -130,6 +130,7 @@ from navigraph_agents.understanding.metadata_discovery.contracts import (
     MetadataDiscoveryResult,
 )
 from navigraph_agents.understanding.ontology.contracts import (
+    ConceptResolution,
     OntologyOutput,
     OntologyResult,
 )
@@ -257,7 +258,32 @@ def _wire_happy_path(agent: Any) -> None:
     agent._ontology_agent.run = AsyncMock(
         return_value=OntologyOutput(
             result=OntologyResult(
-                concept_resolutions=[], relationship_resolutions=[], unresolved_terms=["market"]
+                # REAL BUG, found live: this used to be `concept_resolutions=[]`,
+                # which meant the orchestrator's real
+                # `ConceptResolution(**r.model_dump())` re-validation
+                # (converting Ontology's own contract into Schema Mapping's
+                # sibling mirror) was never actually exercised by any
+                # orchestrator unit test -- a real field added to Ontology's
+                # `ConceptResolution` (`table_name`) without a matching field
+                # on Schema Mapping's sibling broke every real question in
+                # production with a `pydantic.ValidationError`
+                # (`extra_forbidden`), surfaced to users as a flat gateway
+                # 502, and no test caught it. A non-empty resolution here
+                # (with `table_name` populated, exactly like a real glossary
+                # hit) makes this conversion path real.
+                concept_resolutions=[
+                    ConceptResolution(
+                        term="units",
+                        resolved=True,
+                        business_concept="Units Traded",
+                        catalog_column_id="col-1",
+                        column_name="UNITS",
+                        table_name="STAGING_TRANSACTIONS",
+                        preferred=True,
+                    )
+                ],
+                relationship_resolutions=[],
+                unresolved_terms=["market"],
             ),
             confidence=1.0,
             lineage_events=_lineage("understanding.ontology"),
@@ -516,6 +542,17 @@ async def test_happy_path_returns_answered_with_full_result() -> None:
     assert output.confidence == 1.0
     # Lineage recorded for every stage that ran.
     assert agent._lineage_recorder_agent.run.await_count >= 15
+    # Real, non-empty conversion from Ontology's `ConceptResolution` into
+    # Schema Mapping's sibling mirror must actually succeed and preserve
+    # every field, including `table_name` -- this is the exact conversion
+    # that broke live in production (see `_wire_happy_path`'s docstring
+    # above) with no test catching it beforehand.
+    schema_mapping_payload = agent._schema_mapping_agent.run.await_args.args[0].payload
+    assert len(schema_mapping_payload.concept_resolutions) == 1
+    forwarded = schema_mapping_payload.concept_resolutions[0]
+    assert forwarded.term == "units"
+    assert forwarded.table_name == "STAGING_TRANSACTIONS"
+    assert forwarded.column_name == "UNITS"
 
 
 async def test_empty_schema_mapping_triggers_clarification_not_failure() -> None:

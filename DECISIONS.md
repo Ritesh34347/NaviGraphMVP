@@ -1201,3 +1201,58 @@ e-commerce channel names into it (via a new `run_ecommerce_ingestion`
 sibling of `run_ingestion`, not a modification to it, to avoid any risk
 to the already-verified brokerage ingestion path) closes a real, narrow,
 already-precedented gap with no wasted engineering.
+
+## 2026-08-05 — Brokerage relationship-coverage review found a metadata gap, not a data gap -- no new synthetic data was generated
+
+Asked to review the Fidelity/brokerage dataset for the same class of gap
+just found in e-commerce, the real, live catalog was queried directly
+first (not assumed) rather than jumping straight to writing new
+`RelationshipConcept`s. This found three real, already-populated tables
+(`CLOSE_PRICES`, `LIMIT_PRICES`, `CUSTOMER_MARKET_AGG`) with zero
+relationship coverage, but confirmed the underlying DATA itself has no
+gap -- these tables were already part of the original Phase 0-2 dataset,
+already crawled, and (for the two price tables) already glossary-covered.
+Generating new synthetic rows for an already-real, already-populated
+table would have been pure busywork with no bearing on the actual
+symptom (missing joinability), so the fix is scoped to metadata only:
+3 new `RelationshipConcept`s plus one new glossary script for
+`CUSTOMER_MARKET_AGG` (the one table of the three with zero glossary
+rows). This is a deliberate, evidence-based scoping choice -- "enhance
+the data" was the user's literal request, but the live investigation
+showed the real gap was elsewhere, and fixing what's actually broken
+was judged more valuable than manufacturing data changes to match the
+literal wording.
+
+The two new price-table concepts ("Asset has ClosingPrice", "Asset has
+LimitPrice") deliberately share the generic `object_label` `"Price"`
+rather than each getting its own specific label -- real phrasings
+("closing price", "close price", "limit price") don't reliably
+substring-match a compound label like `"ClosingPrice"` under
+`_label_matches_entities`'s naive normalize-and-substring matching (e.g.
+"close price" normalizes to "closeprice", which is NOT a substring of
+"closingprice"), but "price" alone IS a literal substring of all three
+real phrasings. Sharing a label across two concepts with different
+`realizing_table`s was checked against `_build_joins`'s actual logic
+first: it only ever emits a join for a relationship whose
+`realizing_table` is ALREADY among the resolved columns' tables, so an
+extra relationship_resolution whose table was never otherwise resolved
+is a safe no-op, not a source of ambiguity -- confirmed by re-reading the
+real code before relying on this, not assumed.
+
+## 2026-08-05 — A production incident confirmed sibling-contract drift is a real, live risk, not just a theoretical one -- fixed same-day, systemic follow-up logged rather than built
+
+Item 91 added a field to Ontology's `ConceptResolution` without updating
+Schema Mapping's deliberate sibling-mirror copy, and no test caught it
+because the one orchestrator test exercising that conversion path used an
+empty list. This took down every real question in production. Two
+response options: (a) build a systemic guard now (a shared test helper or
+CI check diffing sibling contract field sets across every
+`**model_dump()` conversion site), or (b) fix this specific instance
+(add the missing field, fix the specific test's empty-mock gap) and log
+the systemic risk as a real follow-up. (b) was chosen given the
+time-critical nature of a live production incident -- the fastest path
+to a correct, tested fix was preferred over pausing to design a more
+general guard while every real question stayed broken. The follow-up is
+logged in `LIMITATIONS.md` item 93 with enough specificity (all 4
+`**model_dump()` conversion sites named) that it's actionable later, not
+just a vague aspiration.

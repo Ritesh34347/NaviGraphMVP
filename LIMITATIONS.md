@@ -3009,3 +3009,135 @@ re-verification of all three fixes together (a real `/ask` call for
 per-channel numbers) is pending this item's deploy + the one-off
 glossary/ingestion scripts being run against the live cloud Postgres/Neo4j
 -- see BUILD_LOG.md's matching entry for the live results once available.
+
+### 92. NEW: three real, already-populated brokerage tables (`CLOSE_PRICES`, `LIMIT_PRICES`, `CUSTOMER_MARKET_AGG`) had zero `RelationshipConcept` coverage -- fixed
+
+**What was found**: per the user's request to review the Fidelity/brokerage
+dataset for the same class of gap just found and fixed for e-commerce
+(item 91), a live, read-only query against the real `FIDELITY_POC` catalog
+(via a running `agent-runtime` pod, not assumed) enumerated every real
+table registered for `tenant_id="navikenz-poc"`. Three real,
+already-populated tables had NO `RelationshipConcept` referencing them at
+all: `CLOSE_PRICES`/`STAGING_CLOSE_PRICES` (ISIN, TIMESTAMP, CLOSEPRICE),
+`LIMIT_PRICES`/`STAGING_LIMIT_PRICES` (ISIN, MINDATE, MAXDATE,
+PRICEMINDATE, PRICEMAXDATE, PROFITABILITY), and `CUSTOMER_MARKET_AGG`
+(CUSTOMERID, MARKETID, TOTAL_VALUE, TXN_COUNT, LAST_DATE -- the direct
+market-level sibling of `CUSTOMER_ASSET_AGG`, which already had a real
+concept, "Customer holds Asset"). A live query also confirmed
+`CLOSE_PRICES`/`LIMIT_PRICES` already had real `ColumnGlossary` entries
+(so their terms resolve deterministically) but `CUSTOMER_MARKET_AGG` had
+ZERO glossary rows at all -- meaning a question like "closing price trend
+for Technology sector assets" or "which markets does each customer trade
+in most" would resolve the relevant tables but have no way to join them
+to `Asset`/`Market`, surfacing (correctly, per the item-84 safety fix) as
+`unjoined_table_in_multi_table_query`.
+
+Notably, this review found NO gap in the synthetic DATA itself -- every
+one of these tables is real, already populated, live Snowflake data from
+the original Phase 0-2 dataset setup. The actual gap was purely missing
+`RelationshipConcept`/`ColumnGlossary` metadata, so no new synthetic data
+generation was needed for the brokerage side (unlike the e-commerce
+dataset, which was built from scratch this session).
+
+**Resolution**: added 3 new `RelationshipConcept` entries to
+`ontology.py` (`RELATIONSHIP_CONCEPTS` now 18 total, up from 15): "Asset
+has ClosingPrice" (`CLOSE_PRICES`, `ISIN`/`ISIN`), "Asset has LimitPrice"
+(`LIMIT_PRICES`, `ISIN`/`ISIN`), "Customer active in Market"
+(`CUSTOMER_MARKET_AGG`, `CUSTOMERID`/`MARKETID`). The first two
+deliberately share the generic `object_label` `"Price"` (not
+`"ClosingPrice"`/`"LimitPrice"`) so it substring-matches real phrasings
+like "closing price"/"close price"/"limit price" -- `_build_joins`'s own
+"is the realizing_table actually resolved" gate is what keeps this safe
+even with two concepts sharing an object label. Added a new one-off
+script (`add_customer_market_agg_glossary.py`) inserting real
+`ColumnGlossary` entries for `CUSTOMER_MARKET_AGG.TOTAL_VALUE`/`TXN_COUNT`/`LAST_DATE`
+via the existing `upsert_glossary`/`find_column` catalog API, mirroring
+the e-commerce glossary script's exact pattern. New tests:
+`test_contains_the_three_newly_bridged_brokerage_tables` plus 3
+per-concept key-column tests in `test_ontology.py`; the two
+`relationship_concepts_synced` count assertions in `test_pipeline.py`
+updated from 15 to 18. 285 tests pass, `ruff check` clean.
+
+**What full version requires**: (1) live end-to-end re-verification (a
+real brokerage question mixing closing/limit price data with asset
+name/sector, and a real "top markets by customer activity" question) is
+pending this item's deploy + the new glossary script being run against
+the live cloud Postgres + `_sync_relationship_concepts` being re-run for
+`tenant_id="navikenz-poc"` -- see BUILD_LOG.md's matching entry. (2) the
+real `V_ASSET_CURRENT`/`V_CUSTOMER_CURRENT` views (denormalized "current
+snapshot" reads of `ASSET_INFORMATION`+`MARKETID`/`SECTOR`/`INDUSTRY` and
+`CUSTOMER_INFORMATION`+`RISKLEVEL`/`CUSTOMERTYPE`/`INVESTMENTCAPACITY`
+respectively) were found to have ZERO `ColumnGlossary` entries either --
+a real, deliberately-NOT-fixed gap: since every meaningful business term
+these views could offer is already glossary-anchored to the
+`STAGING_`-prefixed real tables, Semantic Retrieval's LLM fallback (the
+only path that could ever resolve a term to these views instead) has no
+observed, live reason to ever pick them over the already-anchored tables
+-- this is a real, low-probability, defense-in-depth-only gap, not one
+with observed live impact, so it is logged rather than fixed with
+speculative changes to `schema_mapping`'s STAGING_-duplicate-merge logic
+(item 89), which currently has no equivalent handling for a `V_`-prefixed
+duplicate. If this is ever observed live, the fix would generalize
+`_merge_staging_schema_duplicate_tables`'s `_core_name` stripping to also
+strip a `V_` prefix.
+
+### 93. RESOLVED, SAME DAY: item 91's `table_name` field addition to Ontology's `ConceptResolution` broke the Request Orchestrator's sibling contract, taking down every real question in production
+
+**What was found**: after item 91's fix (91's commit `62cad04`) reached
+production via the normal CD pipeline (canary bake completed and
+auto-promoted, per the established gate), a real, live UI test (via a
+local `next dev` pointed at the real deployed gateway) returned "Gateway
+returned 502" for a real question. Direct `curl` against the real
+gateway confirmed a genuine, persistent (not transient/canary-bake-related)
+502 with body `{"detail": "agent-runtime is unavailable or returned an
+error"}`. `kubectl logs` on the real `agent-runtime` pod showed the actual
+root cause: `pydantic_core._pydantic_core.ValidationError: 1 validation
+error for ConceptResolution / table_name / Extra inputs are not permitted
+[type=extra_forbidden]`, raised inside
+`request_orchestrator/agent.py`'s `ConceptResolution(**r.model_dump())`
+conversion -- the Request Orchestrator re-validates Ontology's real output
+into `schema_mapping.contracts.ConceptResolution`, a deliberate sibling
+mirror (per this codebase's "no direct cross-agent imports" convention),
+and item 91 added `table_name` to Ontology's copy but not to Schema
+Mapping's, so every real request hit `extra="forbid"` and crashed with a
+500 inside agent-runtime, surfaced to end users as a flat gateway 502 --
+**every question, on every tenant, was broken in production**, not just
+e-commerce ones, for the duration between item 91's promotion and this
+fix.
+
+**Why no test caught this**: `tests/.../request_orchestrator/tests/test_agent.py`'s
+own `_wire_happy_path` helper mocked Ontology's output with
+`concept_resolutions=[]` -- an EMPTY list -- so the real
+`ConceptResolution(**r.model_dump())` list comprehension never actually
+iterated over a real element in any orchestrator unit test, and the real,
+full pipeline-chain integration test
+(`tests/integration/orchestrator_pipeline/`) uses `FakeLLMClient`/mocked
+sub-agents in a way that also never exercised a real, non-empty
+`ConceptResolution` round-trip through this exact conversion. This is a
+real, structural test-coverage gap in how "sibling contract" pairs get
+verified in this codebase -- every prior sibling-pair addition happened to
+keep both sides in sync by discipline, not by a test that would have
+caught drift.
+
+**Resolution**: added the matching `table_name: str | None = None` field
+to `schema_mapping.contracts.ConceptResolution`, restoring the two
+sibling contracts' structural match. Fixed the actual test gap too: 
+`_wire_happy_path`'s Ontology mock now returns one real, non-empty,
+`table_name`-populated `ConceptResolution`, and
+`test_happy_path_returns_answered_with_full_result` now asserts the
+exact conversion that broke live (`schema_mapping_agent.run`'s real
+call args) round-trips every field correctly, including `table_name`.
+285 tests pass, `ruff check` clean.
+
+**What full version requires**: this class of bug (a sibling contract
+pair silently drifting apart) can recur for any future field added to
+either `ConceptResolution` copy, or to `RelationshipResolution`/`TermMatch`/
+`CatalogInventoryEntry` (the other three `**r.model_dump()` conversions
+in the same orchestrator method, none of which currently have a
+non-empty-input regression test either) -- a real, more durable fix would
+be a single shared test helper (or a lint/CI check comparing sibling
+contract field sets) that fails whenever any of these pairs' fields
+diverge, rather than relying on each individual test author remembering
+to use non-empty mock data. Not built here; logged as a real follow-up
+given the severity of what a silent drift on any of these four pairs can
+do (they are all on the hot path of every real question).

@@ -189,6 +189,43 @@ main {
   max-height: 62vh;
 }
 
+/* ---- Data source selector ---- */
+
+.data-source-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted, rgba(0, 0, 0, 0.02));
+  flex-wrap: wrap;
+}
+
+.data-source-bar label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary, inherit);
+}
+
+.data-source-bar select {
+  font-size: 0.9rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+}
+
+.data-source-bar select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.data-source-description {
+  font-size: 0.82rem;
+  color: var(--text-secondary, #6b7280);
+}
+
 /* ---- Empty state ---- */
 
 .empty-state {

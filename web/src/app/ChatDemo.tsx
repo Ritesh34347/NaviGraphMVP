@@ -10,15 +10,47 @@ import { useEffect, useRef, useState } from "react";
  * platform has today. A future real sign-in screen would replace these
  * constants with values from a verified session, not add a new pattern.
  */
-const DEMO_TENANT_ID = "navikenz-poc";
 const DEMO_USER_ID = "demo-user";
 const DEMO_ROLES = ["analyst"];
 
-const EXAMPLE_QUESTIONS = [
-  "What is the total transaction volume by market?",
-  "How many transactions has each customer made?",
-  "Are there any unusual spikes in units traded by market?",
-  "Which markets have the highest transaction volume?",
+interface DataSourceOption {
+  tenantId: string;
+  label: string;
+  description: string;
+  exampleQuestions: string[];
+}
+
+/**
+ * The two real, registered NaviGraph data sources -- `tenant_id` is the
+ * only thing the gateway's `/ask` contract needs to route a question to
+ * the right one (see `AskRequest.tenant_id` in
+ * `navigraph_gateway/main.py`), so switching here needs no gateway/agent
+ * change at all. See LIMITATIONS.md item 42 for why these stay two
+ * separate tenants rather than one tenant with two data sources.
+ */
+const DATA_SOURCES: DataSourceOption[] = [
+  {
+    tenantId: "navikenz-poc",
+    label: "Fidelity Brokerage",
+    description: "Transactions, customers, assets, and markets",
+    exampleQuestions: [
+      "What is the total transaction volume by market?",
+      "How many transactions has each customer made?",
+      "Are there any unusual spikes in units traded by market?",
+      "Which markets have the highest transaction volume?",
+    ],
+  },
+  {
+    tenantId: "ecommerce-poc",
+    label: "E-commerce Demo",
+    description: "Orders, customers, products, and channels",
+    exampleQuestions: [
+      "What is the total revenue by channel?",
+      "What are the top 10 products by revenue?",
+      "Compare total revenue between the Website and Mobile App channels.",
+      "How has total revenue trended month over month?",
+    ],
+  },
 ];
 
 interface ChartSpec {
@@ -259,11 +291,23 @@ export default function ChatDemo({ gatewayUrl }: { gatewayUrl: string }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
+  const [dataSource, setDataSource] = useState<DataSourceOption>(DATA_SOURCES[0]);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
+
+  function switchDataSource(next: DataSourceOption) {
+    if (next.tenantId === dataSource.tenantId || loading) return;
+    // A conversation's session history and follow-up context are meaningless
+    // once the underlying schema/tenant changes, so start fresh rather than
+    // carrying stale context across data sources.
+    setDataSource(next);
+    setMessages([]);
+    setSessionId(undefined);
+    setInput("");
+  }
 
   async function ask(question: string) {
     const trimmed = question.trim();
@@ -279,11 +323,11 @@ export default function ChatDemo({ gatewayUrl }: { gatewayUrl: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: trimmed,
-          tenant_id: DEMO_TENANT_ID,
+          tenant_id: dataSource.tenantId,
           user_id: DEMO_USER_ID,
           session_id: sessionId,
           roles: DEMO_ROLES,
-          claims: { tenant_id: DEMO_TENANT_ID },
+          claims: { tenant_id: dataSource.tenantId },
         }),
       });
 
@@ -334,6 +378,25 @@ export default function ChatDemo({ gatewayUrl }: { gatewayUrl: string }) {
 
   return (
     <div className="chat-card">
+      <div className="data-source-bar">
+        <label htmlFor="data-source-select">Data source</label>
+        <select
+          id="data-source-select"
+          value={dataSource.tenantId}
+          disabled={loading}
+          onChange={(e) => {
+            const next = DATA_SOURCES.find((d) => d.tenantId === e.target.value);
+            if (next) switchDataSource(next);
+          }}
+        >
+          {DATA_SOURCES.map((d) => (
+            <option key={d.tenantId} value={d.tenantId}>
+              {d.label}
+            </option>
+          ))}
+        </select>
+        <span className="data-source-description">{dataSource.description}</span>
+      </div>
       <div className="chat-log" ref={logRef}>
         {messages.length === 0 && (
           <div className="empty-state">
@@ -341,9 +404,9 @@ export default function ChatDemo({ gatewayUrl }: { gatewayUrl: string }) {
               <ChatIcon />
             </div>
             <h2>Start a conversation</h2>
-            <p>Try one of these, or ask your own question about transactions, markets, or customers.</p>
+            <p>Try one of these, or ask your own question about {dataSource.description.toLowerCase()}.</p>
             <div className="example-grid">
-              {EXAMPLE_QUESTIONS.map((q) => (
+              {dataSource.exampleQuestions.map((q) => (
                 <button key={q} className="example-card" onClick={() => void ask(q)}>
                   {q}
                 </button>

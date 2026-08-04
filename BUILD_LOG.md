@@ -1467,3 +1467,101 @@ live cloud Postgres/Neo4j, and live-test "total revenue by channel" (and
 a representative sample of the ~100-question test bank) end-to-end to
 confirm a real, correct join and varied per-channel numbers -- not yet
 done as of this entry.
+
+## 2026-08-05 — Reviewed the Fidelity/brokerage dataset for the same class of gap; found a real metadata gap, not a data gap
+
+Per the user's request to also review and enhance the brokerage dataset,
+queried the real, live `FIDELITY_POC` catalog directly (via a running
+`agent-runtime` pod) rather than assuming anything. Found the full real
+table list for `tenant_id="navikenz-poc"` -- 17 tables, including 3 with
+ZERO `RelationshipConcept` coverage: `CLOSE_PRICES`/`STAGING_CLOSE_PRICES`,
+`LIMIT_PRICES`/`STAGING_LIMIT_PRICES`, and `CUSTOMER_MARKET_AGG` (the
+direct market-level sibling of `CUSTOMER_ASSET_AGG`, which already had
+"Customer holds Asset"). A second live query confirmed the two price
+tables already have real `ColumnGlossary` entries (deterministic
+resolution already works for their terms), but `CUSTOMER_MARKET_AGG` has
+zero glossary rows. A third live query confirmed the real
+`V_ASSET_CURRENT`/`V_CUSTOMER_CURRENT` views also have zero glossary
+entries -- logged as a real, low-probability, defense-in-depth-only gap
+(item 92) rather than fixed, since every meaningful term these views
+could offer is already glossary-anchored to the `STAGING_`-prefixed real
+tables, so Semantic Retrieval's LLM fallback has no live-observed reason
+to ever pick a view over the anchored table.
+
+**Fix**: added 3 new `RelationshipConcept` entries to `ontology.py`
+("Asset has ClosingPrice", "Asset has LimitPrice", "Customer active in
+Market" -- `RELATIONSHIP_CONCEPTS` now 18, up from 15) and a new one-off
+script `add_customer_market_agg_glossary.py` (3 real glossary rows for
+`TOTAL_VALUE`/`TXN_COUNT`/`LAST_DATE`, using the same `upsert_glossary`/
+`find_column` catalog API as the e-commerce glossary script). Updated
+`test_ontology.py` (count 15->18, 4 new tests) and both
+`relationship_concepts_synced` count assertions in `test_pipeline.py`
+(15->18). Full suite: `python -m pytest packages/agent_runtime/
+packages/knowledge_graph/ -q` -- **285 passed** (up from 281), `ruff
+check` clean. Documented as `LIMITATIONS.md` item 92 and a new
+`DECISIONS.md` entry (which also records the explicit finding that no new
+synthetic DATA was needed for the brokerage side -- the gap was purely
+missing relationship/glossary metadata over already-real, already-
+populated tables).
+
+Remaining for this task: commit + push (both remotes, combined with or
+following item 91's push), deploy, run the new glossary script and
+re-run `_sync_relationship_concepts` for `tenant_id="navikenz-poc"`
+against the live cloud Postgres/Neo4j, and live-test a real brokerage
+question mixing price data with asset/sector names -- not yet done as of
+this entry.
+
+## 2026-08-05 — Production incident: item 91's deploy broke every real question; found and fixed same-day via live UI testing
+
+While live-testing the new UI data-source dropdown (see next entry) via
+a local `next dev` pointed at the real deployed gateway, a real question
+against the E-commerce tenant returned "Gateway returned 502." A direct
+`curl` against the real gateway confirmed the 502 was genuine and
+persistent (not a canary-bake transient), and `kubectl logs` on the real
+`agent-runtime` pod showed the actual cause: item 91's CD run
+(`30939961726`, promoted while this investigation was in progress) had
+added `table_name` to Ontology's `ConceptResolution` contract but not to
+Schema Mapping's deliberate sibling-mirror copy, so
+`request_orchestrator/agent.py`'s real
+`ConceptResolution(**r.model_dump())` conversion raised
+`pydantic.ValidationError: extra_forbidden` on every real request --
+**every question, on every tenant, was broken in production** for the
+window between item 91's promotion and this fix.
+
+**Fix**: added the matching `table_name` field to
+`schema_mapping.contracts.ConceptResolution`. Also fixed the real test
+gap that let this ship silently: `request_orchestrator`'s own
+`_wire_happy_path` test helper mocked Ontology's output with an EMPTY
+`concept_resolutions` list, so the real conversion path was never
+actually exercised with a real element by any orchestrator test. Now
+uses one real, `table_name`-populated `ConceptResolution`, and
+`test_happy_path_returns_answered_with_full_result` asserts the exact
+conversion round-trips correctly. 285 tests pass, `ruff check` clean.
+Documented as `LIMITATIONS.md` item 93 (includes a recommendation for a
+more durable, systemic fix -- a shared test helper or CI check
+comparing sibling-contract field sets across all 4 `**model_dump()`
+conversions in this method -- not built here, logged as a real
+follow-up).
+
+This fix is bundled into the SAME push as the brokerage relationship
+concepts (item 92) and the new UI data-source dropdown (next entry),
+given the severity and to get the real fix live as fast as possible.
+
+## 2026-08-05 — Added a data-source dropdown to the web UI so users can pick Fidelity Brokerage vs. E-commerce Demo before asking
+
+The gateway's `/ask` contract already accepts a `tenant_id` per request
+(`AskRequest.tenant_id` in `navigraph_gateway/main.py`), so no
+gateway/agent change was needed at all -- this was purely a `ChatDemo.tsx`
+change. Added a `DATA_SOURCES` list (tenant_id, label, description, and
+per-tenant example questions for both `navikenz-poc` and `ecommerce-poc`),
+a `<select>` in a new `.data-source-bar` header row, and a
+`switchDataSource` handler that resets the conversation (messages,
+session_id, input) on switch -- a session's history/follow-up context
+from one schema is meaningless once the tenant changes underneath it.
+`npm run typecheck` and `npm run lint` both clean. Live-verified via a
+local `next dev` pointed at the real deployed gateway
+(`https://api.navigraph.51-8-46-125.nip.io`, via a new
+`.claude/launch.json` preview config): switching the dropdown correctly
+updates the description/example questions and the outgoing request's
+`tenant_id` for both data sources (confirmed via the same live session
+that also surfaced item 93's production incident above).
