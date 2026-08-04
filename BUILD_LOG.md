@@ -1604,3 +1604,40 @@ Remaining: commit + push this second-round fix (both remotes), deploy,
 re-run both KG syncs once more against the new code, and re-test "top 5
 categories by revenue" plus a broader sample of the ~100-question bank
 -- not yet done as of this entry.
+
+## 2026-08-05 — Second-round fix deployed and live-verified; broad live sweep across both tenants confirms the semantic-completeness work end-to-end
+
+Pushed, deployed (`b394a73`, promoted), and re-ran both KG syncs against
+the fixed code: `sync_ecommerce_kg.py` -- 18 relationship concepts, 4
+channels; `sync_brokerage_kg.py` -- 18 relationship concepts, 835 assets/
+38 markets/etc. Live-tested a representative sweep across both tenants
+against the real deployed gateway:
+
+**E-commerce** (`ecommerce-poc`): "top 5 categories by revenue" (real
+`FACT_ORDER_ITEMS` + `DIM_PRODUCT` join, real per-category numbers) --
+FIXED, was failing; "total revenue by loyalty tier" (real join through
+`DIM_CUSTOMER`) -- new, works; "compare revenue between Website and
+Mobile App" -- works; "revenue trend by month" -- works; "total revenue
+by channel" -- still correct after the glossary re-point. One
+`needs_clarification` (ambiguous "promotions by discount amount"
+phrasing) -- correct, non-error behavior, not a bug.
+
+**Brokerage** (`navikenz-poc`): "total transaction volume by market" (the
+original golden-set question) -- still correct, no regression from any
+of today's changes; "average closing price by asset sector" (real join
+via the new "Asset has ClosingPrice" concept) -- NEW capability, works;
+"which markets have the most customer trading activity" (real join via
+the new "Customer active in Market" concept + `CUSTOMER_MARKET_AGG`
+glossary) -- NEW capability, works.
+
+Every question tested this session (across items 90-94's full arc)
+either answered correctly with real, varied data, or failed/clarified
+for a legitimate, non-bug reason (unresolvable ambiguity, or the
+separately-logged SQL Generation predicate-resolution gap). Documented
+final live-verification results in `LIMITATIONS.md` item 94.
+
+Also wrote `eval/ecommerce_test_questions.md`: a 100-question bank
+spanning all 4 real `IntentLabel`s, every glossary term, top-N/
+comparison/trend/anomaly/multi-dimension/named-instance phrasing -- a
+representative ~12 of these 100 were actually live-tested this session;
+the rest seed future golden-set/regression coverage.

@@ -3195,6 +3195,20 @@ larger, correctly so) set of fired relationships rather than exactly one.
 categories by revenue" now needs re-testing after this deploy (pending as
 of this entry -- see BUILD_LOG.md).
 
+**Live-verified after deploy + re-sync** (both KG syncs re-run against
+this fix): "top 5 categories by revenue" and "total revenue by loyalty
+tier" both now answer correctly with real, varied per-group numbers via
+`FACT_ORDER_ITEMS.LINE_TOTAL`, joined through "OrderItem involves
+Product"/via `DIM_CUSTOMER`. Comparison ("Website vs. Mobile App
+revenue") and trend ("revenue by month") questions also verified
+live-correct. On the brokerage side, the 2 new price/market-activity
+relationship concepts (item 92) are also live-confirmed: "average closing
+price by asset sector" (real join, `CLOSE_PRICES` + `ASSET_INFORMATION`)
+and "which markets have the most customer trading activity" (real join,
+`CUSTOMER_MARKET_AGG` + real `TXN_COUNT` per market) both answer
+correctly, and the original golden-set question ("total transaction
+volume by market") still answers correctly -- no regression.
+
 **What full version requires**: (1) a separate, smaller gap found in the
 SAME live-testing pass: "How much revenue came from the Mobile App?"
 answered with a full, UNFILTERED per-channel breakdown rather than a
