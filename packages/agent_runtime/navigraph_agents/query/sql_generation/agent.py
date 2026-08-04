@@ -235,7 +235,7 @@ def _build_from_clause(
     tables: list[str],
     joins: list[JoinSpec],
     schema_by_table: dict[str, str],
-) -> str:
+) -> tuple[str, set[str]]:
     """Build the `FROM ... [JOIN ... ON ...]` clause.
 
     Single-table case: a plain `FROM SCHEMA.TABLE`. Multi-table case: starts
@@ -245,20 +245,43 @@ def _build_from_clause(
     docstring), then walks the join list breadth-first, adding one `JOIN`
     per edge that connects a not-yet-joined table to the growing joined set
     (works for any real join graph the input describes, not just the exact
-    two-table case this phase's worked examples exercise). Any resolved
-    table that ends up unreachable via the provided joins (shouldn't happen
-    given schema_mapping's own guarantee that every non-hub table gets a
-    join back to the hub, but this agent does not blindly trust that
-    either) is appended as a plain comma-join -- not ideal SQL, but a
-    documented, non-crashing fallback rather than silently dropping a
-    resolved table from the query.
+    two-table case this phase's worked examples exercise).
+
+    Returns `(from_clause_sql, unjoined_tables)`. `unjoined_tables` is the
+    set of resolved tables that could NOT be connected via the provided
+    joins.
+
+    REAL BUG, found live (a real "total transaction volume by market"
+    question): this function used to silently append any unreachable
+    table via a plain comma-join -- `FROM A, B` with no `ON` condition at
+    all, i.e. a genuine Cartesian product. `schema_mapping.agent._build_joins`
+    only derives a join when the Ontology agent's knowledge-graph lookup
+    resolved a real `RelationshipConcept` connecting the two tables
+    (`STAGING_TRANSACTIONS`/`STAGING_MARKETS` has no such curated concept
+    yet), so `tables=[STAGING_TRANSACTIONS, STAGING_MARKETS]` with
+    `joins=[]` is a real, live-reproduced case, not a hypothetical one --
+    confirmed live: `SELECT STAGING_MARKETS.NAME, SUM(...) GROUP BY
+    STAGING_MARKETS.NAME FROM STAGING.STAGING_TRANSACTIONS,
+    STAGING.STAGING_MARKETS` returned the SAME grand-total sum for every
+    market, since every transaction row was paired with every market row
+    before the aggregate ran. This function no longer silently emits that
+    SQL -- it now reports which tables couldn't be joined, and
+    `_generate_statements` turns that into a real, non-recoverable
+    `AgentError` instead of a statement that looks like a real per-market
+    breakdown but isn't.
     """
 
     if not tables:
-        return ""
+        return "", set()
 
-    if len(tables) == 1 or not joins:
-        return "FROM " + ", ".join(_qualified_table(t, schema_by_table) for t in tables)
+    if len(tables) == 1:
+        return "FROM " + _qualified_table(tables[0], schema_by_table), set()
+
+    if not joins:
+        return (
+            "FROM " + ", ".join(_qualified_table(t, schema_by_table) for t in tables),
+            set(tables),
+        )
 
     joined_set = {joins[0].right_table}
     from_lines = [f"FROM {_qualified_table(joins[0].right_table, schema_by_table)}"]
@@ -287,12 +310,8 @@ def _build_from_clause(
                 remaining.remove(join)
                 progressed = True
 
-    for table in tables:
-        if table not in joined_set:
-            from_lines[0] += f", {_qualified_table(table, schema_by_table)}"
-            joined_set.add(table)
-
-    return "\n".join(from_lines)
+    unjoined = {table for table in tables if table not in joined_set}
+    return "\n".join(from_lines), unjoined
 
 
 def _build_where_clause(
@@ -569,7 +588,25 @@ class SqlGenerationAgent:
         for column in columns:
             schema_by_table.setdefault(column.table_name, column.schema_name)
 
-        from_clause = _build_from_clause(tables, payload.schema_mapping.joins, schema_by_table)
+        from_clause, unjoined_tables = _build_from_clause(
+            tables, payload.schema_mapping.joins, schema_by_table
+        )
+
+        if unjoined_tables:
+            errors.append(
+                AgentError(
+                    code="unjoined_table_in_multi_table_query",
+                    message=(
+                        f"Table(s) {sorted(unjoined_tables)} could not be connected to the "
+                        f"other resolved table(s) via any provided join; refusing to emit a "
+                        f"comma-join (Cartesian product), which would silently repeat the "
+                        f"same aggregate for every group instead of a real per-group "
+                        f"breakdown"
+                    ),
+                    recoverable=False,
+                )
+            )
+            return [], errors
 
         select_parts = [_qualified_col(c) for c in dimension_columns]
         is_count_question = _is_count_question(payload.original_question)

@@ -925,3 +925,27 @@ never actually gained Recharts despite Phase 1's `DECISIONS.md` naming it,
 and installing a new dependency for the first time this close to a live
 demo wasn't worth the risk for bar/line/single-value rendering simple
 enough to do by hand.
+
+## 2026-08-04 — An unjoined multi-table SQL Generation query fails loudly (`AgentError`), rather than silently falling back to a comma-join Cartesian product
+
+A real, live user-reported bug (LIMITATIONS.md item 83): "total
+transaction volume by market" sometimes resolved `STAGING_TRANSACTIONS` +
+`STAGING_MARKETS` with zero joins (no curated `RelationshipConcept` yet
+covers this exact table pair), and `sql_generation._build_from_clause`
+used to paper over that gap with a plain comma-separated `FROM A, B` --
+syntactically valid SQL that is a genuine Cartesian product, silently
+repeating the same grand-total aggregate across every `GROUP BY` row.
+Two fixes were considered: (a) make `_build_from_clause` smarter and
+infer a join from column-name/FK conventions on the fly, or (b) refuse to
+emit the comma-join at all and report a real, non-recoverable
+`AgentError` instead. (b) was chosen -- it matches this codebase's own
+established convention (`no_resolved_data_source`,
+`cross_source_query_not_supported`, both already real, non-recoverable
+errors in this same agent) of never silently producing plausible-looking
+but wrong data, and it doesn't require guessing at a join key with no
+real, curated backing (the kind of guess that produced item 15's original
+low-recall relationship-matching gap in the first place). The deeper fix
+-- adding a real `RelationshipConcept` for Transaction<->Market to the
+knowledge graph so this specific question resolves a real join instead of
+just failing cleanly -- is left for a separate, deliberate change (a live
+Neo4j re-ingestion), not bundled into this defensive fix.

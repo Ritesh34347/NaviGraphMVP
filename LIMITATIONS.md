@@ -2440,3 +2440,43 @@ workaround. `MINS_TO_BYPASS_MFA` (a real, temporary Snowflake user
 property) was identified as a fast, self-expiring bridge fix during
 triage but was superseded by the permanent key-pair fix before it needed
 to be used.
+
+### 83. RESOLVED: `sql_generation._build_from_clause` silently emitted a Cartesian-product `FROM` clause for unjoined multi-table queries, repeating the same grand-total aggregate for every group
+
+**What was found**: a real, live-reproduced user report -- "What is the
+total transaction volume by market?" returned a bar chart showing the
+identical value (3,722,786,012.55) for every market. Root cause confirmed
+in two steps: (1) Semantic Retrieval's real LLM call non-deterministically
+resolves "market" to `STAGING_MARKETS.NAME` (requiring a join) on some
+runs and to `STAGING_TRANSACTIONS.MARKETID` (single-table, no join needed)
+on others; (2) `schema_mapping._build_joins` derives joins exclusively
+from curated `RelationshipConcept` entries in the knowledge graph, and no
+such concept exists yet for `STAGING_TRANSACTIONS` <-> `STAGING_MARKETS`,
+so Schema Mapping resolves both tables with an empty `joins` list. Given
+that input, `sql_generation._build_from_clause` used to fall back to a
+plain comma-separated `FROM A, B` (a genuine Cartesian product -- every
+transaction row paired with every market row before the `GROUP BY`
+aggregate ran), confirmed live via a direct, manually-constructed
+`POST /agents/query/sql_generation/invoke` call reproducing the exact
+condition (2 tables, columns spanning both, `joins=[]`).
+
+**Resolution**: `_build_from_clause` now returns the set of tables it
+could not connect via the provided joins instead of silently
+comma-joining them; `_generate_statements` turns a non-empty result into
+a real, non-recoverable `AgentError(code="unjoined_table_in_multi_table_query")`
+and returns no SQL statement at all -- matching this codebase's existing
+`no_resolved_data_source`/`cross_source_query_not_supported` convention of
+failing explicitly rather than ever returning data that looks correct but
+isn't. Two new regression tests reproduce the exact live-confirmed
+scenario (2 tables/0 joins, and a 3-table case where one table remains
+unreached despite a real join existing for the other two).
+
+**What full version requires**: this is a defensive fix, not the deeper
+one -- the platform now correctly refuses to answer rather than lying,
+but "total transaction volume by market" still can't be answered via the
+join path until a real `RelationshipConcept` for Transaction<->Market is
+added to the knowledge graph (`navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`)
+and re-ingested. Separately, Semantic Retrieval's non-determinism in which
+column "market" resolves to on a given run is itself a real, open gap
+(no caching/pinning of term resolutions across runs) -- not addressed
+here.

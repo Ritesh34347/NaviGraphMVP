@@ -1054,3 +1054,45 @@ large-result-set failure mode now closed. Every fix in this entry is
 committed, pushed, and independently confirmed via a real subsequent
 CI/CD run or a real harness re-run -- never marked done on inspection
 alone.
+
+## 2026-08-04 — Fixed the SQL grouping bug: `sql_generation._build_from_clause` no longer silently emits a Cartesian-product `FROM` clause for unjoined multi-table queries
+
+A real, live user report: "What is the total transaction volume by
+market?" produced a bar chart showing the identical value
+(3,722,786,012.55) repeated for every market. Investigated live: 3
+repeated real calls to the same question confirmed non-deterministic
+occurrence (Semantic Retrieval's LLM call sometimes resolves "market" to
+`STAGING_MARKETS.NAME`, requiring a join Schema Mapping never produces --
+no curated `RelationshipConcept` covers this table pair yet -- and
+sometimes to `STAGING_TRANSACTIONS.MARKETID`, single-table, no join
+needed). Root cause conclusively confirmed via a direct, manually-built
+`POST /agents/query/sql_generation/invoke` call reproducing the exact
+condition (`tables=[STAGING_TRANSACTIONS, STAGING_MARKETS]`, `joins=[]`):
+the real response was `FROM STAGING.STAGING_TRANSACTIONS,
+STAGING.STAGING_MARKETS` -- a genuine Cartesian product, explaining the
+repeated grand-total exactly.
+
+**Fix**: `_build_from_clause` now returns which resolved tables (if any)
+it could not connect via the provided joins, instead of silently
+appending them with a comma-join. `_generate_statements` treats a
+non-empty result as a real, non-recoverable
+`AgentError(code="unjoined_table_in_multi_table_query")` and returns no
+SQL statement -- matching the agent's own existing
+`no_resolved_data_source`/`cross_source_query_not_supported` precedent of
+failing loudly rather than ever returning data that looks right but
+isn't (see `DECISIONS.md`'s 2026-08-04 entry and `LIMITATIONS.md` item
+83). Two new regression tests
+(`test_unjoined_multi_table_query_is_rejected_not_cartesian_joined`,
+`test_partially_unjoined_multi_table_query_is_also_rejected`) reproduce
+the exact live-confirmed 2-table/0-join case and a 3-table case where one
+table remains unreached despite a real join existing for the other two.
+Full `query`/`understanding` unit-test tiers (113 tests) plus the 2 new
+ones pass; `ruff check` clean.
+
+**What's still open**: this is the defensive fix, not the deeper one --
+"total transaction volume by market" now fails loudly instead of lying,
+but still can't be *answered* via the join path until a real
+`RelationshipConcept` for Transaction<->Market is added to
+`navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` and re-ingested into the
+live Neo4j -- a separate, larger-blast-radius change not bundled into
+this fix.

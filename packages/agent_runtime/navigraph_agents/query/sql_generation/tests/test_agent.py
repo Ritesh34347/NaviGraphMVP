@@ -450,6 +450,113 @@ async def test_multi_table_join_produces_correct_join_clause() -> None:
 
 
 # ---------------------------------------------------------------------------
+# (d2) Real bug found live: "What is the total transaction volume by
+# market?" resolving STAGING_TRANSACTIONS + STAGING_MARKETS with an empty
+# `joins` list (no curated RelationshipConcept exists yet for this table
+# pair) used to silently fall back to a comma-join `FROM A, B` -- a real
+# Cartesian product that made every market's GROUP BY row show the same
+# grand-total sum. This must now be a real, non-recoverable AgentError
+# instead of a statement that looks like a correct per-market breakdown.
+# ---------------------------------------------------------------------------
+
+_UNJOINED_MARKET_COLUMNS = [
+    ResolvedColumnRef(
+        term="transaction value",
+        catalog_column_id="col_total_value",
+        table_name="STAGING_TRANSACTIONS",
+        schema_name="STAGING",
+        column_name="TOTALVALUE",
+        data_type="NUMBER",
+        role="measure",
+    ),
+    ResolvedColumnRef(
+        term="market",
+        catalog_column_id="col_market_name",
+        table_name="STAGING_MARKETS",
+        schema_name="STAGING",
+        column_name="NAME",
+        data_type="TEXT",
+        role="dimension",
+    ),
+]
+
+_UNJOINED_MARKET_DATA_SOURCES = [
+    ResolvedDataSource(
+        table_name="STAGING_TRANSACTIONS",
+        data_source_id="ds_snowflake_prod",
+        source_type="snowflake",
+        reachable=True,
+    ),
+    ResolvedDataSource(
+        table_name="STAGING_MARKETS",
+        data_source_id="ds_snowflake_prod",
+        source_type="snowflake",
+        reachable=True,
+    ),
+]
+
+
+async def test_unjoined_multi_table_query_is_rejected_not_cartesian_joined() -> None:
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question="What is the total transaction volume by market?",
+            tables=["STAGING_TRANSACTIONS", "STAGING_MARKETS"],
+            columns=_UNJOINED_MARKET_COLUMNS,
+            joins=[],
+            resolved_data_sources=_UNJOINED_MARKET_DATA_SOURCES,
+        )
+    )
+
+    assert output.result.statements == []
+    assert len(output.errors) == 1
+    assert output.errors[0].code == "unjoined_table_in_multi_table_query"
+    assert output.errors[0].recoverable is False
+    assert output.confidence == 0.0
+
+    # No comma-separated Cartesian-product FROM clause was ever built.
+    assert "FROM STAGING.STAGING_TRANSACTIONS, STAGING.STAGING_MARKETS" not in str(
+        output.errors[0].message
+    )
+
+
+async def test_partially_unjoined_multi_table_query_is_also_rejected() -> None:
+    """Three tables where the provided join only connects two of them --
+    the trailing table must still trigger the same real error, not a
+    partial comma-join appended to an otherwise-real JOIN clause."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    columns = _JOIN_COLUMNS + [_UNJOINED_MARKET_COLUMNS[1]]
+    data_sources = _JOIN_DATA_SOURCES + [
+        ResolvedDataSource(
+            table_name="STAGING_MARKETS",
+            data_source_id="ds_snowflake_prod",
+            source_type="snowflake",
+            reachable=True,
+        ),
+    ]
+
+    output = await agent.run(
+        _make_input(
+            question="What is total units traded by customer risk level and market?",
+            tables=["CUSTOMER_INFORMATION", "TRANSACTIONS", "STAGING_MARKETS"],
+            columns=columns,
+            joins=[_JOIN_SPEC],
+            resolved_data_sources=data_sources,
+        )
+    )
+
+    assert output.result.statements == []
+    assert len(output.errors) == 1
+    assert output.errors[0].code == "unjoined_table_in_multi_table_query"
+    assert "STAGING_MARKETS" in output.errors[0].message
+
+
+# ---------------------------------------------------------------------------
 # Additional coverage mirroring the sibling agents' thoroughness.
 # ---------------------------------------------------------------------------
 
