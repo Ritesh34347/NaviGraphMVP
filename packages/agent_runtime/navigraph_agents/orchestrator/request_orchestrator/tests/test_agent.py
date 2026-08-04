@@ -379,7 +379,7 @@ def _wire_happy_path(agent: Any) -> None:
                     OptimizedSql(
                         data_source_id="ds-1",
                         sql=real_generated_sql.sql,
-                        params={},
+                        params={"predicate_0": "XATH"},
                         applied_rules=[],
                         estimated_row_count=None,
                     )
@@ -414,7 +414,7 @@ def _wire_happy_path(agent: Any) -> None:
                         data_source_id="ds-1",
                         route="direct_connector",
                         sql=optimized.sql,
-                        params={},
+                        params={"predicate_0": "XATH"},
                         timeout_seconds=30,
                         max_rows=10_000,
                         read_only_verified=True,
@@ -506,6 +506,12 @@ async def test_happy_path_returns_answered_with_full_result() -> None:
         "rationale": "test",
     }
     assert output.result.follow_up_suggestions == ["What about last quarter?"]
+    # The real, executed SQL (post-optimization, exactly what Data Federation
+    # ran) is threaded through to the caller -- what the web UI's "View SQL"
+    # panel renders, not a mirror of some earlier, unoptimized SQL Generation
+    # draft.
+    assert output.result.generated_sql == agent._execution_planning_agent.run.return_value.result.plans[0].sql
+    assert output.result.sql_params == {"predicate_0": "XATH"}
     assert output.result.session_id.startswith("sess_")
     assert output.confidence == 1.0
     # Lineage recorded for every stage that ran.

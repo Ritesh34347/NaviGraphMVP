@@ -40,6 +40,8 @@ interface AskResult {
   follow_up_suggestions?: string[];
   clarifying_question?: string | null;
   failure_reason?: string | null;
+  generated_sql?: string | null;
+  sql_params?: Record<string, unknown>;
 }
 
 interface AskResponse {
@@ -144,6 +146,27 @@ function SingleValue({ chart, columns, rows }: { chart: ChartSpec; columns: stri
   return <div className="single-value">{String(rows[0][chart.y_column])}</div>;
 }
 
+function SqlView({ sql, params }: { sql: string; params: Record<string, unknown> }) {
+  const paramEntries = Object.entries(params);
+  return (
+    <details className="sql-view">
+      <summary>View SQL query</summary>
+      <pre className="sql-code">{sql}</pre>
+      {paramEntries.length > 0 && (
+        <div className="sql-params">
+          Bound parameters:{" "}
+          {paramEntries.map(([key, value], i) => (
+            <span key={key}>
+              <code>{key} = {JSON.stringify(value)}</code>
+              {i < paramEntries.length - 1 ? ", " : ""}
+            </span>
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
 function DataTable({ columns, rows }: { columns: string[]; rows: Record<string, unknown>[] }) {
   if (columns.length === 0 || rows.length === 0) return null;
   return (
@@ -196,6 +219,7 @@ function AnsweredBubble({ result, onSuggestionClick }: { result: AskResult; onSu
       {chart?.chart_type === "line" && <LineChart chart={chart} columns={columns} rows={rows} />}
       {chart?.chart_type === "single_value" && <SingleValue chart={chart} columns={columns} rows={rows} />}
       <DataTable columns={columns} rows={rows} />
+      {result.generated_sql && <SqlView sql={result.generated_sql} params={result.sql_params ?? {}} />}
       {(result.follow_up_suggestions ?? []).length > 0 && (
         <div className="suggestions">
           {result.follow_up_suggestions!.map((q, i) => (

@@ -1037,6 +1037,8 @@ class RequestOrchestratorAgent:
                     follow_up_suggestions=[
                         s.question for s in follow_up_output.result.suggestions
                     ],
+                    generated_sql=real_plan.sql,
+                    sql_params=real_plan.params,
                 ),
                 span=span,
             )

@@ -1096,3 +1096,33 @@ but still can't be *answered* via the join path until a real
 `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` and re-ingested into the
 live Neo4j -- a separate, larger-blast-radius change not bundled into
 this fix.
+
+## 2026-08-04 — Added a real "View SQL query" panel to the web UI, showing the exact executed SQL for every answer
+
+Directly requested after the grouping-bug investigation above: the user
+asked to display the SQL used for every question, for real transparency
+into what actually ran. `RequestOrchestratorResult` gained
+`generated_sql: str | None` and `sql_params: dict[str, Any]`, populated
+in `request_orchestrator/agent.py`'s final `outcome="answered"` branch
+from `real_plan.sql`/`real_plan.params` -- the real `ExecutionPlan` Data
+Federation actually executed (post-optimization: LIMIT injected, audit
+comment added), not SQL Generation's earlier, unoptimized draft. No
+gateway change was needed (`/ask` already forwards the orchestrator's
+result verbatim). `web/src/app/ChatDemo.tsx` renders it in a new
+collapsed-by-default `<details className="sql-view">` panel (new CSS in
+`globals.css`, mirroring the existing "View data" panel's interaction
+pattern exactly) placed after the data table, with bound parameter
+values rendered separately from the raw SQL text.
+
+Extended `request_orchestrator/tests/test_agent.py`'s existing
+`test_happy_path_returns_answered_with_full_result` (rather than adding a
+new test) to assert `generated_sql`/`sql_params` are threaded through
+correctly, including a real non-empty bound parameter
+(`{"predicate_0": "XATH"}`) to prove params round-trip, not just the SQL
+text. Full `packages/agent_runtime/` suite (219 tests) and `web`'s
+`tsc --noEmit` both pass clean; `ruff check` clean on every touched
+Python file.
+
+See `DECISIONS.md`'s matching 2026-08-04 entry for why the *executed*
+plan's SQL was chosen over SQL Generation's earlier draft, and why the
+cached demo-fallback path deliberately leaves `generated_sql` null.

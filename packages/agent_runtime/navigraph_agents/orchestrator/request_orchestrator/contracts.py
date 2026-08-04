@@ -82,6 +82,8 @@ class RequestOrchestratorResult(BaseModel):
     narrative: str | None = None
     narrative_errors: list[str] = Field(default_factory=list)
     follow_up_suggestions: list[str] = Field(default_factory=list)
+    generated_sql: str | None = None
+    sql_params: dict[str, Any] = Field(default_factory=dict)
 
     # outcome == "needs_clarification"
     clarifying_question: str | None = None

@@ -949,3 +949,25 @@ low-recall relationship-matching gap in the first place). The deeper fix
 knowledge graph so this specific question resolves a real join instead of
 just failing cleanly -- is left for a separate, deliberate change (a live
 Neo4j re-ingestion), not bundled into this defensive fix.
+
+## 2026-08-04 — The web UI now shows the exact executed SQL for every answered question, sourced from Execution Planning's real plan, not SQL Generation's earlier draft
+
+Directly prompted by the item 83 investigation above: the fastest way for
+a user to catch (or rule out) a wrong/misleading answer is to see the real
+SQL that actually ran, not just trust the narrative. `RequestOrchestratorResult`
+gained `generated_sql`/`sql_params`, populated from `real_plan.sql`/
+`real_plan.params` (the `ExecutionPlan` Execution Planning produced and
+Data Federation actually executed) rather than the earlier
+`SqlGenerationResult.statements[0].sql` -- the plan is the literal,
+final statement (LIMIT injected, trace/tenant audit comment added,
+SELECT-only-verified) that ran against Snowflake, so showing it is showing
+the truth, not an intermediate draft that Optimization/Guardrail may still
+have altered. The gateway needed no change (`/ask` already forwards
+`RequestOrchestratorOutput` verbatim). `ChatDemo.tsx` renders it in a new
+collapsed-by-default `<details>` panel (mirroring the existing "View data"
+panel's exact interaction pattern) placed after the data table, with bound
+parameter values shown separately from the SQL text itself so a user can
+see both the query shape and the actual literal values it ran with. The
+cached demo-fallback path (item 81) intentionally leaves `generated_sql`
+null -- the captured golden-set cache never stored the SQL that produced
+it, and fabricating one would defeat the entire point of this feature.
