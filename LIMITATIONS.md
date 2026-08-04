@@ -2831,8 +2831,17 @@ item 88's "thin table" collapse partly was -- `STAGING_X`/`X` being the
 same real table is an already-established, confirmed structural fact
 about this dataset (item 14), not a coincidence. New regression test:
 `test_bare_table_columns_redirect_to_the_staging_prefixed_duplicate`.
-275 tests pass (up from 274), `ruff check` clean. Live verification of
-`gq_009` against the deployed system is pending this fix's deployment.
+275 tests pass (up from 274), `ruff check` clean. **Live-verified after
+deployment**: `gq_009` no longer hits `unjoined_table_in_multi_table_query`
+at all -- Schema Mapping now correctly resolves it to a single table. The
+question now fails for a real, DIFFERENT, and entirely legitimate reason:
+`guardrail.pii_exposure_checker` denies it (`pii_column_access_denied`),
+since answering "how has the customer base's risk profile changed"
+requires grouping by the real, tagged-PII `CUSTOMERID` column (item 25),
+and the `analyst` role calling it is correctly not authorized to see PII
+-- the same real access-control behavior already documented working as
+designed for other golden questions in item 38. This is the guardrail
+layer functioning correctly, not a remaining correctness bug.
 
 **What full version requires**: this merge only fires when BOTH the bare
 and `STAGING_`-prefixed copies are ALREADY resolved as distinct tables in
@@ -2840,4 +2849,8 @@ the SAME query -- it does not (and cannot) prevent Semantic Retrieval from
 non-deterministically picking one schema variant over the other in the
 first place; item 14's underlying question (which schema should be
 canonical for business-term resolution going forward) remains open and
-unaddressed by this fix.
+unaddressed by this fix. Separately, whether "customer base risk profile
+trend" genuinely needs per-customer `CUSTOMERID` in the query at all
+(vs. an aggregate-only breakdown by `RISKLEVEL` and time period that
+would never touch PII) is a real, debatable resolution-quality question,
+not addressed here.
