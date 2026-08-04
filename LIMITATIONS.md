@@ -2854,3 +2854,74 @@ trend" genuinely needs per-customer `CUSTOMERID` in the query at all
 (vs. an aggregate-only breakdown by `RISKLEVEL` and time period that
 would never touch PII) is a real, debatable resolution-quality question,
 not addressed here.
+
+### 90. NEW: a second real data source (a synthetic e-commerce star schema) is registered, exposing a real gap this system already knew about (item 21) -- cross-database routing is a schema-name workaround, not a real fix
+
+**What was added**: a real, synthetic e-commerce dataset -- 5 dimension
+tables (`DIM_CUSTOMER`, `DIM_PRODUCT`, `DIM_DATE`, `DIM_CHANNEL`,
+`DIM_PROMOTION`) and 2 fact tables (`FACT_ORDERS`, `FACT_ORDER_ITEMS`) in
+a real, declared PK/FK dimensional (star) schema -- was created and
+populated in a NEW Snowflake database, `ECOMMERCE_POC` (same account,
+same `SHUBHSNFLK` service user, using its separately-granted
+`ACCOUNTADMIN` role purely for the one-off `CREATE DATABASE`/`CREATE
+TABLE` -- the deployed agent-runtime's normal connection still only ever
+uses the read-only `FIDELITY_ANALYST_ROLE`). Registered as a real
+`DataSource` under a NEW, separate tenant (`ecommerce-poc`) -- deliberately
+NOT merged into the existing `navikenz-poc` tenant, to avoid introducing
+a second data-source-per-tenant ambiguity into item 42's already-documented
+"exactly one match or fail" auto-resolution for the existing brokerage
+demo. Crawled successfully via the real, existing
+`navigraph_catalog.ingestion.snowflake_crawler`.
+
+**The real gap this exposed**: item 21 ("Connector credential routing is
+global-env-var-based, not per-`DataSource`") turned out to also cover
+which DATABASE a connection points at, not just which credentials -- the
+deployed agent-runtime's Snowflake connection is permanently configured
+(via `SNOWFLAKE_DATABASE` env var) to `FIDELITY_POC`. A second data
+source in a genuinely different database can't rely on the connection's
+default database context at all. **Workaround applied**: rather than
+building full per-`DataSource` connection routing (a real, larger
+feature), the crawled `catalog_schemas.name` for this data source was
+corrected from the crawler's raw `"CORE"` to a fully-qualified
+`"ECOMMERCE_POC.CORE"` -- since `sql_generation._qualified_table` does
+plain `f"{schema_name}.{table_name}"` string concatenation, this makes it
+emit a real, valid 3-part Snowflake identifier
+(`ECOMMERCE_POC.CORE.TABLE_NAME`) that resolves correctly regardless of
+the shared connection's configured default database, PROVIDED the role
+has real grants on the second database too (granted:
+`GRANT USAGE ON DATABASE ECOMMERCE_POC` / `... ON SCHEMA CORE` /
+`GRANT SELECT ON ALL TABLES IN SCHEMA CORE` / `... ON FUTURE TABLES ...`
+to `FIDELITY_ANALYST_ROLE`, confirmed idempotent and least-privilege).
+
+**Relationship concepts added**: 9 new `RelationshipConcept` entries for
+this star schema (`Order involves Customer`, `Order happens on Date`,
+`Order uses Channel`, `OrderItem belongs to Order`, `OrderItem involves
+Product`, `OrderItem involves Customer`, `OrderItem happens on Date`,
+`OrderItem uses Channel`, `OrderItem uses Promotion`) -- each keyed on a
+real, uniquely-named surrogate key (e.g. `CUSTOMER_ID`) that appears on
+exactly the intended fact/dimension pair, so item 87's ambiguity guard
+never has anything to arbitrate here (unlike the brokerage schema's
+coincidentally-shared `MARKETID`). Live-verified: a multi-table question
+("total revenue by channel") correctly hit `unjoined_table_in_multi_table_query`
+BEFORE these concepts were synced (proving the safety guards generalize
+correctly to a brand-new dataset with zero curated relationships), and
+resolving after they're synced is expected but not yet re-verified as of
+this entry (pending the code deploy + re-sync).
+
+**What full version requires**: (1) no business glossary was crawled for
+this data source (no `SCHEMA_ENRICHMENT`-equivalent exists for synthetic
+e-commerce data), so EVERY entity resolves via Semantic Retrieval's LLM
+fallback rather than Ontology's deterministic glossary path -- more
+LLM calls, more of the same real non-determinism already documented for
+the brokerage demo (items 38/44), not a new kind of gap. (2) No Tier-1
+reference-data nodes (e.g. real `CATEGORY`/`CHANNEL_NAME`/`LOYALTY_TIER`
+values) were crawled into the knowledge graph for this data source, so
+item 86's named-instance matching (`entity_matches_reference_node`) has
+no real e-commerce reference values to match against yet -- a real,
+same-shaped follow-up to item 86's original brokerage-only reference-data
+crawl, not attempted here. (3) The schema-name-qualification workaround is
+specific to this one data source; a genuine third data source in yet
+another database would need the identical manual correction repeated,
+underscoring that real per-`DataSource` connection routing (item 21) is
+still the correct, larger fix, not permanently deferred by this
+workaround.

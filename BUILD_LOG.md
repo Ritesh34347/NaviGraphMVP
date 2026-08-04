@@ -1367,3 +1367,48 @@ fact about this dataset (item 14), so merging is the correct default
 whenever this exact pattern is detected. New test:
 `test_bare_table_columns_redirect_to_the_staging_prefixed_duplicate`.
 275 tests pass (up from 274), `ruff check` clean.
+
+## 2026-08-04 — Built and registered a second real data source: a synthetic e-commerce star schema in a new Snowflake database
+
+Built a real, synthetic e-commerce dataset per the user's request: 5
+dimension tables (`DIM_CUSTOMER`, `DIM_PRODUCT`, `DIM_DATE`,
+`DIM_CHANNEL`, `DIM_PROMOTION`) + 2 fact tables (`FACT_ORDERS`,
+`FACT_ORDER_ITEMS`), real declared PK/FK constraints, a genuine
+dimensional/star schema (`FACT_ORDER_ITEMS` fans out from both facts to
+every dimension). Created in a brand-new Snowflake database
+(`ECOMMERCE_POC`, same account/service user) via a one-off
+`ACCOUNTADMIN`-scoped script (`SHUBHSNFLK` has both `FIDELITY_ANALYST_ROLE`
+and `ACCOUNTADMIN` -- confirmed live via `SHOW GRANTS TO USER`), populated
+with pure-stdlib-generated synthetic data (~100 customers, ~300 products,
+~3000 orders, no Faker/pandas dependency). Granted `FIDELITY_ANALYST_ROLE`
+real `USAGE`/`SELECT` grants (current + future tables) on the new
+database/schema, then registered it as a real `DataSource` under a new
+tenant (`ecommerce-poc`), crawled its schema into the metadata catalog via
+the existing `snowflake_crawler`, and corrected the crawled schema name to
+a fully-qualified `"ECOMMERCE_POC.CORE"` string as a real, minimal
+workaround for item 21's connection-routing gap (see DECISIONS.md entry
+this same date for the full reasoning).
+
+Added 9 new `RelationshipConcept` entries to
+`packages/knowledge_graph/navigraph_kg/ontology.py` covering the full
+e-commerce star schema's real FK relationships (`RELATIONSHIP_CONCEPTS`
+now 15 total, up from 6). Updated `test_ontology.py` and
+`test_pipeline.py` to match. Full suite: `python -m pytest
+packages/agent_runtime/ packages/knowledge_graph/ -q` -- **277 passed, 5
+skipped**, confirming no regressions. `ruff check
+packages/knowledge_graph/` clean.
+
+Live-verified, BEFORE these new relationship concepts were synced to
+Neo4j, that a real multi-table e-commerce question ("total revenue by
+channel") correctly triggers `unjoined_table_in_multi_table_query` rather
+than silently Cartesian-joining or fabricating an answer -- proving
+today's earlier join-safety fixes (items 85-89) generalize correctly to a
+brand-new schema with zero curated relationships, not just to the
+brokerage dataset they were built against. Documented as
+`LIMITATIONS.md` item 90.
+
+Remaining for this task, not yet done as of this entry: commit + push
+(both remotes, per the standing dual-repo instruction), deploy, re-run
+`_sync_relationship_concepts` for `tenant_id="ecommerce-poc"` against the
+live Neo4j, and re-test the same e-commerce question live to confirm a
+real join now resolves.

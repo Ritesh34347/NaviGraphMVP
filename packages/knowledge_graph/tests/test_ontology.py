@@ -63,8 +63,8 @@ class TestApplyConstraints:
 
 
 class TestRelationshipConcepts:
-    def test_has_exactly_the_six_seed_entries(self) -> None:
-        assert len(RELATIONSHIP_CONCEPTS) == 6
+    def test_has_exactly_the_fifteen_seed_entries(self) -> None:
+        assert len(RELATIONSHIP_CONCEPTS) == 15
 
     def test_every_entry_has_the_expected_keys(self) -> None:
         expected_keys = {
@@ -94,6 +94,30 @@ class TestRelationshipConcepts:
     def test_contains_transaction_happens_in_market(self) -> None:
         names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
         assert "Transaction happens in Market" in names
+
+    def test_contains_all_nine_ecommerce_star_schema_concepts(self) -> None:
+        names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
+        assert names.issuperset(
+            {
+                "Order involves Customer",
+                "Order happens on Date",
+                "Order uses Channel",
+                "OrderItem belongs to Order",
+                "OrderItem involves Product",
+                "OrderItem involves Customer",
+                "OrderItem happens on Date",
+                "OrderItem uses Channel",
+                "OrderItem uses Promotion",
+            }
+        )
+
+    def test_orderitem_belongs_to_order_uses_order_id_as_the_shared_join_key(self) -> None:
+        concept = next(
+            c for c in RELATIONSHIP_CONCEPTS if c["name"] == "OrderItem belongs to Order"
+        )
+        assert concept["realizing_table"] == "FACT_ORDER_ITEMS"
+        assert concept["subject_key_column"] == "ORDER_ID"
+        assert concept["object_key_column"] == "ORDER_ID"
 
     def test_transaction_happens_in_market_uses_marketid_as_the_shared_join_key(self) -> None:
         concept = next(

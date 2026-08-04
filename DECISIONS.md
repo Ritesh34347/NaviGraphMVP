@@ -1124,3 +1124,32 @@ only fires for a table pair matching this specific, confirmed pattern --
 it does not generalize to unrelated same-named tables, and does not
 address why Semantic Retrieval picked the bare schema in the first place
 (item 14's canonical-schema question remains open).
+
+## 2026-08-04 — A second real data source (synthetic e-commerce star schema) is registered under its own tenant, using a schema-name-qualification workaround rather than building real per-`DataSource` connection routing
+
+Building the requested e-commerce demo dataset (real Snowflake tables,
+real PK/FK, star schema, populated with synthetic data) surfaced a
+genuine architectural gap this session's own `LIMITATIONS.md` item 21
+had already named but never had to confront directly: the deployed
+agent-runtime's Snowflake connection is configured via a single, global
+`SNOWFLAKE_DATABASE` env var, so any additional `DataSource` in a
+different database has no way to make the shared connection point at it.
+Two options were weighed: (a) build real per-`DataSource` connection
+routing now (a correct, larger feature -- a connection pool keyed by
+data source, credentials resolved per-request), or (b) exploit
+`sql_generation._qualified_table`'s existing plain string concatenation
+(`f"{schema_name}.{table_name}"`) by storing a fully-qualified
+`"ECOMMERCE_POC.CORE"` string directly in the catalog's `schema_name`
+field, producing a valid 3-part Snowflake identifier that resolves
+correctly regardless of the connection's default database, given the
+connecting role has real grants on the second database too. (b) was
+chosen: it required zero changes to any agent's code, is fully
+reversible, and real per-`DataSource` routing remains valuable
+future work precisely because a third data source in a third database
+would need the identical manual correction repeated -- this workaround
+does not pretend to be that fix. Separately, the new dataset was
+registered under a brand-new tenant (`ecommerce-poc`), not merged into
+the existing `navikenz-poc` tenant, specifically to avoid introducing a
+second-data-source ambiguity into item 42's already-documented
+"exactly one match or fail" auto-resolution behavior for the existing
+brokerage demo -- a real, deliberate scoping choice, not an oversight.

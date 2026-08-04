@@ -210,4 +210,96 @@ RELATIONSHIP_CONCEPTS: list[dict[str, str]] = [
         "subject_key_column": "ISIN",
         "object_key_column": "ISIN",
     },
+    # ------------------------------------------------------------------
+    # ECOMMERCE_POC star schema (a second, separate real data source --
+    # tenant_id="ecommerce-poc" -- registered alongside the brokerage
+    # FIDELITY_POC data; see BUILD_LOG.md's 2026-08-04 e-commerce entry).
+    # Unlike the brokerage entries above, every key here is a real,
+    # uniquely-named surrogate key (e.g. `CUSTOMER_ID`) that appears on
+    # exactly the fact/dimension pair it's meant to join -- no other
+    # resolved table in this schema shares the exact same column name for
+    # a different reason, so `_build_joins`'s ambiguity guard (item 87)
+    # never has anything to arbitrate between here.
+    # ------------------------------------------------------------------
+    {
+        "name": "Order involves Customer",
+        "subject_label": "Order",
+        "predicate": "INVOLVES",
+        "object_label": "Customer",
+        "realizing_table": "FACT_ORDERS",
+        "subject_key_column": "CUSTOMER_ID",
+        "object_key_column": "CUSTOMER_ID",
+    },
+    {
+        "name": "Order happens on Date",
+        "subject_label": "Order",
+        "predicate": "HAPPENS_ON",
+        "object_label": "Date",
+        "realizing_table": "FACT_ORDERS",
+        "subject_key_column": "DATE_ID",
+        "object_key_column": "DATE_ID",
+    },
+    {
+        "name": "Order uses Channel",
+        "subject_label": "Order",
+        "predicate": "USES",
+        "object_label": "Channel",
+        "realizing_table": "FACT_ORDERS",
+        "subject_key_column": "CHANNEL_ID",
+        "object_key_column": "CHANNEL_ID",
+    },
+    {
+        "name": "OrderItem belongs to Order",
+        "subject_label": "OrderItem",
+        "predicate": "BELONGS_TO",
+        "object_label": "Order",
+        "realizing_table": "FACT_ORDER_ITEMS",
+        "subject_key_column": "ORDER_ID",
+        "object_key_column": "ORDER_ID",
+    },
+    {
+        "name": "OrderItem involves Product",
+        "subject_label": "OrderItem",
+        "predicate": "INVOLVES",
+        "object_label": "Product",
+        "realizing_table": "FACT_ORDER_ITEMS",
+        "subject_key_column": "PRODUCT_ID",
+        "object_key_column": "PRODUCT_ID",
+    },
+    {
+        "name": "OrderItem involves Customer",
+        "subject_label": "OrderItem",
+        "predicate": "INVOLVES",
+        "object_label": "Customer",
+        "realizing_table": "FACT_ORDER_ITEMS",
+        "subject_key_column": "CUSTOMER_ID",
+        "object_key_column": "CUSTOMER_ID",
+    },
+    {
+        "name": "OrderItem happens on Date",
+        "subject_label": "OrderItem",
+        "predicate": "HAPPENS_ON",
+        "object_label": "Date",
+        "realizing_table": "FACT_ORDER_ITEMS",
+        "subject_key_column": "DATE_ID",
+        "object_key_column": "DATE_ID",
+    },
+    {
+        "name": "OrderItem uses Channel",
+        "subject_label": "OrderItem",
+        "predicate": "USES",
+        "object_label": "Channel",
+        "realizing_table": "FACT_ORDER_ITEMS",
+        "subject_key_column": "CHANNEL_ID",
+        "object_key_column": "CHANNEL_ID",
+    },
+    {
+        "name": "OrderItem uses Promotion",
+        "subject_label": "OrderItem",
+        "predicate": "USES",
+        "object_label": "Promotion",
+        "realizing_table": "FACT_ORDER_ITEMS",
+        "subject_key_column": "PROMOTION_ID",
+        "object_key_column": "PROMOTION_ID",
+    },
 ]
