@@ -54,8 +54,17 @@ include = ["navigraph_agents*"]
 # this in local dev since it references the source tree directly rather
 # than copying files, but the Docker image's real `pip install .` exposed
 # it as a genuine FileNotFoundError at container startup.
+#
+# REAL BUG, hit again live (LIMITATIONS.md item 81's follow-up):
+# `request_orchestrator/demo_fallback_data.json` hit the exact same gap
+# the comment above already documents -- `pip install -e` in every local
+# test run masked it completely, and it only surfaced as a real
+# `FileNotFoundError` inside the live container once the demo fallback
+# was actually enabled and exercised for real. Added `**/*.json` here
+# rather than a narrower, single-file pattern, so any future agent data
+# file hits this once, not every time a new one is added.
 [tool.setuptools.package-data]
-navigraph_agents = ["**/prompts/*.md"]
+navigraph_agents = ["**/prompts/*.md", "**/*.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

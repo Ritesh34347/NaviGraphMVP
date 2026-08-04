@@ -1,6 +1,17 @@
 # Real values from infra/.env's SNOWFLAKE_* settings (non-secret half --
 # SNOWFLAKE_PASSWORD stays in Key Vault via
 # secretproviderclass-agent-runtime.yaml, never here).
+#
+# REAL CHANGE, 2026-08-04 (LIMITATIONS.md item 81's follow-up): switched
+# from password to key-pair auth. The real service account (SHUBHSNFLK)
+# started requiring MFA, which blocks password-based programmatic login
+# entirely -- key-pair auth is exempt from MFA by design (Snowflake's own
+# recommended approach for service/automated accounts), and this
+# connector already supported it (see connector_sdk/snowflake/auth.py,
+# built in Phase 2). SNOWFLAKE_PRIVATE_KEY_PATH points at the CSI
+# driver's file mount for the new SNOWFLAKE-PRIVATE-KEY Key Vault secret
+# (see secretproviderclass-agent-runtime.yaml) -- auth.py reads this as a
+# real filesystem path, not an env var value.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -12,4 +23,5 @@ data:
   SNOWFLAKE_WAREHOUSE: FIDELITY_WH
   SNOWFLAKE_DATABASE: FIDELITY_POC
   SNOWFLAKE_ROLE: FIDELITY_ANALYST_ROLE
-  SNOWFLAKE_AUTH_METHOD: password
+  SNOWFLAKE_AUTH_METHOD: key_pair
+  SNOWFLAKE_PRIVATE_KEY_PATH: /mnt/secrets-store/SNOWFLAKE-PRIVATE-KEY

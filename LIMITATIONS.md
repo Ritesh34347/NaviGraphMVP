@@ -2369,3 +2369,74 @@ account access issue is fully resolved and confirmed stable, rather than
 letting a "demo mode" mechanism linger in the real production code path
 indefinitely. `NAVIGRAPH_DEMO_FALLBACK` must stay unset (off) in any
 context other than a deliberate, time-boxed demo.
+
+**Follow-up, found live enabling this for real (2026-08-04)**: the very
+first real request with `NAVIGRAPH_DEMO_FALLBACK=true` returned a real
+`500`. Root cause: `demo_fallback_data.json` hit the *exact same*
+packaging gap `packages/agent_runtime/pyproject.toml`'s own
+`[tool.setuptools.package-data]` comment already documents for
+`prompts/*.md` files -- a real (non-editable) `pip install .` silently
+drops any non-`.py` file from the installed package unless its glob is
+explicitly declared, and every local test run (`pip install -e`) masked
+this completely since editable installs reference the source tree
+directly. Confirmed live via the agent-runtime pod's own traceback:
+`FileNotFoundError` for the exact real path inside
+`site-packages/navigraph_agents/...`. Fixed by adding `"**/*.json"` to
+the existing package-data glob (a general fix, not a one-off for this
+specific file, so a future agent data file doesn't hit the same gap
+again) and rebuilding/redeploying the real image.
+
+**Separately, in the course of applying the key-pair auth fix (below),
+a self-inflicted bug**: applying `configmap-snowflake-patch.yaml` directly
+via `kubectl apply -f` (instead of through a real `kustomize build`)
+replaced the entire live `navigraph-app-env` ConfigMap's `data` map with
+only this patch file's own keys -- `ConfigMap.data` has no merge/patch
+semantics at the Kubernetes API level; only `kustomize build`'s own
+patch pipeline merges partial patch files like this one with the base
+and other patches. This silently wiped `POSTGRES_HOST` (and every other
+key normally supplied by `configmap-postgres-patch.yaml` and the base
+ConfigMap), breaking catalog lookups entirely
+(`psycopg.OperationalError: failed to resolve host 'postgres'`) until
+caught and fixed by building the real, full `kustomize build` output and
+applying that instead. **Lesson**: never `kubectl apply -f` a file that
+lives under a kustomize overlay's `patches:` list directly -- always
+apply the full rendered `kustomize build` output (or `kubectl apply -k`),
+even for an urgent live hotfix.
+
+### 82. RESOLVED: real Snowflake service-account access broken twice in succession, for reasons entirely outside this project's code -- fixed via key-pair authentication
+
+**What was found**: continuing from item 81's original trial-expiration
+finding, once the trial/billing issue was resolved on the account side,
+a *second*, different real blocker appeared: Snowflake began requiring
+MFA for the `SHUBHSNFLK` service user, which categorically blocks
+password-based programmatic login (`"Multi-factor authentication is
+required for this account"`, confirmed live via
+`query.data_source_discovery`'s connectivity check). A real, live
+`DESC USER SHUBHSNFLK` (run by the product owner) confirmed `HAS_MFA:
+true` (an MFA method genuinely enrolled) and `HAS_KEYPAIR: false` --
+`MFA_ENROLLMENT = OPTIONAL` alone (a real authentication-policy change
+already applied) does not un-enroll an already-enrolled method.
+
+**Resolution**: switched the connector to key-pair authentication
+(`connector_sdk/snowflake/auth.py`'s existing, already-built `key_pair`
+path from Phase 2) -- Snowflake exempts key-pair auth from MFA entirely,
+by design, since it's the vendor's own recommended mechanism for
+service/automated accounts. Concretely: generated a real RSA key pair;
+the product owner registered the public key on `SHUBHSNFLK` via `ALTER
+USER ... SET RSA_PUBLIC_KEY=...` (a real account security-setting
+change, correctly done by the account owner, not automated by this
+agent); the private key was added as a new real Key Vault secret
+(`SNOWFLAKE-PRIVATE-KEY`), mounted as a file (not an env var -- `auth.py`
+reads `SNOWFLAKE_PRIVATE_KEY_PATH` as a real filesystem path) via
+`secretproviderclass-agent-runtime.yaml`; `SNOWFLAKE_AUTH_METHOD` was
+switched from `password` to `key_pair` in `configmap-snowflake-patch.yaml`.
+Applied live first (Key Vault secret, SecretProviderClass, ConfigMap,
+pod restarts), confirmed via a real `query.data_source_discovery` call
+against the live cluster, then committed to source.
+
+**What full version requires**: nothing further planned for the auth
+mechanism itself -- key-pair auth is the correct, permanent fix, not a
+workaround. `MINS_TO_BYPASS_MFA` (a real, temporary Snowflake user
+property) was identified as a fast, self-expiring bridge fix during
+triage but was superseded by the permanent key-pair fix before it needed
+to be used.
