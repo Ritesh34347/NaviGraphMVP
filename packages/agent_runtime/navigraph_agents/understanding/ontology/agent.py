@@ -18,9 +18,43 @@ from __future__ import annotations
 
 import time
 
-from navigraph_kg.api import get_relationship_concept, resolve_business_term
+from navigraph_kg.api import (
+    entity_matches_reference_node,
+    get_relationship_concept,
+    resolve_business_term,
+)
 from navigraph_kg.client import Neo4jClient
-from navigraph_kg.ontology import RELATIONSHIP_CONCEPTS
+from navigraph_kg.ontology import (
+    NODE_ASSET,
+    NODE_CHANNEL,
+    NODE_CUSTOMER_TYPE,
+    NODE_EXCHANGE,
+    NODE_INDUSTRY,
+    NODE_INVESTMENT_CAPACITY_BAND,
+    NODE_MARKET,
+    NODE_RISK_LEVEL,
+    NODE_SECTOR,
+    RELATIONSHIP_CONCEPTS,
+)
+
+# Labels that correspond to real, crawled Tier-1 reference-data node types
+# (see `navigraph_kg.ingestion.pipeline._sync_reference_data`) -- these are
+# the only labels `entity_matches_reference_node` is ever worth querying
+# for; "Customer"/"Transaction" (the other subject labels seen in
+# `RELATIONSHIP_CONCEPTS`) are deliberately excluded from the graph
+# entirely (customer/transaction-cardinality data), so no such node type
+# exists to match against.
+_REFERENCE_NODE_LABELS = {
+    NODE_ASSET,
+    NODE_MARKET,
+    NODE_EXCHANGE,
+    NODE_SECTOR,
+    NODE_INDUSTRY,
+    NODE_CHANNEL,
+    NODE_CUSTOMER_TYPE,
+    NODE_RISK_LEVEL,
+    NODE_INVESTMENT_CAPACITY_BAND,
+}
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
 from navigraph_shared.telemetry import (
     get_tracer,
@@ -207,12 +241,43 @@ class OntologyAgent:
 
         return concept_resolutions, unresolved_terms
 
+    def _label_or_instance_matches(
+        self, label: str, entities: list[str], *, tenant_id: str
+    ) -> bool:
+        """A relationship concept's label matches if either (a) the label
+        word itself appears among the extracted entities (the original
+        check), or (b) -- REAL BUG, found live -- an entity names a real,
+        specific instance of that category instead of the category word
+        (e.g. "Athens Exchange" rather than "market"). `_label_matches_entities`
+        alone can never bridge that gap; a real question naming a specific
+        market/asset/channel/risk level/etc. by name would otherwise never
+        resolve the relationship it needs. (b) is only ever checked for
+        labels that correspond to a real, crawled reference-data node type
+        (`_REFERENCE_NODE_LABELS`) -- "Customer"/"Transaction" have no such
+        node type at all (customer/transaction-cardinality data is
+        deliberately excluded from the graph), so querying for them would
+        just waste a call.
+        """
+
+        if _label_matches_entities(label, entities):
+            return True
+        if label not in _REFERENCE_NODE_LABELS:
+            return False
+        return any(
+            entity_matches_reference_node(
+                self._client, tenant_id=tenant_id, label=label, entity=entity
+            )
+            for entity in entities
+        )
+
     def _resolve_relationships(
         self, entities: list[str], *, tenant_id: str
     ) -> list[RelationshipResolution]:
         """Scan every hand-curated `RelationshipConcept` seed for one whose
-        subject AND object label both appear among the input entities, and
-        resolve each match against the real graph."""
+        subject AND object label both appear among the input entities
+        (directly, or via a named real instance -- see
+        `_label_or_instance_matches`), and resolve each match against the
+        real graph."""
 
         relationship_resolutions: list[RelationshipResolution] = []
 
@@ -220,9 +285,9 @@ class OntologyAgent:
             subject_label = concept["subject_label"]
             object_label = concept["object_label"]
 
-            if not _label_matches_entities(subject_label, entities):
+            if not self._label_or_instance_matches(subject_label, entities, tenant_id=tenant_id):
                 continue
-            if not _label_matches_entities(object_label, entities):
+            if not self._label_or_instance_matches(object_label, entities, tenant_id=tenant_id):
                 continue
 
             record = get_relationship_concept(

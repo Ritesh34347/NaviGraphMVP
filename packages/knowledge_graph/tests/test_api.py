@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from navigraph_kg.api import (
+    entity_matches_reference_node,
     get_asset,
     get_column_for_concept,
     get_relationship_concept,
@@ -171,3 +172,62 @@ class TestListMarketsForExchange:
         assert kwargs["exchange_id"] == "ATHEX"
         assert len(result) == 3
         assert {m["market_id"] for m in result} == {"EBB", "XATH", "ENAX"}
+
+
+class TestEntityMatchesReferenceNode:
+    """Real bug this closes: a relationship concept's category label (e.g.
+    "Market") only ever matched an entity that literally contained the
+    word "market" -- naming a specific real market ("Athens Exchange")
+    never matched. This checks the free-text entity against real
+    reference-node values instead."""
+
+    def test_queries_by_default_name_property_and_filters_by_tenant(self) -> None:
+        client = MagicMock()
+        client.run.return_value = [{"n": {"name": "Athens Exchange S.A. Cash Market"}}]
+
+        result = entity_matches_reference_node(
+            client, tenant_id="tenant-a", label="Market", entity="Athens Exchange"
+        )
+
+        assert result is True
+        cypher = client.run.call_args.args[0]
+        assert "tenant_id" in cypher
+        assert ":Market" in cypher
+        assert "n.name" in cypher
+        kwargs = client.run.call_args.kwargs
+        assert kwargs["tenant_id"] == "tenant-a"
+        assert kwargs["entity"] == "Athens Exchange"
+
+    def test_returns_false_when_no_real_node_matches(self) -> None:
+        client = MagicMock()
+        client.run.return_value = []
+
+        result = entity_matches_reference_node(
+            client, tenant_id="tenant-a", label="Market", entity="not a real market"
+        )
+
+        assert result is False
+
+    def test_returns_false_for_blank_entity_without_querying(self) -> None:
+        client = MagicMock()
+
+        result = entity_matches_reference_node(
+            client, tenant_id="tenant-a", label="Market", entity="   "
+        )
+
+        assert result is False
+        client.run.assert_not_called()
+
+    def test_asset_label_queries_asset_name_short_name_and_isin(self) -> None:
+        client = MagicMock()
+        client.run.return_value = [{"n": {"asset_name": "Acme Corp"}}]
+
+        result = entity_matches_reference_node(
+            client, tenant_id="tenant-a", label="Asset", entity="Acme"
+        )
+
+        assert result is True
+        cypher = client.run.call_args.args[0]
+        assert "n.asset_name" in cypher
+        assert "n.asset_short_name" in cypher
+        assert "n.isin" in cypher

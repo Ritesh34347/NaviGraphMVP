@@ -2622,4 +2622,58 @@ restructuring how compound multi-part questions get decomposed
 attempted here. The practical workaround is asking the two halves as
 separate questions ("which securities drove the most volume in Athens
 Exchange" / "which customer accounts drove the most volume in Athens
-Exchange"), each of which now has a real, resolvable join path.
+Exchange"), each of which now has a real, resolvable join path -- see
+item 86 below for the fix that actually made this true (item 85's new
+"Asset traded in Market" concept alone was not enough).
+
+### 86. RESOLVED: relationship-concept matching required the literal category word ("market"), so naming a specific real instance ("Athens Exchange") never matched anything
+
+**What was found**: re-testing item 85's two suggested workaround
+questions ("Which securities/customer accounts drove the most transaction
+volume in Athens Exchange?") both still failed with
+`unjoined_table_in_multi_table_query`, resolving `STAGING_TRANSACTIONS` +
+`STAGING_MARKETS` with zero joins -- even though "Transaction happens in
+Market" (a real, already-curated `RelationshipConcept` for exactly this
+table pair) should have applied. A direct, controlled comparison
+confirmed the cause: **"What is the total transaction volume by
+market?"** (the generic category word) resolved a real join and answered
+correctly; **"...in Athens Exchange?"** (a real, specific market name,
+not the word "market") did not. `understanding.ontology.agent._resolve_relationships`
+only ever checked whether a relationship's subject/object label (e.g.
+`"Market"`) literally appeared among the entities Intent Understanding
+extracted -- when a question names a real market/asset/channel/risk
+level/etc. by its actual name instead of the generic category word, that
+literal check can never succeed, so the relationship silently never
+fires. This is a distinct, deeper gap from items 84/85 (which were about
+column/table-name mismatches once a relationship DID match) -- this one
+is about the relationship never being considered a candidate at all.
+
+**Resolution**: added `navigraph_kg.api.entity_matches_reference_node`,
+which checks a free-text entity against REAL reference-data node values
+under a given label (Market's `name`, Asset's `asset_name`/
+`asset_short_name`/`isin`, Channel/RiskLevel/CustomerType/
+InvestmentCapacityBand's `name` -- all real, crawled Tier-1 nodes, see
+`ingestion.pipeline._sync_reference_data`/`_sync_simple_lookup`) rather
+than just the category word. `OntologyAgent._resolve_relationships` now
+calls a new `_label_or_instance_matches` helper: the original literal
+check first, falling back to `entity_matches_reference_node` only for
+labels that correspond to a real reference-data node type
+(`_REFERENCE_NODE_LABELS` -- "Customer"/"Transaction" are excluded
+since no such node type exists in the graph at all, by design). New
+regression test:
+`test_relationship_fires_for_a_real_named_instance_not_the_category_word`,
+plus direct unit coverage for the new API function
+(`TestEntityMatchesReferenceNode` in `knowledge_graph`'s test suite).
+Live verification against the two previously-failing questions is
+pending this fix's deployment.
+
+**What full version requires**: this closes the gap for every
+`RelationshipConcept` whose category has a real reference-data node type
+-- it does not help relationships involving "Customer" or "Transaction"
+by name (impossible anyway, since no such nodes exist), nor does it help
+if Intent Understanding's entity extraction produces something that
+doesn't overlap ANY real reference-node value at all (a genuinely novel
+or misspelled name). No further gap of this kind is known at this time,
+but none has been exhaustively searched for either -- this was found via
+live testing of two specific real questions, not a systematic audit of
+every `RelationshipConcept`/entity-extraction combination.

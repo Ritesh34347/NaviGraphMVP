@@ -1023,3 +1023,28 @@ single-granularity half of real market-concentration questions
 answerable; the compound question's dual-granularity ask (securities AND
 accounts in one query) is left as a real, logged limitation rather than
 force-fit with a fabricated join (see LIMITATIONS.md item 85).
+
+## 2026-08-04 — Relationship-concept matching now also checks real reference-data instance values, not just the literal category word
+
+Re-testing the item-85 workaround questions (asking the securities/
+accounts halves separately) still failed -- naming a specific real market
+("Athens Exchange") instead of saying "market" meant
+`_label_matches_entities("Market", entities)` could never match, so
+"Transaction happens in Market" silently never got considered as a
+candidate relationship at all, regardless of items 84/85's fixes (both of
+which only apply once a relationship has already matched). Two fixes were
+considered: (a) broaden Intent Understanding's entity-extraction prompt to
+always emit the generic category word alongside a named instance, or (b)
+check named entities against real reference-data node values already in
+the graph. (b) was chosen -- (a) would require prompt-engineering changes
+to an LLM-backed agent with non-deterministic output (harder to verify,
+riskier to regress silently), while (b) is a deterministic, testable
+lookup against data this codebase already crawls and trusts elsewhere
+(the same real `Market`/`Asset`/`Channel`/`RiskLevel`/etc. nodes
+`resolve_business_term` and `list_markets_for_exchange` already query).
+The new `entity_matches_reference_node` function is scoped to only the
+labels that correspond to a real crawled node type
+(`_REFERENCE_NODE_LABELS`) -- "Customer"/"Transaction" are excluded since
+no such node type exists in the graph (customer/transaction-cardinality
+data is deliberately excluded, per this project's original knowledge-graph
+design), so no wasted queries are made for those.

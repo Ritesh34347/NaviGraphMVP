@@ -1214,3 +1214,38 @@ granularities (per-security and per-account) that no single join graph
 can answer at once given `CUSTOMER_MARKET_AGG` has no security dimension
 -- splitting it into two separate questions is the real, working
 workaround.
+
+## 2026-08-04 — Fixed relationship matching failing to fire for specific real instance names (e.g. "Athens Exchange"), only the generic category word ("market")
+
+Live re-testing of item 85's own suggested split questions (asking the
+securities/accounts halves separately) still failed with the same
+`unjoined_table_in_multi_table_query` error. A controlled A/B test
+isolated the cause: "What is the total transaction volume by market?"
+(generic wording) resolved a real join and answered correctly; the
+identical question naming "Athens Exchange" specifically did not.
+Root cause: `OntologyAgent._resolve_relationships` only matched a
+relationship's subject/object label against extracted entities via a
+literal substring check -- naming a real market instance instead of
+saying "market" meant the label check could never succeed, so
+"Transaction happens in Market" (an already-curated, correct
+`RelationshipConcept`) never even got considered a candidate.
+
+**Fix**: added `navigraph_kg.api.entity_matches_reference_node(client,
+tenant_id=..., label=..., entity=...)`, checking a free-text entity
+against real reference-data node values (Market's `name`, Asset's
+`asset_name`/`asset_short_name`/`isin`, Channel/RiskLevel/CustomerType/
+InvestmentCapacityBand's `name`). `OntologyAgent` now calls a new
+`_label_or_instance_matches` helper -- the original literal check first,
+falling back to this real-instance lookup only for labels with an actual
+reference-data node type (`_REFERENCE_NODE_LABELS`). New tests:
+`test_relationship_fires_for_a_real_named_instance_not_the_category_word`
+(ontology agent) and a new `TestEntityMatchesReferenceNode` class (direct
+API coverage, 4 tests). Full suite: 269 tests pass (up from 265), `ruff
+check` clean.
+
+**Live verification**: pending -- this fix is committed and about to go
+through the real CD pipeline (canary bake + promote); the two
+previously-failing named-market questions will be re-tested directly
+against the live gateway once deployed, the same way item 85's fix and
+the earlier grouping-bug fix were each independently confirmed live
+before being considered done.

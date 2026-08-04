@@ -83,6 +83,66 @@ def get_column_for_concept(
     return records[0] if records else None
 
 
+# Property names checked by `entity_matches_reference_node` when a category's
+# node doesn't use the default `name` property -- e.g. `Asset` (see
+# `ingestion.pipeline._sync_reference_data`) uses `asset_name`/
+# `asset_short_name` instead.
+_REFERENCE_NAME_PROPERTIES: dict[str, tuple[str, ...]] = {
+    NODE_ASSET: ("asset_name", "asset_short_name", "isin"),
+}
+_DEFAULT_REFERENCE_NAME_PROPERTY = "name"
+
+
+def entity_matches_reference_node(
+    client: Neo4jClient,
+    *,
+    tenant_id: str,
+    label: str,
+    entity: str,
+) -> bool:
+    """Real bug, found live: a relationship concept's category label (e.g.
+    `"Market"`) only ever matched an extracted entity that literally
+    contained the word "market" -- a question naming a SPECIFIC market
+    ("Athens Exchange") instead of the generic category word never
+    matched, so e.g. "Transaction happens in Market" never fired for any
+    question naming a real market by name. This checks the free-text
+    `entity` string against REAL reference-data node values under `label`
+    (Market/Asset/Channel/RiskLevel/CustomerType/etc. -- all real,
+    crawled Tier-1 nodes, see `ingestion.pipeline._sync_reference_data`),
+    so a real instance name (or a real instance name that's a substring/
+    superstring of the extracted entity, e.g. Intent Understanding
+    extracting "Athens Exchange" for the real market name "Athens
+    Exchange S.A. Cash Market") counts as a match too, not just the
+    literal category word.
+
+    `label` always comes from this codebase's own curated
+    `RELATIONSHIP_CONCEPTS` seed data (never user input), so
+    string-interpolating it into the Cypher label position here is safe.
+    """
+
+    if not entity.strip():
+        return False
+
+    properties = _REFERENCE_NAME_PROPERTIES.get(label, (_DEFAULT_REFERENCE_NAME_PROPERTY,))
+    where_clause = " OR ".join(
+        f"(n.{prop} IS NOT NULL AND "
+        f"(toLower(n.{prop}) CONTAINS toLower($entity) OR toLower($entity) CONTAINS toLower(n.{prop})))"
+        for prop in properties
+    )
+
+    records = client.run(
+        f"""
+        MATCH (n:{label} {{tenant_id: $tenant_id}})
+        WHERE {where_clause}
+        RETURN n
+        LIMIT 1
+        """,
+        tenant_id=tenant_id,
+        entity=entity,
+    )
+    return bool(records)
+
+
 def get_relationship_concept(
     client: Neo4jClient,
     *,

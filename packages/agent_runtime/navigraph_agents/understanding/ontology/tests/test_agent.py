@@ -220,6 +220,10 @@ class TestRelationshipResolution:
                 return_value=[],
             ),
             patch(
+                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
+                return_value=False,
+            ),
+            patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=relationship_record,
             ) as mock_get_rel,
@@ -261,6 +265,10 @@ class TestRelationshipResolution:
                 return_value=[],
             ),
             patch(
+                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
+                return_value=False,
+            ),
+            patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=relationship_record,
             ),
@@ -270,6 +278,52 @@ class TestRelationshipResolution:
         assert len(output.result.relationship_resolutions) == 1
         assert output.result.relationship_resolutions[0].object_label == "RiskLevel"
 
+    async def test_relationship_fires_for_a_real_named_instance_not_the_category_word(
+        self,
+    ) -> None:
+        """REAL BUG, live-reproduced: "What is driving the high transaction
+        volume in the Athens Exchange S.A. Cash Market?" names a SPECIFIC
+        market rather than saying "market" -- `_label_matches_entities`
+        alone can never match "Market" against "Athens Exchange", so
+        "Transaction happens in Market" silently never fired for any
+        question naming a real market by name. Must now match via
+        `entity_matches_reference_node` finding a real Market node whose
+        name overlaps the extracted entity."""
+
+        client = MagicMock()
+        agent = OntologyAgent(client=client)
+
+        relationship_record = {
+            "name": "Transaction happens in Market",
+            "realizing_table": "TRANSACTIONS",
+            "subject_key_column": "MARKETID",
+            "object_key_column": "MARKETID",
+        }
+
+        def fake_instance_match(_client, *, tenant_id, label, entity):
+            return label == "Market" and entity == "Athens Exchange"
+
+        with (
+            patch(
+                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
+                return_value=[],
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
+                side_effect=fake_instance_match,
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
+                return_value=relationship_record,
+            ),
+        ):
+            output = await agent.run(
+                _make_input(["transaction volume", "Athens Exchange"])
+            )
+
+        assert len(output.result.relationship_resolutions) == 1
+        assert output.result.relationship_resolutions[0].object_label == "Market"
+
     async def test_relationship_does_not_fire_with_only_one_label_present(self) -> None:
         client = MagicMock()
         agent = OntologyAgent(client=client)
@@ -278,6 +332,10 @@ class TestRelationshipResolution:
             patch(
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=[],
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
+                return_value=False,
             ),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
@@ -296,6 +354,10 @@ class TestRelationshipResolution:
             patch(
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=[],
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
+                return_value=False,
             ),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
