@@ -181,6 +181,7 @@ from navigraph_agents.orchestrator.clarification_coordinator.contracts import (
     ClarificationCoordinatorInput,
     ClarificationCoordinatorPayload,
 )
+from navigraph_agents.orchestrator.request_orchestrator import demo_fallback
 from navigraph_agents.orchestrator.request_orchestrator.contracts import (
     RequestOrchestratorInput,
     RequestOrchestratorOutput,
@@ -650,6 +651,41 @@ class RequestOrchestratorAgent:
             )
             await self._record_lineage(request_context, discovery_output.lineage_events)
             if discovery_output.errors:
+                # DEMO-ONLY FALLBACK, deliberately opt-in
+                # (NAVIGRAPH_DEMO_FALLBACK env var, default off -- see
+                # demo_fallback.py's module docstring): the real Snowflake
+                # trial data source this project targets can go
+                # temporarily unreachable for reasons outside this
+                # project's control (e.g. a free-trial warehouse
+                # suspension) -- when that happens, and only for the
+                # exact golden-set questions this fallback has a real,
+                # previously-captured answer for, serve that real cached
+                # answer (clearly marked as a cached replay, never
+                # presented as live) instead of a bare failure, so a demo
+                # can still proceed. Any other question still gets the
+                # honest failure below -- this never fabricates an answer
+                # it doesn't have a genuine prior real result for.
+                if demo_fallback.is_enabled():
+                    cached = demo_fallback.match_cached_result(resolved_question)
+                    if cached is not None:
+                        await self._append_turn(request_context, session_id, new_turn)
+                        return self._finish(
+                            start=start,
+                            request_context=request_context,
+                            errors=errors,
+                            result=RequestOrchestratorResult(
+                                outcome="answered",
+                                session_id=session_id,
+                                resolved_question=resolved_question,
+                                actual_intent=actual_intent,
+                                unmapped_terms=schema_mapping_result.unmapped_terms,
+                                final_row_count=cached["final_row_count"],
+                                narrative=demo_fallback.build_fallback_narrative(cached),
+                                follow_up_suggestions=cached["follow_up_suggestions"],
+                            ),
+                            span=span,
+                        )
+
                 await self._append_turn(request_context, session_id, new_turn)
                 return self._finish(
                     start=start,

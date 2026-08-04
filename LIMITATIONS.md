@@ -2309,3 +2309,63 @@ counted, `TOTALVALUE` is still summed, in the same generated statement.
 All 12 `sql_generation` tests (11 pre-existing + 1 new) pass; full
 `packages/` unit suite: 333 passed, 6 skipped (unchanged pre-existing
 local-venv gaps only).
+
+### 81. TEMPORARY, OPT-IN: real Snowflake trial account went unreachable (billing suspension, then an MFA policy requirement) -- a demo-only cached-replay fallback was added
+
+**What was found**: the one real, registered Snowflake data source
+(`FIDELITY_POC`, via the `FIDELITY_ANALYST_ROLE` service user
+`SHUBHSNFLK`) became genuinely unreachable for reasons entirely outside
+this project's own code, in two sequential real incidents: (1) the free
+trial's warehouses were suspended pending billing (`"Your free trial has
+ended and all of your virtual warehouses have been suspended"`), and
+after that was addressed, (2) the account began enforcing MFA on this
+service user (`"Multi-factor authentication is required for this
+account"`, later `"none of your current MFA methods are supported for
+programmatic authentication"` once an authentication policy exempting
+the user from MFA *enrollment* was applied but an already-enrolled MFA
+method was still being demanded for password-based login) -- confirmed
+live via `query.data_source_discovery`'s own connectivity check, which
+reports these as a real `data_source_unreachable` `AgentError` with the
+verbatim Snowflake error message. Resolving the MFA policy fully is an
+in-progress, real Snowflake-account-configuration fix on the product
+owner's side (not something this codebase can fix), tracked separately
+from this item.
+
+**What was added, as a stopgap so demos can proceed regardless of
+Snowflake account status**: a real, deliberately narrow, opt-in-only
+fallback in `orchestrator.request_orchestrator` (`demo_fallback.py` +
+`demo_fallback_data.json`). When `query.data_source_discovery` reports
+the resolved data source unreachable, and only if the
+`NAVIGRAPH_DEMO_FALLBACK` environment variable is explicitly set to
+`"true"` (default: unset/off), the orchestrator checks whether the
+resolved question exactly (case-insensitively) matches one of 8 real
+golden-set questions this fallback has a genuine, previously-captured
+real answer for -- pulled verbatim from two real `eval/run_harness.py`
+runs against the live stack while Snowflake was still reachable
+(`eval/results/20260730T225222Z.json` primary, `.../20260730T221839Z.json`
+for the one question -- `gq_009` -- the primary run didn't succeed on).
+If matched, the orchestrator returns a real `outcome="answered"` using
+that cached `narrative`/`follow_up_suggestions`/`final_row_count`, with
+the narrative always prefixed `"[Cached demo replay -- live data source
+unreachable; showing a real result captured from run <run_id>]"` so it
+is never mistaken for a live answer, in the API response and therefore
+in the chat UI. Any question without a real cached answer (including 2
+of the 10 golden questions that never succeeded in any real captured
+run, and every non-golden-set question) still gets the honest,
+unmodified `data_source_unreachable` failure -- this mechanism never
+fabricates an answer it doesn't have a genuine prior real result for.
+
+**Verified**: 6 new unit tests (`test_demo_fallback.py`) covering
+default-off behavior, exact-string env-var matching, real cached-question
+matching (including the real, honest case where `gq_002`'s captured
+narrative is itself empty -- a real, already-documented behavior for a
+10,000-row result, not a test bug), no-match behavior for any
+non-cached question, and the narrative's cached-replay marker.
+
+**What full version requires**: this is explicitly temporary and
+demo-only -- remove `demo_fallback.py`/`demo_fallback_data.json` and this
+item's wiring in `request_orchestrator/agent.py` once the real Snowflake
+account access issue is fully resolved and confirmed stable, rather than
+letting a "demo mode" mechanism linger in the real production code path
+indefinitely. `NAVIGRAPH_DEMO_FALLBACK` must stay unset (off) in any
+context other than a deliberate, time-boxed demo.
