@@ -142,7 +142,7 @@ class OntologyAgent:
                     entities, tenant_id=request_context.tenant_id
                 )
                 relationship_resolutions = self._resolve_relationships(
-                    entities, tenant_id=request_context.tenant_id
+                    entities, concept_resolutions, tenant_id=request_context.tenant_id
                 )
             except Exception as exc:  # noqa: BLE001 - never let a KG-side failure crash the agent
                 errors.append(
@@ -235,6 +235,7 @@ class OntologyAgent:
                     business_concept=chosen.get("business_concept"),
                     catalog_column_id=chosen.get("catalog_column_id"),
                     column_name=chosen.get("column_name"),
+                    table_name=chosen.get("table_name"),
                     preferred=chosen.get("preferred"),
                 )
             )
@@ -271,13 +272,61 @@ class OntologyAgent:
         )
 
     def _resolve_relationships(
-        self, entities: list[str], *, tenant_id: str
+        self,
+        entities: list[str],
+        concept_resolutions: list[ConceptResolution],
+        *,
+        tenant_id: str,
     ) -> list[RelationshipResolution]:
         """Scan every hand-curated `RelationshipConcept` seed for one whose
         subject AND object label both appear among the input entities
         (directly, or via a named real instance -- see
         `_label_or_instance_matches`), and resolve each match against the
-        real graph."""
+        real graph.
+
+        REAL BUG, found live testing the e-commerce data source: every
+        e-commerce `RelationshipConcept`'s `subject_label` is `"Order"` or
+        `"OrderItem"` (see `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`'s
+        e-commerce block) -- a table-role word real users almost never say.
+        A question like "What is the total revenue by channel?" mentions
+        "channel" (matches `object_label`) but never "order" in any form,
+        so `_label_or_instance_matches(subject_label=...)` never matched,
+        "Order uses Channel" never fired, and Schema Mapping's
+        `_build_joins` -- which only ever considers relationships Ontology
+        actually resolved -- never got a join to build, even though
+        `FACT_ORDERS` (the concept's own `realizing_table`) was ALREADY
+        one of the resolved tables once "revenue" resolved via the
+        glossary to `FACT_ORDERS.TOTAL_AMOUNT`. No amount of literal-word
+        or reference-node matching on "Order" itself can fix this --
+        "revenue" and "order" share no lexical or instance overlap.
+
+        Fix: the subject-label check also succeeds when the concept's
+        `realizing_table` is already implied by a resolved business
+        concept -- i.e. some OTHER entity in this same question already
+        resolved (via the deterministic glossary path) to a column that
+        lives on that exact table. This requires a real `ColumnGlossary`
+        entry for the measure/dimension term to exist (Semantic
+        Retrieval's LLM-fallback resolutions don't feed back into
+        `concept_resolutions`, only Ontology's own glossary path does) --
+        see BUILD_LOG.md's e-commerce ColumnGlossary entry for why that
+        glossary is a necessary companion to this fix, not a separate
+        concern. Matched by core table name (`STAGING_` prefix ignored),
+        the same normalization `schema_mapping._build_joins` already
+        uses, so this also fires correctly for the brokerage dataset's
+        `STAGING_`-prefixed tables. This only ever RELAXES the subject
+        check (never the object check) -- it can only cause a relationship
+        to fire in a case that previously silently failed to join, never
+        cause an existing, working match to stop firing.
+        """
+
+        def _core_name(table_name: str) -> str:
+            return table_name.upper().removeprefix("STAGING_")
+
+        implied_tables = {
+            _core_name(cr.table_name)
+            for cr in concept_resolutions
+            if cr.resolved and cr.table_name
+        }
 
         relationship_resolutions: list[RelationshipResolution] = []
 
@@ -285,7 +334,10 @@ class OntologyAgent:
             subject_label = concept["subject_label"]
             object_label = concept["object_label"]
 
-            if not self._label_or_instance_matches(subject_label, entities, tenant_id=tenant_id):
+            subject_matches = self._label_or_instance_matches(
+                subject_label, entities, tenant_id=tenant_id
+            ) or _core_name(concept["realizing_table"]) in implied_tables
+            if not subject_matches:
                 continue
             if not self._label_or_instance_matches(object_label, entities, tenant_id=tenant_id):
                 continue

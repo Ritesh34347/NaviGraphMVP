@@ -52,6 +52,7 @@ class ConceptResolution(BaseModel):
     business_concept: str | None = None
     catalog_column_id: str | None = None
     column_name: str | None = None
+    table_name: str | None = None
     preferred: bool | None = None
 
 

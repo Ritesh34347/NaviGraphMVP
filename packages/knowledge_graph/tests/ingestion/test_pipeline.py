@@ -22,11 +22,12 @@ from navigraph_connectors.base import (
     ConnectorCapabilities,
     QueryResult,
 )
-from navigraph_kg.ingestion.pipeline import run_ingestion
+from navigraph_kg.ingestion.pipeline import run_ecommerce_ingestion, run_ingestion
 from navigraph_kg.ingestion.reference_data_queries import (
     ASSET_INFORMATION_QUERY,
     DISTINCT_CHANNELS_QUERY,
     DISTINCT_CUSTOMER_TYPES_QUERY,
+    DISTINCT_ECOMMERCE_CHANNELS_QUERY,
     DISTINCT_INVESTMENT_CAPACITY_QUERY,
     DISTINCT_RISK_LEVELS_QUERY,
     MARKETS_QUERY,
@@ -370,3 +371,96 @@ class TestRunIngestionSummary:
         assert summary.risk_levels_synced == 2
         assert summary.investment_capacity_bands_synced == 1
         assert summary.relationship_concepts_synced == 15
+
+
+class TestRunEcommerceIngestion:
+    """`run_ecommerce_ingestion` is a deliberate sibling of `run_ingestion`,
+    reusing the three generic stages plus a small e-commerce-specific
+    Channel-only reference-data stage -- see its docstring for why
+    Category/CustomerSegment/LoyaltyTier/Country are NOT crawled."""
+
+    def test_returns_correct_per_stage_counts_with_only_channels_synced(self) -> None:
+        neo4j_client = MagicMock()
+        catalog_session = MagicMock()
+        connector = FakeConnector(
+            {
+                DISTINCT_ECOMMERCE_CHANNELS_QUERY: _simple_lookup_result(
+                    "CHANNEL", ["Website", "Mobile App", "Marketplace", "In-Store"]
+                ),
+            }
+        )
+
+        table = CatalogTable(id=uuid.uuid4(), name="FACT_ORDERS")
+        column = CatalogColumn(
+            id=uuid.uuid4(),
+            table_id=table.id,
+            name="TOTAL_AMOUNT",
+            data_type="NUMBER",
+            nullable=False,
+            ordinal_position=1,
+        )
+        glossary_entry = ColumnGlossary(
+            column_id=column.id,
+            business_name="Revenue",
+            synonyms=["revenue", "sales"],
+            description="Order total.",
+            source="manual_ecommerce_poc",
+        )
+
+        with (
+            patch("navigraph_kg.ingestion.pipeline.list_tables", return_value=[table]),
+            patch("navigraph_kg.ingestion.pipeline.list_columns", return_value=[column]),
+            patch(
+                "navigraph_kg.ingestion.pipeline.list_glossary",
+                return_value=[glossary_entry],
+            ),
+        ):
+            summary = run_ecommerce_ingestion(
+                catalog_session,
+                neo4j_client,
+                connector,
+                data_source_id=_DATA_SOURCE_ID,
+                tenant_id="ecommerce-poc",
+            )
+
+        assert summary.tables_synced == 1
+        assert summary.columns_synced == 1
+        assert summary.business_concepts_synced == 1
+        assert summary.concept_mappings_synced == 1
+        assert summary.channels_synced == 4
+        assert summary.relationship_concepts_synced == 15
+        # No brokerage-only reference data is ever touched by this path.
+        assert summary.assets_synced == 0
+        assert summary.markets_synced == 0
+        assert summary.exchanges_synced == 0
+        assert summary.sectors_synced == 0
+        assert summary.industries_synced == 0
+        assert summary.customer_types_synced == 0
+        assert summary.risk_levels_synced == 0
+        assert summary.investment_capacity_bands_synced == 0
+
+    def test_channel_nodes_are_tenant_scoped(self) -> None:
+        neo4j_client = MagicMock()
+        catalog_session = MagicMock()
+        connector = FakeConnector(
+            {DISTINCT_ECOMMERCE_CHANNELS_QUERY: _simple_lookup_result("CHANNEL", ["Website"])}
+        )
+
+        with (
+            patch("navigraph_kg.ingestion.pipeline.list_tables", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_columns", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_glossary", return_value=[]),
+        ):
+            run_ecommerce_ingestion(
+                catalog_session,
+                neo4j_client,
+                connector,
+                data_source_id=_DATA_SOURCE_ID,
+                tenant_id="ecommerce-poc",
+            )
+
+        channel_call = next(
+            call for call in neo4j_client.run.call_args_list if ":Channel" in call.args[0]
+        )
+        assert channel_call.kwargs["tenant_id"] == "ecommerce-poc"
+        assert channel_call.kwargs["name"] == "Website"

@@ -28,6 +28,7 @@ class TestResolveBusinessTerm:
                 "business_concept": "Trade Value",
                 "catalog_column_id": "col-1",
                 "column_name": "AMOUNT",
+                "table_name": "STAGING_TRANSACTIONS",
                 "preferred": True,
                 "source": "schema_enrichment",
             }
@@ -44,6 +45,21 @@ class TestResolveBusinessTerm:
         assert kwargs["tenant_id"] == "tenant-a"
         assert kwargs["term"] == "trade value"
         assert result == client.run.return_value
+
+    def test_query_also_optionally_resolves_the_columns_table_name(self) -> None:
+        """`OntologyAgent._resolve_relationships` relies on `table_name`
+        being present to recognize a relationship's `realizing_table` is
+        already implied by a resolved business concept -- see that
+        method's docstring for the real e-commerce gap this closes."""
+
+        client = MagicMock()
+        client.run.return_value = []
+
+        resolve_business_term(client, tenant_id="tenant-a", term="revenue")
+
+        cypher = client.run.call_args.args[0]
+        assert "OPTIONAL MATCH" in cypher
+        assert "table_name" in cypher
 
     def test_returns_empty_list_when_no_match(self) -> None:
         client = MagicMock()

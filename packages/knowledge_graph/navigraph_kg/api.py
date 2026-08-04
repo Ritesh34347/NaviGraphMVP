@@ -22,6 +22,7 @@ from navigraph_kg.ontology import (
     NODE_RELATIONSHIP_CONCEPT,
     NODE_SECTOR,
     NODE_TABLE,
+    REL_COLUMN_OF,
     REL_IN_SECTOR,
     REL_MAPS_TO,
     REL_OBJECT_KEY,
@@ -42,7 +43,14 @@ def resolve_business_term(
     one of its synonyms, so both are checked in one query. `preferred` is
     included in every result so a caller can disambiguate when a term
     resolves to more than one `Column` (e.g. via more than one glossary
-    source).
+    source). Also returns `table_name` (traversing `COLUMN_OF` to the
+    resolved `Column`'s `Table`, OPTIONAL so a `Column` node still missing
+    its `COLUMN_OF` edge doesn't drop the whole match) -- used by
+    `OntologyAgent._resolve_relationships` to recognize that a
+    `RelationshipConcept`'s `realizing_table` is already implied by a
+    resolved business term, even when the question never literally names
+    the concept's `subject_label` (see that method's docstring for the
+    real gap this closes).
     """
 
     return client.run(
@@ -51,9 +59,11 @@ def resolve_business_term(
         WHERE toLower(bc.name) = toLower($term)
            OR any(synonym IN bc.synonyms WHERE toLower(synonym) = toLower($term))
         MATCH (bc)-[r:{REL_MAPS_TO}]->(c:{NODE_COLUMN})
+        OPTIONAL MATCH (c)-[:{REL_COLUMN_OF}]->(t:{NODE_TABLE})
         RETURN bc.name AS business_concept,
                c.catalog_column_id AS catalog_column_id,
                c.name AS column_name,
+               t.name AS table_name,
                r.preferred AS preferred,
                r.source AS source
         """,

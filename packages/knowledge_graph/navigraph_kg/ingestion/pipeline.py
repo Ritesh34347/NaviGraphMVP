@@ -52,6 +52,7 @@ from navigraph_kg.ingestion.reference_data_queries import (
     ASSET_INFORMATION_QUERY,
     DISTINCT_CHANNELS_QUERY,
     DISTINCT_CUSTOMER_TYPES_QUERY,
+    DISTINCT_ECOMMERCE_CHANNELS_QUERY,
     DISTINCT_INVESTMENT_CAPACITY_QUERY,
     DISTINCT_RISK_LEVELS_QUERY,
     MARKETS_QUERY,
@@ -136,6 +137,88 @@ def run_ingestion(
         customer_types_synced=reference_counts["customer_types"],
         risk_levels_synced=reference_counts["risk_levels"],
         investment_capacity_bands_synced=reference_counts["investment_capacity_bands"],
+        relationship_concepts_synced=relationship_concepts_synced,
+    )
+
+
+def run_ecommerce_ingestion(
+    catalog_session: Session,
+    neo4j_client: Neo4jClient,
+    connector: Connector,
+    *,
+    data_source_id: uuid.UUID,
+    tenant_id: str,
+) -> IngestionSummary:
+    """Run the knowledge-graph ingestion for the ECOMMERCE_POC data source.
+
+    A deliberate sibling of `run_ingestion`, not a generalization of it --
+    `run_ingestion`'s stage 3 (`_sync_reference_data`) is hardcoded to the
+    brokerage `FIDELITY_POC` schema's five real reference-data queries
+    (Asset/Market/Exchange/Sector/Industry/Channel/CustomerType/RiskLevel/
+    InvestmentCapacityBand), which have no equivalent in the e-commerce
+    star schema. Rather than adding data-source-conditional branching into
+    a function that's supposed to be one fixed, real, reviewed shape (and
+    risking a regression to the already-verified brokerage path), this
+    reuses the three genuinely generic stages (`_sync_schema_structure`,
+    `_sync_business_glossary`, `_sync_relationship_concepts` -- none of
+    which reference any brokerage-specific table) and substitutes a small,
+    e-commerce-specific stage 3 that crawls the one Tier-1 reference value
+    actually consumed by any real code path today: `Channel` names from
+    `DIM_CHANNEL` (see `_REFERENCE_NODE_LABELS` in
+    `understanding.ontology.agent` -- only labels in that set are ever
+    checked by `entity_matches_reference_node`). `Category`/
+    `CustomerSegment`/`LoyaltyTier`/`Country` are deliberately NOT crawled
+    here: none of `RELATIONSHIP_CONCEPTS`' e-commerce entries use those as
+    a subject/object label (they're plain columns on already-joined
+    dimension tables, not separate joined tables), so crawling them would
+    add real Neo4j writes with no consuming code path -- logged as an
+    explicit scoping decision in LIMITATIONS.md, not a silent gap.
+
+    `connector` must be constructed against the `ECOMMERCE_POC` database
+    (see `register_ecommerce.py`'s connector-construction pattern) -- the
+    e-commerce reference query is schema-relative (`core.dim_channel`),
+    not fully database-qualified, since it relies on the connector's own
+    configured default database exactly like the rest of this ingestion
+    module already does for the brokerage `far_trans.*` queries.
+    """
+
+    synced_at = datetime.now(UTC)
+
+    tables_synced, columns_synced = _sync_schema_structure(
+        catalog_session,
+        neo4j_client,
+        data_source_id=data_source_id,
+        tenant_id=tenant_id,
+        synced_at=synced_at,
+    )
+    business_concepts_synced, concept_mappings_synced = _sync_business_glossary(
+        catalog_session,
+        neo4j_client,
+        data_source_id=data_source_id,
+        tenant_id=tenant_id,
+        synced_at=synced_at,
+    )
+    channels_synced = _sync_simple_lookup(
+        neo4j_client,
+        connector,
+        query=DISTINCT_ECOMMERCE_CHANNELS_QUERY,
+        column="CHANNEL",
+        label=NODE_CHANNEL,
+        tenant_id=tenant_id,
+        synced_at=synced_at.isoformat(),
+    )
+    relationship_concepts_synced = _sync_relationship_concepts(
+        neo4j_client,
+        tenant_id=tenant_id,
+        synced_at=synced_at,
+    )
+
+    return IngestionSummary(
+        tables_synced=tables_synced,
+        columns_synced=columns_synced,
+        business_concepts_synced=business_concepts_synced,
+        concept_mappings_synced=concept_mappings_synced,
+        channels_synced=channels_synced,
         relationship_concepts_synced=relationship_concepts_synced,
     )
 

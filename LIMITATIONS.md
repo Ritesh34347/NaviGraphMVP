@@ -2925,3 +2925,87 @@ another database would need the identical manual correction repeated,
 underscoring that real per-`DataSource` connection routing (item 21) is
 still the correct, larger fix, not permanently deferred by this
 workaround.
+
+### 91. NEW: e-commerce relationship concepts required a literal "Order"/"OrderItem" mention that realistic revenue/channel/category questions never say -- fixed, plus a real ColumnGlossary and Channel reference-data crawl added
+
+**What was found**: before this item's fixes could even be tested live,
+structural analysis of `SchemaMappingAgent._build_joins` (confirmed by
+re-reading its real code, not assumed) showed it only ever considers
+relationships present in `payload.relationship_resolutions` -- i.e. only
+what `OntologyAgent._resolve_relationships` already decided fired. Firing
+requires BOTH the concept's `subject_label` AND `object_label` to match an
+extracted entity (literally, or via a named reference-node instance, item
+86). Every one of item 90's 9 e-commerce concepts uses `"Order"` or
+`"OrderItem"` as `subject_label` -- a table-role word real users
+essentially never say. A realistic question like "What is the total
+revenue by channel?" mentions "channel" (matches `object_label`) but never
+"order" in any form, so "Order uses Channel" would never have fired, no
+join would ever have been built, and the question would have failed with
+`unjoined_table_in_multi_table_query` -- the exact class of "semantic gap"
+this item's fixes exist to close. (This is a DIFFERENT, more fundamental
+bug than item 90's own "not yet re-verified" note anticipated; it was
+found and fixed BEFORE the live re-verification happened, not after.)
+
+**Resolution -- three changes, working together**:
+1. **Ontology relationship-firing relaxation** (`understanding/ontology/agent.py`'s
+   `_resolve_relationships`, `knowledge_graph/navigraph_kg/api.py`'s
+   `resolve_business_term`): the subject-label check now ALSO succeeds
+   when the concept's `realizing_table` is already implied by a resolved
+   business concept -- i.e. some other entity in the same question already
+   resolved, via the deterministic glossary path, to a column that lives
+   on that exact table (matched by core table name, `STAGING_` prefix
+   ignored, same normalization `_build_joins` already uses). This only
+   ever RELAXES the check -- it adds a new way to fire, never removes an
+   existing match -- so it's provably safe for the brokerage dataset too.
+   `resolve_business_term`'s Cypher now returns `table_name` (an
+   `OPTIONAL MATCH` traversal through `COLUMN_OF`) to make this possible;
+   `ConceptResolution` gained a matching `table_name: str | None` field.
+   New tests: `test_query_also_optionally_resolves_the_columns_table_name`
+   (knowledge_graph), `test_relationship_fires_when_realizing_table_is_already_implied_by_a_resolved_concept`
+   (ontology agent).
+2. **A real ColumnGlossary for ECOMMERCE_POC** (`add_ecommerce_glossary.py`,
+   ~30 entries via the existing `navigraph_catalog.api.upsert_glossary`/
+   `find_column`): "revenue"/"order value"/"sales" -> `FACT_ORDERS.TOTAL_AMOUNT`,
+   plus discount/tax/shipping/category/subcategory/brand/segment/tier/
+   channel/promotion/date terms. This is a NECESSARY companion to fix #1,
+   not a separate nice-to-have: fix #1's relaxation only sees a table
+   implied when the term resolved via Ontology's own glossary path --
+   Semantic Retrieval's LLM-fallback resolutions never feed back into
+   `concept_resolutions`, so without a real glossary entry for "revenue"
+   itself, fix #1 would have nothing to key off of.
+3. **E-commerce Channel reference-data crawl** (`knowledge_graph/navigraph_kg/ingestion/pipeline.py`'s
+   new `run_ecommerce_ingestion`, a deliberate sibling of `run_ingestion`
+   reusing its 3 generic stages plus a small e-commerce-specific stage 3
+   crawling `DIM_CHANNEL.CHANNEL_NAME` into the SAME generic, tenant-scoped
+   `Channel` label the brokerage dataset already uses): closes the
+   narrower, item-86-shaped gap where a question names a channel instance
+   directly ("orders via the Mobile App") instead of saying "channel".
+   Deliberately does NOT crawl Category/CustomerSegment/LoyaltyTier/Country
+   as new reference-node labels -- none of `RELATIONSHIP_CONCEPTS`'
+   e-commerce entries use those as a subject/object label (they're plain
+   columns on already-joined dimension tables, not separately joined
+   tables), so crawling them would add real Neo4j writes with zero
+   consuming code path under the current architecture. New tests:
+   `TestRunEcommerceIngestion` (2 tests) in `knowledge_graph/tests/ingestion/test_pipeline.py`.
+
+281 tests pass (up from 277), `ruff check` clean on every touched package.
+
+**What full version requires**: (1) the implied-table relaxation only
+ever fires via Ontology's GLOSSARY path -- a term that only Semantic
+Retrieval's LLM manages to resolve still can't imply a table this way; a
+real, harder fix would thread Semantic Retrieval's per-term table
+resolution back into this same mechanism, not attempted here. (2) the
+~30-entry e-commerce glossary is a reasonable, real starting set for this
+demo's scale, not an exhaustive one -- terms outside it (e.g. "margin",
+"profit", which aren't stored columns at all and would require SQL
+Generation to compute `UNIT_PRICE - UNIT_COST`) still rely entirely on
+whatever Semantic Retrieval's LLM fallback can improvise. (3) Category/
+CustomerSegment/LoyaltyTier/Country reference-node crawling remains a
+real, explicitly-scoped-out gap (see point 3 above) -- if a future
+RelationshipConcept ever needs one of these as a label, its reference
+data would need crawling at that point, not before. (4) live end-to-end
+re-verification of all three fixes together (a real `/ask` call for
+"total revenue by channel" showing a real, correct `JOIN` and varied
+per-channel numbers) is pending this item's deploy + the one-off
+glossary/ingestion scripts being run against the live cloud Postgres/Neo4j
+-- see BUILD_LOG.md's matching entry for the live results once available.

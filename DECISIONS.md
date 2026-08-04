@@ -1153,3 +1153,51 @@ the existing `navikenz-poc` tenant, specifically to avoid introducing a
 second-data-source ambiguity into item 42's already-documented
 "exactly one match or fail" auto-resolution behavior for the existing
 brokerage demo -- a real, deliberate scoping choice, not an oversight.
+
+## 2026-08-05 — Relationship firing relaxed to also trust an already-resolved business concept's table, instead of requiring literal subject-label wording
+
+Structural re-reading of `SchemaMappingAgent._build_joins` (before any
+live e-commerce testing, not after) showed it only ever considers
+relationships Ontology already decided fired, and firing requires a
+literal-or-instance match on BOTH `subject_label` and `object_label`.
+Every e-commerce `RelationshipConcept` uses `"Order"`/`"OrderItem"` as
+`subject_label` -- a table-role word, not something a real question about
+"revenue by channel" or "top-selling category" would ever say. Two fixes
+were considered: (a) rename the e-commerce concepts' subject labels to
+words more likely to appear in real questions, or (b) recognize that once
+some OTHER term in the question has already resolved (via the
+deterministic glossary path) to a column living on the concept's
+`realizing_table`, the concept's relevance is already established with
+more certainty than any label-word guess could provide -- the fact table
+IS in play, literally, regardless of phrasing. (b) was chosen: (a) is
+fundamentally unfixable by word choice alone (no synonym of "order"
+shares any lexical or instance overlap with "revenue"), while (b) is a
+strictly-additive relaxation (only ever adds a new way to fire, never
+removes an existing match) requiring only that `resolve_business_term`
+also return the resolved column's table name -- a small, contained
+`OPTIONAL MATCH` addition to an already-existing query. This is also why
+a real e-commerce `ColumnGlossary` had to be added in the same change:
+the relaxation only sees a table "already implied" when the term resolved
+via Ontology's own glossary path, not Semantic Retrieval's LLM fallback
+(whose resolutions never flow back into `concept_resolutions`) -- without
+glossary entries for "revenue" and friends, this fix would have nothing
+to key off of for the e-commerce dataset specifically.
+
+## 2026-08-05 — E-commerce reference-data crawl is scoped to Channel only, not every dimension column
+
+Considered crawling `Category`/`CustomerSegment`/`LoyaltyTier`/`Country`
+into Neo4j as new Tier-1 reference-node labels, matching item 86's
+brokerage precedent. Rejected for this round: none of
+`RELATIONSHIP_CONCEPTS`' e-commerce entries use any of those as a
+subject/object label (they are plain columns on already-joined dimension
+tables, not separately-joined tables), and `entity_matches_reference_node`
+is only ever invoked for labels in `_REFERENCE_NODE_LABELS` that a
+`RelationshipConcept` actually names -- crawling them would be real
+Neo4j writes serving no real consuming code path today. `Channel` is
+different: it already IS a subject/object label on 2 real e-commerce
+concepts ("Order uses Channel", "OrderItem uses Channel") and is already
+a generic, tenant-scoped label the brokerage dataset uses -- crawling
+e-commerce channel names into it (via a new `run_ecommerce_ingestion`
+sibling of `run_ingestion`, not a modification to it, to avoid any risk
+to the already-verified brokerage ingestion path) closes a real, narrow,
+already-precedented gap with no wasted engineering.

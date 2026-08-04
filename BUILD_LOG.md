@@ -1412,3 +1412,58 @@ Remaining for this task, not yet done as of this entry: commit + push
 `_sync_relationship_concepts` for `tenant_id="ecommerce-poc"` against the
 live Neo4j, and re-test the same e-commerce question live to confirm a
 real join now resolves.
+
+## 2026-08-05 — Found and fixed the real reason "revenue by channel"-style questions would still fail even after item 90's relationship concepts synced
+
+Before re-testing live, re-read `SchemaMappingAgent._build_joins`'s real
+code (not assumed from memory) to predict what would actually happen once
+the 9 e-commerce `RelationshipConcept`s are synced. Found a real,
+more fundamental gap: `_build_joins` only ever considers relationships
+present in `payload.relationship_resolutions` -- i.e. only what
+`OntologyAgent._resolve_relationships` decided fired, which requires a
+literal-or-instance match on BOTH `subject_label` and `object_label`.
+Every e-commerce concept uses `"Order"`/`"OrderItem"` as `subject_label`,
+a table-role word real questions like "What is the total revenue by
+channel?" never say. Fixed BEFORE this was ever live-tested, by structural
+analysis alone (matching this session's standing discipline of tracing
+real code paths rather than guessing).
+
+**Fix, three parts**:
+1. `OntologyAgent._resolve_relationships` (`understanding/ontology/agent.py`)
+   now also fires the subject-label check when the concept's
+   `realizing_table` is already implied by a resolved business concept
+   (an entity that resolved via the glossary to a column on that table).
+   Required `resolve_business_term` (`knowledge_graph/navigraph_kg/api.py`)
+   to also return `table_name` via a new `OPTIONAL MATCH ... COLUMN_OF`
+   traversal, and `ConceptResolution` (`understanding/ontology/contracts.py`)
+   to carry a matching `table_name: str | None` field. New tests:
+   `test_query_also_optionally_resolves_the_columns_table_name`,
+   `test_relationship_fires_when_realizing_table_is_already_implied_by_a_resolved_concept`.
+2. A real e-commerce `ColumnGlossary` (`add_ecommerce_glossary.py`, ~30
+   entries via the existing `upsert_glossary`/`find_column` catalog API) --
+   "revenue"/"order value"/"sales" -> `FACT_ORDERS.TOTAL_AMOUNT`, plus
+   discount/tax/shipping/category/segment/tier/channel/promotion/date
+   terms. Necessary companion to fix #1: the relaxation only sees a table
+   implied via Ontology's own glossary path, not Semantic Retrieval's LLM
+   fallback.
+3. A new `run_ecommerce_ingestion` (`knowledge_graph/navigraph_kg/ingestion/pipeline.py`),
+   a deliberate sibling of `run_ingestion` (not a modification -- avoids
+   any regression risk to the already-verified brokerage path), reusing
+   its 3 generic stages plus a new e-commerce-specific stage crawling
+   `DIM_CHANNEL.CHANNEL_NAME` into the existing, generic, tenant-scoped
+   `Channel` label. Deliberately does NOT crawl Category/CustomerSegment/
+   LoyaltyTier/Country -- none of the e-commerce `RelationshipConcept`s use
+   them as a label, so there'd be no consuming code path. New tests:
+   `TestRunEcommerceIngestion` (2 tests).
+
+Full suite: `python -m pytest packages/agent_runtime/ packages/knowledge_graph/ -q`
+-- **281 passed** (up from 277), `ruff check` clean on every touched
+package. Documented as `LIMITATIONS.md` item 91 and 2 new `DECISIONS.md`
+entries.
+
+Remaining for this task: commit + push (both remotes), deploy, run
+`add_ecommerce_glossary.py` and the new ingestion sync script against the
+live cloud Postgres/Neo4j, and live-test "total revenue by channel" (and
+a representative sample of the ~100-question test bank) end-to-end to
+confirm a real, correct join and varied per-channel numbers -- not yet
+done as of this entry.

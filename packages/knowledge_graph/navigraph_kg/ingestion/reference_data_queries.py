@@ -72,3 +72,24 @@ DISTINCT_INVESTMENT_CAPACITY_QUERY = """
     FROM far_trans.customer_information
     WHERE investmentcapacity IS NOT NULL
 """
+
+# ECOMMERCE_POC (tenant_id="ecommerce-poc") -- a second, separate real data
+# source (see BUILD_LOG.md's 2026-08-04 e-commerce entry). `Channel` is
+# already a generic, tenant-scoped Tier-1 label (see `ontology.py`), so its
+# real e-commerce values (Website, Mobile App, Marketplace, In-Store) are
+# crawled into the SAME node label as the brokerage dataset's channel
+# values -- `tenant_id` scoping keeps the two datasets' values from ever
+# colliding or cross-matching. This is what lets a question naming a
+# specific channel by name (e.g. "orders via the Mobile App") resolve via
+# `entity_matches_reference_node`, not just the literal word "channel" --
+# the same real gap `entity_matches_reference_node` was built to close for
+# the brokerage dataset's named markets (see its own docstring, item 86).
+# Queried against the connection's default database (ECOMMERCE_POC, set by
+# the connector this ingestion run is constructed with -- see
+# `ingestion.pipeline.run_ecommerce_ingestion`'s docstring), so only the
+# schema/table need qualifying here, not the database.
+DISTINCT_ECOMMERCE_CHANNELS_QUERY = """
+    SELECT DISTINCT channel_name AS channel
+    FROM core.dim_channel
+    WHERE channel_name IS NOT NULL
+"""
