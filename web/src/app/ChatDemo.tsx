@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Demo trust model: roles/claims are caller-supplied here, exactly like
@@ -13,6 +13,13 @@ import { useState } from "react";
 const DEMO_TENANT_ID = "navikenz-poc";
 const DEMO_USER_ID = "demo-user";
 const DEMO_ROLES = ["analyst"];
+
+const EXAMPLE_QUESTIONS = [
+  "What is the total transaction volume by market?",
+  "How many transactions has each customer made?",
+  "Are there any unusual spikes in units traded by market?",
+  "Which markets have the highest transaction volume?",
+];
 
 interface ChartSpec {
   chart_type: "bar" | "line" | "table" | "single_value";
@@ -45,9 +52,46 @@ type ChatMessage =
   | { id: string; role: "assistant"; kind: "clarification"; text: string }
   | { id: string; role: "assistant"; kind: "error"; text: string };
 
+const CACHED_REPLAY_MARKER = "[Cached demo replay";
+
 function toNumber(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+function SendIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M4 20L20 12L4 4L4 10L14 12L4 14L4 20Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function SparkleIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M12 3L13.6 9.2L20 11L13.6 12.8L12 19L10.4 12.8L4 11L10.4 9.2L12 3Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M12 3C7.03 3 3 6.58 3 11C3 13.11 3.92 15.02 5.46 16.44C5.32 17.34 4.87 18.6 3.9 19.68C3.75 19.85 3.9 20.11 4.12 20.06C5.87 19.68 7.19 18.94 7.95 18.4C9.19 18.79 10.55 19 12 19C16.97 19 21 15.42 21 11C21 6.58 16.97 3 12 3Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 function BarChart({ chart, columns, rows }: { chart: ChartSpec; columns: string[]; rows: Record<string, unknown>[] }) {
@@ -89,7 +133,7 @@ function LineChart({ chart, columns, rows }: { chart: ChartSpec; columns: string
   return (
     <div className="chart">
       <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} preserveAspectRatio="none">
-        <polyline fill="none" stroke="#5b8def" strokeWidth="2" points={points} />
+        <polyline fill="none" stroke="var(--accent)" strokeWidth="2.5" points={points} strokeLinejoin="round" strokeLinecap="round" />
       </svg>
     </div>
   );
@@ -104,25 +148,27 @@ function DataTable({ columns, rows }: { columns: string[]; rows: Record<string, 
   if (columns.length === 0 || rows.length === 0) return null;
   return (
     <details className="data-table">
-      <summary>View data ({rows.length} row{rows.length === 1 ? "" : "s"})</summary>
-      <table>
-        <thead>
-          <tr>
-            {columns.map((col) => (
-              <th key={col}>{col}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.slice(0, 50).map((row, i) => (
-            <tr key={i}>
+      <summary>View data ({rows.length.toLocaleString()} row{rows.length === 1 ? "" : "s"})</summary>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
               {columns.map((col) => (
-                <td key={col}>{String(row[col] ?? "")}</td>
+                <th key={col}>{col}</th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.slice(0, 50).map((row, i) => (
+              <tr key={i}>
+                {columns.map((col) => (
+                  <td key={col}>{String(row[col] ?? "")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </details>
   );
 }
@@ -132,11 +178,20 @@ function AnsweredBubble({ result, onSuggestionClick }: { result: AskResult; onSu
   const rows = result.final_rows ?? [];
   const chart = result.chart;
   const anomalyCount = result.anomalies?.length ?? 0;
+  const narrative = result.narrative ?? "";
+  const isReplay = narrative.startsWith(CACHED_REPLAY_MARKER);
+  const narrativeEnd = isReplay ? narrative.indexOf("]") + 1 : -1;
+  const displayNarrative = isReplay ? narrative.slice(narrativeEnd).trim() : narrative;
 
   return (
-    <div className="bubble assistant">
+    <>
+      {isReplay && (
+        <span className="replay-badge">
+          <SparkleIcon /> Cached replay
+        </span>
+      )}
       {anomalyCount > 0 && <div className="badge">{anomalyCount} anomal{anomalyCount === 1 ? "y" : "ies"} detected</div>}
-      {result.narrative && <p className="narrative">{result.narrative}</p>}
+      {displayNarrative && <p className="narrative">{displayNarrative}</p>}
       {chart?.chart_type === "bar" && <BarChart chart={chart} columns={columns} rows={rows} />}
       {chart?.chart_type === "line" && <LineChart chart={chart} columns={columns} rows={rows} />}
       {chart?.chart_type === "single_value" && <SingleValue chart={chart} columns={columns} rows={rows} />}
@@ -145,10 +200,31 @@ function AnsweredBubble({ result, onSuggestionClick }: { result: AskResult; onSu
         <div className="suggestions">
           {result.follow_up_suggestions!.map((q, i) => (
             <button key={i} className="suggestion-chip" onClick={() => onSuggestionClick(q)}>
+              <SparkleIcon />
               {q}
             </button>
           ))}
         </div>
+      )}
+    </>
+  );
+}
+
+function MessageRow({ message, onSuggestionClick }: { message: ChatMessage; onSuggestionClick: (q: string) => void }) {
+  const isUser = message.role === "user";
+  return (
+    <div className={`msg-row ${isUser ? "user" : "assistant"}`}>
+      <div className={`avatar ${isUser ? "user" : "assistant"}`}>{isUser ? "You" : "N"}</div>
+      {isUser ? (
+        <div className="bubble">{message.text}</div>
+      ) : message.kind === "answered" ? (
+        <div className="bubble">
+          <AnsweredBubble result={message.result} onSuggestionClick={onSuggestionClick} />
+        </div>
+      ) : message.kind === "clarification" ? (
+        <div className="bubble clarification">{message.text}</div>
+      ) : (
+        <div className="bubble error">{message.text}</div>
       )}
     </div>
   );
@@ -159,6 +235,11 @@ export default function ChatDemo({ gatewayUrl }: { gatewayUrl: string }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, loading]);
 
   async function ask(question: string) {
     const trimmed = question.trim();
@@ -220,7 +301,7 @@ export default function ChatDemo({ gatewayUrl }: { gatewayUrl: string }) {
     } catch {
       setMessages((prev) => [
         ...prev,
-        { id: crypto.randomUUID(), role: "assistant", kind: "error", text: "Could not reach the gateway. Is it running?" },
+        { id: crypto.randomUUID(), role: "assistant", kind: "error", text: "Could not reach the server. Please try again." },
       ]);
     } finally {
       setLoading(false);
@@ -228,39 +309,38 @@ export default function ChatDemo({ gatewayUrl }: { gatewayUrl: string }) {
   }
 
   return (
-    <div className="chat">
-      <div className="demo-notice">
-        Demo mode: questions run against the real live pipeline (Snowflake + Anthropic + Neo4j + OPA), fixed to
-        tenant &quot;{DEMO_TENANT_ID}&quot; with an &quot;analyst&quot; role. No sign-in yet.
-      </div>
-      <div className="chat-log">
-        {messages.map((m) => {
-          if (m.role === "user") {
-            return (
-              <div className="bubble user" key={m.id}>
-                {m.text}
-              </div>
-            );
-          }
-          if (m.kind === "answered") {
-            return <AnsweredBubble key={m.id} result={m.result} onSuggestionClick={ask} />;
-          }
-          if (m.kind === "clarification") {
-            return (
-              <div className="bubble assistant clarification" key={m.id}>
-                {m.text}
-              </div>
-            );
-          }
-          return (
-            <div className="bubble assistant error" key={m.id}>
-              {m.text}
+    <div className="chat-card">
+      <div className="chat-log" ref={logRef}>
+        {messages.length === 0 && (
+          <div className="empty-state">
+            <div className="empty-state-icon">
+              <ChatIcon />
             </div>
-          );
-        })}
+            <h2>Start a conversation</h2>
+            <p>Try one of these, or ask your own question about transactions, markets, or customers.</p>
+            <div className="example-grid">
+              {EXAMPLE_QUESTIONS.map((q) => (
+                <button key={q} className="example-card" onClick={() => void ask(q)}>
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((m) => (
+          <MessageRow key={m.id} message={m} onSuggestionClick={(q) => void ask(q)} />
+        ))}
         {loading && (
-          <div className="bubble assistant">
-            Thinking&hellip; (real questions can take up to a minute or two)
+          <div className="msg-row assistant">
+            <div className="avatar assistant">N</div>
+            <div className="bubble">
+              <div className="typing">
+                <span />
+                <span />
+                <span />
+              </div>
+              <div className="typing-caption">Thinking — complex questions can take up to a minute</div>
+            </div>
           </div>
         )}
       </div>
@@ -276,9 +356,10 @@ export default function ChatDemo({ gatewayUrl }: { gatewayUrl: string }) {
           onChange={(e) => setInput(e.target.value)}
           placeholder="Ask a question about your data..."
           disabled={loading}
+          autoFocus
         />
-        <button type="submit" disabled={loading || !input.trim()}>
-          Ask
+        <button type="submit" disabled={loading || !input.trim()} aria-label="Send">
+          <SendIcon />
         </button>
       </form>
     </div>

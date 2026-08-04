@@ -33,16 +33,40 @@ export default async function HomePage() {
   const status = await getGatewayStatus();
 
   return (
-    <main>
-      <h1>NaviGraph</h1>
-      <p>
-        NaviGraph is a multi-tenant conversational BI platform that lets teams ask questions of
-        their data in natural language and get back trustworthy, explainable answers.
-      </p>
-      <p className="status-line">
-        Gateway status: {status.reachable ? "reachable" : "gateway unreachable"} ({status.detail})
-      </p>
-      <ChatDemo gatewayUrl={env.NEXT_PUBLIC_GATEWAY_URL} />
-    </main>
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="brand">
+          <span className="brand-mark">N</span>
+          NaviGraph
+        </div>
+        <div className="header-badges">
+          <span className="pill" title={status.detail}>
+            <span
+              className="pill-dot"
+              style={!status.reachable ? { background: "var(--danger)" } : undefined}
+            />
+            {status.reachable ? "Live" : "Reconnecting"}
+          </span>
+          <span className="pill">Analyst view</span>
+        </div>
+      </header>
+
+      <main>
+        <div className="page-inner">
+          <div className="intro">
+            <h1>Ask anything about your data</h1>
+            <p>
+              NaviGraph turns natural-language questions into governed, explainable answers —
+              grounded in your real schema, checked against access policy, and cited against the
+              actual numbers behind every chart.
+            </p>
+          </div>
+          <ChatDemo gatewayUrl={env.NEXT_PUBLIC_GATEWAY_URL} />
+          <p className="app-footer">
+            Demo workspace · responses are generated live from your connected data source
+          </p>
+        </div>
+      </main>
+    </div>
   );
 }
