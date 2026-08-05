@@ -3535,7 +3535,30 @@ discipline (re-testing a previously-working question after every fix) --
 the user did not report this one; it was found before it could ever
 reach production wrong-data territory.
 
-Re-deploying this second fix and re-verifying "total transaction volume
-by market" (now expected to produce exactly the one direct join, no
-bridge), plus re-confirming the Euronext question above still answers
-correctly, is pending -- not yet done as of this entry.
+**Live-verified after redeploying this second fix**: the Euronext
+question re-confirmed answering correctly via the 2-hop bridge, twice,
+with byte-identical generated SQL to the first deploy's result --
+unaffected by the connectivity-guard addition, as designed (the bridge
+is genuinely needed there; `CLOSE_PRICES` and `MARKETS` are never
+otherwise connected).
+
+"Total transaction volume by market" itself could NOT be cleanly
+re-confirmed live: three separate live calls after this second deploy
+each resolved a DIFFERENT real table combination (`CUSTOMER_MARKET_AGG`
+alone; `CUSTOMER_MARKET_AGG`+`MARKETS`; `CUSTOMER_MARKET_AGG`+
+`STAGING_MARKETS`) -- never landing back on the exact `TRANSACTIONS`+
+`MARKETS` resolution that exposed the SIXTH REAL BUG in the first place.
+This is the SAME pre-existing, already-documented Semantic
+Retrieval/entity-extraction non-determinism noted earlier this session
+(items 38/44/96) -- confirmed, again, to be independent of both of
+today's fixes (every one of the three real resolutions observed live
+correctly avoided any wrong-data fan-out, either answering correctly
+with no bridge needed at all, or safely failing with
+`unjoined_table_in_multi_table_query`). Given this non-determinism makes
+the EXACT `TRANSACTIONS`+`MARKETS` scenario unreliable to hit live on
+demand, the connectivity-guard fix's correctness for that exact scenario
+rests on its deterministic unit test
+(`test_no_unnecessary_bridge_when_anchor_already_connected_via_pass_1`,
+part of the 407 passing) rather than a live confirmation -- an honest
+gap, not glossed over, and consistent with how this exact non-
+determinism was already handled earlier in the session.

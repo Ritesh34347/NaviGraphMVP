@@ -1885,8 +1885,32 @@ case) still correctly and safely fails with
 confirms item 96's cross-relationship ambiguity guard is untouched by
 either of today's two bridge-search changes.
 
-Next: commit this second fix, rebase against any new CD promote commit,
-push to both remotes, monitor the CD deploy to completion, then
-re-verify "total transaction volume by market" produces exactly one
-direct join (no bridge) and re-confirm the Euronext question still
-answers correctly, before considering this item fully closed.
+Committed the second fix, rebased against the CD promote commit, pushed
+to both remotes, monitored the second CD deploy to completion (all three
+images rebuilt, canary bake clean at 10%/50%/100%, promoted to stable).
+
+Live re-verified the Euronext question twice post-deploy: still answers
+correctly via the 2-hop bridge, byte-identical generated SQL to the
+first deploy. Attempted to re-verify "total transaction volume by
+market" specifically producing no unnecessary bridge, but three separate
+live calls each resolved a DIFFERENT real table combination
+(`CUSTOMER_MARKET_AGG` alone, `CUSTOMER_MARKET_AGG`+`MARKETS`,
+`CUSTOMER_MARKET_AGG`+`STAGING_MARKETS`) -- never landing back on the
+exact `TRANSACTIONS`+`MARKETS` resolution that exposed the bug, due to
+the SAME pre-existing Semantic Retrieval non-determinism already
+documented (items 38/44/96). All three real outcomes observed were
+still correct/safe on their own terms (no wrong-data fan-out in any of
+them) -- but this specific live scenario could not be cleanly
+re-confirmed on demand. The connectivity-guard fix's correctness for the
+exact `TRANSACTIONS`+`MARKETS` case rests on its deterministic unit test
+(part of the 407 passing) rather than a live confirmation this time --
+logged honestly in LIMITATIONS.md item 97 rather than overclaiming a
+live result that didn't actually land.
+
+This item is now considered closed: the Euronext multi-hop join gap is
+fixed and live-verified; the bridge-search regression found during this
+fix's own testing is fixed and unit-test-verified (with two clean live
+confirmations that the Euronext bridge itself is unaffected); the
+separate AVG-aggregation gap and the pre-existing entity-extraction
+non-determinism are both logged as known, out-of-scope limitations, not
+silently folded into this item's scope.
