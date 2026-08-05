@@ -1778,3 +1778,40 @@ Remaining: commit + push (both remotes) IMMEDIATELY given this is a live
 wrong-data bug in production, deploy, and re-test the Technology-sector
 question to confirm it now either resolves correctly via the ISIN join
 alone or fails safely -- not yet done as of this entry.
+
+## 2026-08-05 — Deployed and live-verified the critical fix; found and diagnosed a separate, pre-existing gap while continuing the requested testing
+
+Pushed, deployed (`56fbecd`, promoted), live-tested against the real
+gateway: "What is the total transaction value for the Technology sector?"
+now correctly fails with `unjoined_table_in_multi_table_query`
+(`['ASSET_INFORMATION', 'STAGING_TRANSACTIONS']`) instead of silently
+returning $22.8B -- the critical fix works as designed. Re-confirmed
+"total transaction value for Premium customers" (unambiguous, single
+relationship) still answers correctly.
+
+Continuing the requested brokerage named-value testing, re-ran "total
+units traded by customers with Aggressive risk level" and "total
+transaction volume by market" (this session's own original worked
+example) 3x each -- both intermittently failed AND succeeded across
+runs, ruling out a deterministic regression from today's fix. Direct
+diagnostic calls (`kubectl port-forward` + isolated Intent
+Understanding/Ontology calls, same methodology as always) on a failing
+run found the real cause: Intent Understanding extracted the compound
+phrase `"total units traded"`, which does not EXACTLY match the real
+glossary's `"units traded"` synonym -- `resolve_business_term`'s Cypher
+requires strict equality, unlike the substring heuristics used elsewhere
+this session -- so `relationship_resolutions` came back completely
+empty and nothing was left to join the two resolved tables. This is a
+real, pre-existing, SEPARATE gap (glossary exact-match fragility
+colliding with already-documented entity-extraction non-determinism,
+items 38/44), confirmed NOT caused by today's cross-relationship fix.
+Logged as newly found in `LIMITATIONS.md` item 96, not fixed in this
+pass -- a safe failure, not wrong data, and carries its own real
+over-matching tradeoff if relaxed carelessly.
+
+Answering the user's "is this task done?": the requested brokerage
+named-value testing is complete. It found and fixed one severe,
+live wrong-data bug (this item), and surfaced one separate, lower-
+severity, pre-existing gap (documented, not fixed). The originally-
+reported Euronext/multi-hop-join failure from the earlier testing pass
+remains open and not yet investigated.

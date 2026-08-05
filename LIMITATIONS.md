@@ -3391,3 +3391,37 @@ requires Ontology to know which real table each relationship's OBJECT
 corresponds to -- data it does not currently have access to. Logged as a
 real, deeper follow-up; the two-pass guard is the safe, correct stopgap
 for now.
+
+**Live-verified after deploy**: "What is the total transaction value for
+the Technology sector?" now correctly FAILS with
+`unjoined_table_in_multi_table_query` (`['ASSET_INFORMATION',
+'STAGING_TRANSACTIONS']`) instead of silently returning the wrong
+$22.8B -- exactly the intended, safe outcome. Re-confirmed "total
+transaction value for Premium customers" (a single, unambiguous
+relationship) still answers correctly, no regression.
+
+Continued named-value testing (per the user's request to enhance
+brokerage coverage) surfaced TWO further intermittent failures on
+questions that HAD worked earlier this session: "total units traded by
+customers with Aggressive risk level" and the very question this whole
+session's worked example is built on, "total transaction volume by
+market." Repeating each 3x showed BOTH succeeding some runs and failing
+others -- ruling out a deterministic regression from this fix. Direct
+diagnostic calls (Intent Understanding -> Ontology) on a failing run of
+the risk-level question found the real cause, and it is NOT this item's
+fix: Intent Understanding extracted `"total units traded"` (not
+`"units traded"`), and `resolve_business_term`'s Cypher requires EXACT
+string equality against `BusinessConcept.name`/`synonyms` (no substring
+matching, unlike the label-matching/`_resolved_via_named_value`
+heuristics used elsewhere in this session) -- so this compound phrasing
+never matched the glossary at all, `relationship_resolutions` came back
+completely empty (zero candidates, not an ambiguous pair), and Semantic
+Retrieval's column-level resolutions alone had nothing to join them
+with. This is a real, PRE-EXISTING, SEPARATE gap (exact-match-only
+glossary lookup colliding with Intent Understanding's already-documented
+entity-extraction non-determinism, items 38/44) -- logged here as newly
+found, not caused by today's fixes, and NOT fixed in this pass (a safe
+failure, not wrong data, and a real design tradeoff exists: relaxing
+`resolve_business_term` to substring matching risks over-matching short,
+common synonym words against unrelated entity text, unlike a column-name
+check where the identifier itself is usually distinctive).
