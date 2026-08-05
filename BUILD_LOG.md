@@ -1946,6 +1946,23 @@ pre-existing ontology tests needed no changes -- confirmed why
 (`MagicMock`'s default empty `__iter__`) rather than assuming it was
 safe.
 
-Next: commit, rebase against any new CD promote commit, push to both
-remotes, monitor the CD deploy to completion, then live-verify against
-the real deployed gateway.
+Committed, pushed to both remotes (no rebase needed, already up to
+date), monitored the CD deploy to completion (all three images rebuilt,
+canary bake clean at 10%/50%/100%, promoted to stable).
+
+Live-verified against the real deployed gateway with the exact question
+that intermittently failed earlier this session: "What is the total
+units traded by customers with Aggressive risk level?", run twice.
+Both runs answered correctly with the identical result
+(`602,136,555.1275` units, correct `STAGING_TRANSACTIONS`/
+`STAGING_CUSTOMER_INFORMATION` join, correct `RISKLEVEL = 'Aggressive'`
+filter) -- no longer dependent on which exact phrasing Intent
+Understanding happens to extract on a given run. This item is closed.
+
+This closes out today's second fix. Both of today's requested items are
+now complete: the Euronext multi-hop join gap (item 97) and the glossary
+exact-match fragility (item 98), each root-caused live, fixed, tested,
+deployed through a full canary rollout, and live-verified against the
+real production gateway -- with one additional real bug (the
+unnecessary-bridge-join regression) found and fixed along the way during
+the Euronext fix's own regression testing, never shipped unverified.

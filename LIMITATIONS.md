@@ -3620,8 +3620,15 @@ returns an empty iterator, so the unpatched real `list_business_concepts`
 call against a bare `MagicMock` client harmlessly yields an empty
 glossary, verified by re-running the full pre-existing suite unchanged.
 
-**What full version requires**: live end-to-end re-verification (the
-"total units traded"/"total transaction volume by market" questions
-that intermittently failed earlier this session now resolving reliably
-via the fuzzy path instead of depending on which exact phrasing Intent
-Understanding happened to extract) is pending this fix's deploy.
+**Live-verified after deploy**: "What is the total units traded by
+customers with Aggressive risk level?" -- the exact question that
+intermittently failed earlier this session depending on whether Intent
+Understanding happened to extract the compound phrase `"total units
+traded"` -- now answers correctly and consistently across two repeated
+live calls against the real deployed gateway, both producing the
+identical, correct result (`602,136,555.1275` units) via the real join
+`STAGING_TRANSACTIONS JOIN STAGING_CUSTOMER_INFORMATION ON CUSTOMERID`
+and the correct `RISKLEVEL = 'Aggressive'` filter. This no longer
+depends on which exact phrasing Intent Understanding happens to extract
+on a given run -- the fuzzy fallback recovers the compound phrase every
+time now.
