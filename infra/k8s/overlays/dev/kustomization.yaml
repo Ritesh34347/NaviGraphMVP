@@ -41,10 +41,10 @@ patches:
 images:
   - name: navigraph-gateway
     newName: navigraphdevacr.azurecr.io/navigraph-gateway
-    newTag: ce56434ec60fc2663e2a512b6a46188fe41979c5
+    newTag: 464ac91312b2a9f7da00ef9a41e18185272e3b73
   - name: navigraph-agent-runtime
     newName: navigraphdevacr.azurecr.io/navigraph-agent-runtime
-    newTag: ce56434ec60fc2663e2a512b6a46188fe41979c5
+    newTag: 464ac91312b2a9f7da00ef9a41e18185272e3b73
   - name: navigraph-web
     newName: navigraphdevacr.azurecr.io/navigraph-web
-    newTag: ce56434ec60fc2663e2a512b6a46188fe41979c5
+    newTag: 464ac91312b2a9f7da00ef9a41e18185272e3b73
