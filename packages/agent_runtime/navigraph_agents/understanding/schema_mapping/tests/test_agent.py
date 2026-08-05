@@ -830,6 +830,87 @@ class TestBridgeTableJoin:
         assert hop2.left_column == "MARKETID"
         assert hop2.right_column == "MARKETID"
 
+    async def test_no_unnecessary_bridge_when_anchor_already_connected_via_pass_1(
+        self,
+    ) -> None:
+        """SIXTH REAL BUG, live-reproduced: "What is the total transaction
+        volume by market?" (the session's flagship worked example)
+        already connects `TRANSACTIONS` to `MARKETS` directly via
+        `"Transaction happens in Market"`. `"Transaction involves Asset"`
+        (also realizing_table `TRANSACTIONS`, key `ISIN`) independently
+        has zero direct candidates (`MARKETS` has no `ISIN` column), which
+        used to trigger an unnecessary bridge via `ASSET_INFORMATION`,
+        adding a real but pointless extra join to already-correct SQL.
+        Must produce exactly the one direct join, no bridge."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="comparison",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="transaction volume",
+                    resolved=True,
+                    catalog_column_id="col-value",
+                    column_name="TOTALVALUE",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="market",
+                    resolved=True,
+                    catalog_column_id="col-market-name",
+                    column_name="NAME",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Transaction",
+                    predicate="HAPPENS_IN",
+                    object_label="Market",
+                    realizing_table="TRANSACTIONS",
+                    subject_key_column="MARKETID",
+                    object_key_column="MARKETID",
+                ),
+                RelationshipResolution(
+                    subject_label="Transaction",
+                    predicate="INVOLVES",
+                    object_label="Asset",
+                    realizing_table="TRANSACTIONS",
+                    subject_key_column="ISIN",
+                    object_key_column="ISIN",
+                ),
+                RelationshipResolution(
+                    subject_label="Asset",
+                    predicate="TRADED_IN",
+                    object_label="Market",
+                    realizing_table="ASSET_INFORMATION",
+                    subject_key_column="MARKETID",
+                    object_key_column="MARKETID",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-value", "TRANSACTIONS", "TOTALVALUE", "NUMBER"),
+                _catalog_entry("col-txn-market", "TRANSACTIONS", "MARKETID", "TEXT"),
+                _catalog_entry("col-txn-isin", "TRANSACTIONS", "ISIN", "TEXT"),
+                _catalog_entry("col-market-name", "MARKETS", "NAME", "TEXT"),
+                _catalog_entry("col-market-id", "MARKETS", "MARKETID", "TEXT"),
+                _catalog_entry("col-ai-isin", "ASSET_INFORMATION", "ISIN", "TEXT"),
+                _catalog_entry("col-ai-market", "ASSET_INFORMATION", "MARKETID", "TEXT"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert set(output.result.tables) == {"TRANSACTIONS", "MARKETS"}
+        assert len(output.result.joins) == 1
+        join = output.result.joins[0]
+        assert {join.left_table, join.right_table} == {"TRANSACTIONS", "MARKETS"}
+        assert join.left_column == "MARKETID"
+        assert join.right_column == "MARKETID"
+
     async def test_no_bridge_when_no_relationship_reaches_the_gap(self) -> None:
         """Two resolved tables sharing no key at all, and no relationship
         in `relationship_resolutions` bridges the gap -- must stay

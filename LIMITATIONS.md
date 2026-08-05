@@ -3488,8 +3488,54 @@ clean.
 
 **What full version requires**: bounded to exactly one bridge hop (two
 joins) by design -- a genuine 3-hop question (if one exists in this
-dataset) would still fail safely rather than being guessed. Live
-end-to-end re-verification of the Euronext question, plus a regression
-spot-check on previously-working brokerage questions, is pending this
-fix's deploy -- see BUILD_LOG.md's matching entry for the live-verified
-result.
+dataset) would still fail safely rather than being guessed.
+
+**Live-verified after deploy**: "What is the average closing price for
+assets on Euronext - Growth Paris?" now correctly answers via the real
+2-hop bridge -- the deployed gateway's actual generated SQL was
+`SELECT MARKETS.NAME, SUM(CLOSE_PRICES.CLOSEPRICE) AS CLOSEPRICE_TOTAL
+FROM STAGING.STAGING_ASSET_INFORMATION JOIN FAR_TRANS.CLOSE_PRICES ON
+CLOSE_PRICES.ISIN = STAGING_ASSET_INFORMATION.ISIN JOIN FAR_TRANS.MARKETS
+ON MARKETS.MARKETID = STAGING_ASSET_INFORMATION.MARKETID WHERE
+MARKETS.NAME = 'Euronext - Growth Paris' GROUP BY MARKETS.NAME`, exactly
+matching the fix's design and correctly schema-qualifying the bridge
+table via its own `JoinSpec.left_schema`/`right_schema` fields, not left
+bare. A SEPARATE, real, lower-severity gap surfaced by this same live
+call: the question asks for an AVERAGE, but `_aggregation_function` only
+ever emits `SUM`/`COUNT` (no `AVG` exists anywhere in SQL Generation), so
+the answer is actually a SUM mislabeled as an average -- the Grounded
+Narrative Generation agent's own grounding check caught this itself
+(`narrative_contains_unverified_number`, narrative text: "this is a sum
+rather than an average, so an average closing price cannot be
+determined"). Logged as a new, separate gap (no `AVG` aggregation
+support), not fixed in this pass -- out of scope for the multi-hop join
+gap this item covers, and not something the user has asked for yet.
+
+**SIXTH REAL BUG, found live during this fix's own regression check**:
+re-testing the session's flagship worked example, "What is the total
+transaction volume by market?", after deploying the above fix showed a
+real but completely unnecessary extra join: `TRANSACTIONS` and `MARKETS`
+were ALREADY connected directly (via `"Transaction happens in Market"`),
+but `"Transaction involves Asset"` (also realizing_table `TRANSACTIONS`,
+key `ISIN`) independently had zero direct candidates, which triggered
+Pass 1.5's bridge search anyway and added a real, pointless
+`JOIN STAGING_ASSET_INFORMATION ON ISIN` to already-correct SQL -- a
+silent row-dropping/fan-out risk from an unneeded `INNER JOIN`, even
+though it happened not to change this particular result. Root cause: the
+bridge search only checked "does THIS relationship have a direct
+candidate," never "is the anchor table already connected to everything
+it needs via Pass 1, through ANY relationship." Fixed by computing Pass
+1's own resolved-table connectivity graph BEFORE Pass 1.5 runs, and only
+considering a bridge when it would connect two tables not already
+reachable from each other via Pass 1 alone. New regression test:
+`test_no_unnecessary_bridge_when_anchor_already_connected_via_pass_1`.
+407 tests pass (up from 406), `ruff check` and `mypy` both clean. Caught
+entirely by this session's own "verify beyond the single reported case"
+discipline (re-testing a previously-working question after every fix) --
+the user did not report this one; it was found before it could ever
+reach production wrong-data territory.
+
+Re-deploying this second fix and re-verifying "total transaction volume
+by market" (now expected to produce exactly the one direct join, no
+bridge), plus re-confirming the Euronext question above still answers
+correctly, is pending -- not yet done as of this entry.

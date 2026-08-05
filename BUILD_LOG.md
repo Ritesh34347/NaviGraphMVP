@@ -1850,8 +1850,43 @@ item 93's own lesson). 406 tests pass (up from 403). `ruff check` clean.
 `mypy --exclude '(^|[\/])(tests|migrations)([\/]|$)' packages/` clean
 (the project's real CI invocation, run from repo root).
 
-Next: commit, rebase against any new CD promote commit, push to both
-remotes, monitor the CD deploy to completion, then live-verify the exact
-Euronext question against the real deployed gateway plus a no-regression
-spot-check on previously-working brokerage questions before considering
-this item closed.
+Committed, rebased, pushed to both remotes, monitored the CD deploy to
+completion (all three images built, canary bake passed cleanly at
+10%/50%/100%, promoted to stable). Live-verified the Euronext question
+against the real deployed gateway: it now answers correctly via the real
+2-hop bridge, generated SQL exactly matching the fix's design (see
+LIMITATIONS.md item 97's live-verified update for the full statement).
+Also found, live, a separate, lower-severity gap in the same call: the
+question asks for an average but SQL Generation has no `AVG` support
+(only `SUM`/`COUNT`), so the real answer is a mislabeled sum -- the
+Grounded Narrative Generation agent's own grounding check caught this on
+its own; logged as a new, out-of-scope gap, not fixed here.
+
+Regression spot-checks on two previously-fixed questions turned up a
+REAL, SEVERE-CLASS bug in today's own fix: "total transaction volume by
+market" (the session's flagship worked example) still answered
+correctly, but its generated SQL now contained a real, completely
+unnecessary extra `JOIN STAGING_ASSET_INFORMATION ON ISIN` -- Pass 1.5's
+bridge search fired for `"Transaction involves Asset"` even though
+`TRANSACTIONS` was ALREADY connected to `MARKETS` directly via a
+different relationship. This is exactly the class of silent-wrong-data
+risk item 96 was built to prevent (an unnecessary `INNER JOIN` can
+silently drop unmatched rows or fan out), even though it happened not to
+change this particular result. Root-caused, fixed, and tested BEFORE
+declaring the Euronext task done -- see LIMITATIONS.md item 97's
+SIXTH-REAL-BUG update for the full root cause and fix (a Pass-1
+connectivity check gating Pass 1.5, so a bridge is only ever considered
+when it would connect two tables not already reachable from each other).
+407 tests pass (up from 406), `ruff check`/`mypy` clean.
+
+The Technology-sector regression check (item 96's flagship wrong-data
+case) still correctly and safely fails with
+`unjoined_table_in_multi_table_query` rather than the wrong $22.8B --
+confirms item 96's cross-relationship ambiguity guard is untouched by
+either of today's two bridge-search changes.
+
+Next: commit this second fix, rebase against any new CD promote commit,
+push to both remotes, monitor the CD deploy to completion, then
+re-verify "total transaction volume by market" produces exactly one
+direct join (no bridge) and re-confirm the Euronext question still
+answers correctly, before considering this item fully closed.

@@ -585,6 +585,26 @@ class SchemaMappingAgent:
         every other guard in this method: prefer a safe, explicit failure
         (`unjoined_table_in_multi_table_query`) over guessing a longer or
         ambiguous chain.
+
+        SIXTH REAL BUG, found live during THIS fix's own regression check:
+        "What is the total transaction volume by market?" (the session's
+        flagship worked example) already connects `TRANSACTIONS` to
+        `MARKETS` directly via `"Transaction happens in Market"` -- but
+        `"Transaction involves Asset"` (also realizing_table
+        `TRANSACTIONS`, key `ISIN`) independently has zero direct
+        candidates (`MARKETS` has no `ISIN` column), so Pass 1.5's first
+        version bridged it anyway via `ASSET_INFORMATION`, adding a real
+        but completely unnecessary extra `JOIN STAGING_ASSET_INFORMATION
+        ON ISIN` to already-correct SQL. An unnecessary `INNER JOIN` like
+        this is a real, silent risk (dropping any `TRANSACTIONS` row whose
+        `ISIN` doesn't match a real asset, or fanning out if that key were
+        ever non-unique on the bridge side) even when it happens not to
+        change this particular result. Fixed by computing Pass 1's own
+        resolved-table connectivity graph BEFORE Pass 1.5 runs, and only
+        considering a bridge when it would connect two tables not already
+        reachable from each other via Pass 1 alone -- a bridge is for
+        filling a genuine gap, never an unnecessary alternate path to
+        somewhere already reachable.
         """
 
         def _core_name(table_name: str) -> str:
@@ -701,6 +721,38 @@ class SchemaMappingAgent:
                 )
             )
 
+        # SIXTH REAL BUG, found live during this fix's own regression
+        # check: "What is the total transaction volume by market?" (the
+        # session's flagship worked example) already connects TRANSACTIONS
+        # to MARKETS directly via "Transaction happens in Market" -- but
+        # "Transaction involves Asset" (also realizing_table=TRANSACTIONS,
+        # key=ISIN) independently has zero DIRECT candidates (MARKETS has
+        # no ISIN column), so Pass 1.5's first version bridged it anyway
+        # via ASSET_INFORMATION, adding a real but completely unnecessary
+        # extra `JOIN STAGING_ASSET_INFORMATION ON ISIN` to already-correct
+        # SQL -- a silent row-dropping/fan-out risk for no reason, since
+        # TRANSACTIONS and MARKETS were already connected. A bridge must
+        # only be considered when it would connect two tables NOT already
+        # reachable from each other via Pass 1's own edges -- computed
+        # once, from a snapshot of Pass 1's candidate pairs, before Pass
+        # 1.5 runs.
+        def _reachable(start: str, adjacency: dict[str, set[str]]) -> set[str]:
+            seen = {start}
+            queue = [start]
+            while queue:
+                node = queue.pop()
+                for neighbor in adjacency.get(node, set()):
+                    if neighbor not in seen:
+                        seen.add(neighbor)
+                        queue.append(neighbor)
+            return seen
+
+        pass1_adjacency: dict[str, set[str]] = {}
+        for _, pair_key in candidate_joins:
+            left, right = tuple(pair_key)
+            pass1_adjacency.setdefault(left, set()).add(right)
+            pass1_adjacency.setdefault(right, set()).add(left)
+
         # Pass 1.5: FIFTH REAL BUG (see this method's docstring for the
         # full Euronext worked example). For a relationship whose
         # realizing_table IS already resolved but found ZERO direct
@@ -710,10 +762,12 @@ class SchemaMappingAgent:
         # `_resolve_bridge_table`, since a bridge is by definition never
         # independently resolved) both (a) genuinely carries `rel`'s key
         # column, and (b) independently and unambiguously reaches a
-        # SECOND, distinct resolved table via `rel2`'s own key. Only fires
-        # when exactly one such bridge resolution exists across every
-        # candidate `rel2` -- multiple distinct candidates are a real
-        # ambiguity, left unresolved rather than guessed.
+        # SECOND, distinct resolved table via `rel2`'s own key -- one that
+        # is NOT already reachable from `rel`'s realizing_table via Pass
+        # 1's own edges (see SIXTH REAL BUG above). Only fires when
+        # exactly one such bridge resolution exists across every candidate
+        # `rel2` -- multiple distinct candidates are a real ambiguity,
+        # left unresolved rather than guessed.
         for rel in payload.relationship_resolutions:
             real_realizing_table = core_to_real.get(_core_name(rel.realizing_table))
             if real_realizing_table is None:
@@ -757,10 +811,17 @@ class SchemaMappingAgent:
                 ]
                 if len(second_candidates) != 1:
                     continue
+                second_table = second_candidates[0]
+                if second_table in _reachable(real_realizing_table, pass1_adjacency):
+                    # SIXTH REAL BUG (see above): `real_realizing_table` is
+                    # already connected to `second_table` via Pass 1 --
+                    # directly or transitively through other resolved
+                    # tables -- so a bridge here would be a real but
+                    # unnecessary extra join, not something this question
+                    # actually needs.
+                    continue
 
-                bridge_matches.add(
-                    (bridge_table, rel2.subject_key_column, second_candidates[0])
-                )
+                bridge_matches.add((bridge_table, rel2.subject_key_column, second_table))
 
             if len(bridge_matches) != 1:
                 # Zero: no relationship in this question's own
