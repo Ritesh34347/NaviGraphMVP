@@ -21,6 +21,7 @@ import time
 from navigraph_kg.api import (
     entity_matches_reference_node,
     get_relationship_concept,
+    list_business_concepts,
     resolve_business_term,
 )
 from navigraph_kg.client import Neo4jClient
@@ -89,6 +90,55 @@ def _normalize_label(text: str) -> str:
     """
 
     return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def _tokenize(text: str) -> list[str]:
+    """Split into lowercase alphanumeric-run word tokens, e.g. "Units
+    Traded" / "units-traded" -> `["units", "traded"]`.
+
+    Unlike `_normalize_label` (which concatenates everything into one
+    blob, deliberately erasing word boundaries for the label-vs-entity
+    substring check above), this PRESERVES word boundaries -- needed for
+    `_glossary_term_matches_entity` below, where erasing boundaries would
+    let a short glossary synonym accidentally match as a substring of an
+    unrelated, longer word purely by coincidence (found while designing
+    the fix: normalizing away spaces would make the glossary synonym
+    `"state"` match inside `"real estate"`, since `"estate"` literally
+    contains the letters `"state"` -- an entity in this dataset's
+    brokerage/e-commerce questions would never mean this, but the
+    collision is real and avoidable by keeping word boundaries)."""
+
+    tokens: list[str] = []
+    current: list[str] = []
+    for ch in text.lower():
+        if ch.isalnum():
+            current.append(ch)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def _contains_token_subsequence(haystack: list[str], needle: list[str]) -> bool:
+    """Is `needle` a contiguous run of tokens within `haystack`?"""
+
+    if not needle:
+        return False
+    n, m = len(haystack), len(needle)
+    return any(haystack[i : i + m] == needle for i in range(n - m + 1))
+
+
+def _glossary_term_matches_entity(term: str, entity_tokens: list[str]) -> bool:
+    """Does `entity_tokens` contain `term`'s own tokens as a contiguous
+    run? Used by `OntologyAgent._resolve_concepts`'s fuzzy fallback -- see
+    that method's docstring for the real gap this closes (a compound
+    extracted entity like "total units traded" wrapping extra words
+    around the glossary's exact synonym "units traded")."""
+
+    term_tokens = _tokenize(term)
+    return bool(term_tokens) and _contains_token_subsequence(entity_tokens, term_tokens)
 
 
 def _label_matches_entities(label: str, entities: list[str]) -> bool:
@@ -213,18 +263,92 @@ class OntologyAgent:
         `ORDER BY`), so "first" here is just "whatever Neo4j returned first",
         picked only as a deterministic-enough fallback rather than a
         meaningful ranking.
+
+        REAL BUG, found live and logged (items 38/44/96/97) across several
+        earlier fixes this session: `resolve_business_term`'s Cypher
+        requires EXACT (case-insensitive) equality against a
+        `BusinessConcept`'s `name` or one of its `synonyms`. Intent
+        Understanding's real LLM-based entity extraction is genuinely
+        non-deterministic and often wraps the canonical phrase in extra
+        words -- e.g. extracting `"total units traded"` where the real
+        glossary synonym is exactly `"units traded"` -- so the exact match
+        silently finds nothing even though a real, correct column exists.
+        Confirmed live: a repeated call to this same agent with the
+        identical real candidate data resolved differently across runs
+        purely because of which exact phrasing Intent Understanding
+        happened to extract that time. This was always a SAFE failure
+        (the term surfaces as unresolved, at worst producing
+        `unjoined_table_in_multi_table_query` rather than wrong data) but
+        a real usability gap, not fixed until now.
+
+        Fix: when the exact match returns nothing for an entity, fall back
+        to a fuzzy match against the tenant's full glossary (fetched once
+        per `run()` call via `list_business_concepts`, not once per
+        entity, and only when actually needed) -- does the entity's own
+        token sequence contain a glossary name/synonym's tokens as a
+        contiguous run (`_glossary_term_matches_entity`)? This is
+        deliberately ONE-DIRECTIONAL (the short, specific glossary term
+        must be contained WITHIN the longer, free-text entity, never the
+        reverse) -- the same safe direction `query.sql_generation.agent.
+        _resolved_via_named_value` already established for the equivalent
+        problem elsewhere in this codebase; matching the other direction
+        would let a single short/generic word extracted as its own entity
+        wrongly "contain" a much more specific multi-word business term.
+        It is ALSO token-based rather than raw-substring, unlike that
+        precedent -- glossary terms include real, short, common English
+        words (`"tax"`, `"qty"`, `"date"`, `"city"`, `"tier"`, `"isin"`,
+        confirmed via the live glossary) that would otherwise risk
+        matching as an accidental substring of a completely unrelated
+        longer word (e.g. `"state"` inside `"real estate"`) if word
+        boundaries were erased the way `_normalize_label` does for the
+        (much smaller, curated) relationship-label matching above.
+
+        If the fuzzy fallback matches 2+ glossary concepts mapping to
+        DIFFERENT columns for the same one entity string, this is a real
+        ambiguity -- which one the entity actually means cannot be
+        determined here, so it is left unresolved rather than guessed,
+        matching this codebase's standing "never guess" discipline. The
+        fuzzy fallback NEVER runs at all for an entity whose exact match
+        already succeeded -- it only ever recovers a term that would
+        otherwise have gone completely unresolved.
         """
 
         concept_resolutions: list[ConceptResolution] = []
         unresolved_terms: list[str] = []
+        glossary: list[dict] | None = None
 
         for entity in entities:
             records = resolve_business_term(self._client, tenant_id=tenant_id, term=entity)
+            used_fuzzy_fallback = False
+
+            if not records:
+                if glossary is None:
+                    glossary = list_business_concepts(self._client, tenant_id=tenant_id)
+                entity_tokens = _tokenize(entity)
+                records = [
+                    concept
+                    for concept in glossary
+                    if _glossary_term_matches_entity(
+                        concept.get("business_concept") or "", entity_tokens
+                    )
+                    or any(
+                        _glossary_term_matches_entity(synonym, entity_tokens)
+                        for synonym in concept.get("synonyms") or []
+                    )
+                ]
+                used_fuzzy_fallback = True
 
             if not records:
                 concept_resolutions.append(ConceptResolution(term=entity, resolved=False))
                 unresolved_terms.append(entity)
                 continue
+
+            if used_fuzzy_fallback:
+                distinct_column_ids = {r.get("catalog_column_id") for r in records}
+                if len(distinct_column_ids) > 1:
+                    concept_resolutions.append(ConceptResolution(term=entity, resolved=False))
+                    unresolved_terms.append(entity)
+                    continue
 
             chosen = next((r for r in records if r.get("preferred") is True), records[0])
 

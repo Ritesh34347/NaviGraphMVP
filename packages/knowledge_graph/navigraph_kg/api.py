@@ -72,6 +72,43 @@ def resolve_business_term(
     )
 
 
+def list_business_concepts(client: Neo4jClient, *, tenant_id: str) -> list[dict[str, Any]]:
+    """Return every real `BusinessConcept` -> `Column` mapping for a tenant,
+    unconditionally (no term filter) -- the same shape `resolve_business_term`
+    returns per exact match, just without the `WHERE` clause.
+
+    Used by `OntologyAgent` as a fuzzy-matching fallback source when
+    `resolve_business_term`'s exact (case-insensitive) equality match finds
+    nothing for a compound extracted entity phrase (e.g. "total units
+    traded" vs. the glossary's exact synonym "units traded") -- see that
+    agent's `_resolve_concepts` docstring for the full fix. Kept here as a
+    plain, unopinionated read (matching this module's own "no business
+    logic in navigraph_kg.api" convention) rather than doing the fuzzy
+    matching in Cypher; the token-sequence containment check itself lives
+    in `OntologyAgent`, which already owns the equivalent normalization
+    logic for relationship-concept label matching. A tenant's real
+    glossary is small (on the order of dozens of concepts), so returning
+    the whole set in one query is cheap and avoids N synonym-matching
+    round-trips.
+    """
+
+    return client.run(
+        f"""
+        MATCH (bc:{NODE_BUSINESS_CONCEPT} {{tenant_id: $tenant_id}})
+        MATCH (bc)-[r:{REL_MAPS_TO}]->(c:{NODE_COLUMN})
+        OPTIONAL MATCH (c)-[:{REL_COLUMN_OF}]->(t:{NODE_TABLE})
+        RETURN bc.name AS business_concept,
+               bc.synonyms AS synonyms,
+               c.catalog_column_id AS catalog_column_id,
+               c.name AS column_name,
+               t.name AS table_name,
+               r.preferred AS preferred,
+               r.source AS source
+        """,
+        tenant_id=tenant_id,
+    )
+
+
 def get_column_for_concept(
     client: Neo4jClient, *, tenant_id: str, concept_name: str
 ) -> dict[str, Any] | None:

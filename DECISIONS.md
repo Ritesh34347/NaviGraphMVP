@@ -1384,3 +1384,36 @@ cross-agent conversion test (`test_schema_mapping_joins_with_bridge_
 schema_convert_to_sql_generation_without_error`) in the SAME commit --
 never split across separate changes the way item 93's original field
 addition was.
+
+## 2026-08-05 — Glossary fuzzy fallback lives in OntologyAgent, and is token-based, not raw-substring
+
+**Context**: `resolve_business_term`'s exact-match-only lookup (item 98)
+needed a fallback for compound extracted-entity phrases that wrap extra
+words around a real glossary synonym.
+
+**Decision**: the fuzzy matching logic lives in `OntologyAgent`, not
+`navigraph_kg.api` -- a new `list_business_concepts` read function
+returns the tenant's whole glossary unconditionally, and the agent does
+the token-sequence containment check itself, reusing the same file's
+existing `_normalize_label`/`_label_matches_entities` pattern rather than
+pushing string-matching logic into the "plain read layer."
+
+**Why token-based, not raw substring**: querying the real live glossary
+(via `kubectl exec` into agent-runtime against the real cloud Postgres)
+found genuinely short synonyms (`"tax"`, `"qty"`, `"date"`, `"city"`,
+`"tier"`, `"isin"`) that would risk a false-positive substring match
+inside an unrelated longer word if word boundaries were erased (e.g.
+`"state"` matching inside `"real estate"`). Token-based contiguous-
+subsequence matching preserves word boundaries and avoids this while
+still catching the real, observed failure class. One-directional (the
+glossary term must be the shorter side, contained within the entity),
+matching `_resolved_via_named_value`'s already-validated safe direction
+-- not bidirectional, since a single short/generic entity word wrongly
+"containing" a longer, more specific business term is a real risk this
+session already learned to avoid the hard way.
+
+**Ambiguity guard**: if the fuzzy fallback matches 2+ glossary concepts
+mapping to different real columns for one entity, it stays unresolved
+rather than guessed -- reuses this session's standing "never guess"
+philosophy rather than introducing a new, separate risk tolerance for
+this one fallback path.

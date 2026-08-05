@@ -1914,3 +1914,38 @@ confirmations that the Euronext bridge itself is unaffected); the
 separate AVG-aggregation gap and the pre-existing entity-extraction
 non-determinism are both logged as known, out-of-scope limitations, not
 silently folded into this item's scope.
+
+## 2026-08-05 — Fixed the glossary exact-match fragility (item 98), on request
+
+Diagnosed and root-caused (see LIMITATIONS.md item 98 and this date's
+matching DECISIONS.md entry): `resolve_business_term`'s exact-match-only
+Cypher lookup silently dropped compound extracted-entity phrases against
+the real glossary's exact synonym strings -- a real, repeatable gap
+flagged since items 38/44 and confirmed again during items 96/97's live
+testing.
+
+Queried the real live glossary directly (via `kubectl exec` into the
+agent-runtime pod against the real cloud Postgres `column_glossary`
+table) before designing the fix, rather than guessing at typical term
+shapes -- found real short synonyms (`"tax"`, `"qty"`, `"date"`,
+`"city"`, `"tier"`, `"isin"`) that ruled out a naive raw-substring
+approach (would risk `"state"` matching inside `"real estate"`).
+Implemented a token-sequence containment fallback in `OntologyAgent`
+instead, firing only when the exact match finds nothing, with an
+ambiguity guard (2+ distinct matching columns -> stays unresolved) and a
+new `navigraph_kg.api.list_business_concepts` read function (fetched
+once per request, not once per entity).
+
+New tests: 5 in the ontology agent (compound-phrase resolution, fallback
+not consulted on exact-match success, short-word collision avoidance,
+ambiguous-match safety, single-fetch-per-run), 2 in knowledge_graph
+(`list_business_concepts`'s Cypher shape). 415 tests pass (up from 407).
+`ruff check` and `mypy --exclude '(^|[\/])(tests|migrations)([\/]|$)'
+packages/` (the project's real CI invocation) both clean. All 13
+pre-existing ontology tests needed no changes -- confirmed why
+(`MagicMock`'s default empty `__iter__`) rather than assuming it was
+safe.
+
+Next: commit, rebase against any new CD promote commit, push to both
+remotes, monitor the CD deploy to completion, then live-verify against
+the real deployed gateway.

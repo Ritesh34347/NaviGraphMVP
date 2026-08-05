@@ -3562,3 +3562,66 @@ rests on its deterministic unit test
 part of the 407 passing) rather than a live confirmation -- an honest
 gap, not glossed over, and consistent with how this exact non-
 determinism was already handled earlier in the session.
+
+### 98. RESOLVED: `resolve_business_term`'s exact-match-only glossary lookup silently dropped every compound-phrase extracted entity, a real gap flagged since items 38/44 and confirmed again in items 96/97
+
+**What was found**: `navigraph_kg.api.resolve_business_term`'s Cypher
+required strict (case-insensitive) EQUALITY against a `BusinessConcept`'s
+`name` or one of its `synonyms` -- no substring/fuzzy matching at all,
+unlike every other free-text-vs-canonical-vocabulary comparison already
+built this session (`_label_matches_entities`'s bidirectional substring
+check, `_resolved_via_named_value`'s one-directional check). Intent
+Understanding's real LLM-based entity extraction is genuinely
+non-deterministic and frequently wraps the canonical glossary phrase in
+extra words -- confirmed live earlier this session: the identical
+question extracted `"total units traded"` on one run against the real
+glossary synonym `"units traded"`, and the exact match found nothing,
+leaving `relationship_resolutions` empty and the question either
+unmapped or dependent on Semantic Retrieval's LLM fallback alone. Always
+a SAFE failure (never wrong data), but a real, repeatable usability gap.
+
+**Resolution**: `OntologyAgent._resolve_concepts` now falls back to a
+fuzzy match, ONLY when the exact match returns nothing for an entity --
+fetches the tenant's full glossary once per `run()` call (new
+`navigraph_kg.api.list_business_concepts`, an unconditional read, no
+term filter -- kept in `navigraph_kg` as a plain read, matching that
+module's own "no business logic" convention) and checks whether the
+entity's own token sequence contains a glossary name/synonym's tokens as
+a contiguous run (`_glossary_term_matches_entity`, one-directional --
+the glossary term must be the shorter side, mirroring
+`_resolved_via_named_value`'s already-validated safe direction).
+Deliberately TOKEN-based, not raw-substring: querying the real live
+glossary directly (via `kubectl exec` into the agent-runtime pod against
+the real cloud Postgres) surfaced genuinely short real synonyms (`"tax"`,
+`"qty"`, `"date"`, `"city"`, `"tier"`, `"isin"`) that would risk
+accidental substring collisions with unrelated longer words if word
+boundaries were erased the way `_normalize_label` does for the (much
+smaller, curated) relationship-label matching -- concretely, erasing
+boundaries would make the glossary synonym `"state"` match inside `"real
+estate"` purely because `"estate"` contains those letters. Token-based
+contiguous-subsequence matching avoids this while still catching the
+real, observed failure class (extra modifier words wrapped around the
+canonical phrase). If the fuzzy fallback matches 2+ glossary concepts
+mapping to DIFFERENT columns for the same entity, it is left unresolved
+rather than guessed -- the same "never guess" discipline as every other
+ambiguity guard this session. The fuzzy fallback never runs at all for
+an entity whose exact match already succeeded. New tests:
+`test_fuzzy_fallback_resolves_a_real_compound_phrase`,
+`test_fuzzy_fallback_not_consulted_when_exact_match_succeeds`,
+`test_fuzzy_fallback_avoids_short_word_substring_collision`,
+`test_fuzzy_fallback_ambiguous_match_stays_unresolved`,
+`test_fuzzy_fallback_fetches_glossary_only_once_per_run` (ontology
+agent), plus `TestListBusinessConcepts` (knowledge_graph). 415 tests
+pass (up from 407), `ruff check` and `mypy --exclude
+'(^|[\/])(tests|migrations)([\/]|$)' packages/` both clean. All 13
+pre-existing ontology tests that patch `resolve_business_term` to return
+empty needed no changes -- `MagicMock`'s default `__iter__` already
+returns an empty iterator, so the unpatched real `list_business_concepts`
+call against a bare `MagicMock` client harmlessly yields an empty
+glossary, verified by re-running the full pre-existing suite unchanged.
+
+**What full version requires**: live end-to-end re-verification (the
+"total units traded"/"total transaction volume by market" questions
+that intermittently failed earlier this session now resolving reliably
+via the fuzzy path instead of depending on which exact phrasing Intent
+Understanding happened to extract) is pending this fix's deploy.

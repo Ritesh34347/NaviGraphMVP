@@ -9,6 +9,7 @@ without an explicit `@pytest.mark.asyncio` decorator.
 
 from __future__ import annotations
 
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 from navigraph_shared.contracts import RequestContext
@@ -200,6 +201,211 @@ class TestConceptResolution:
 
         resolution = output.result.concept_resolutions[0]
         assert resolution.catalog_column_id == "col-a"
+
+
+class TestFuzzyConceptResolutionFallback:
+    """REAL BUG, found live and logged across items 38/44/96/97:
+    `resolve_business_term`'s exact match never fires for a compound
+    extracted entity phrase like "total units traded" against the real
+    glossary synonym "units traded". These tests cover the new fuzzy
+    token-subsequence fallback that recovers exactly this case."""
+
+    _glossary: ClassVar[list[dict]] = [
+        {
+            "business_concept": "Units Traded",
+            "synonyms": ["quantity", "shares traded", "volume", "trade quantity"],
+            "catalog_column_id": "col-units",
+            "column_name": "UNITS",
+            "table_name": "STAGING_TRANSACTIONS",
+            "preferred": True,
+            "source": "schema_enrichment",
+        },
+        {
+            "business_concept": "State",
+            "synonyms": ["region", "state"],
+            "catalog_column_id": "col-state",
+            "column_name": "STATE",
+            "table_name": "DIM_CUSTOMER",
+            "preferred": True,
+            "source": "manual_ecommerce_poc",
+        },
+    ]
+
+    async def test_fuzzy_fallback_resolves_a_real_compound_phrase(self) -> None:
+        """Live-reproduced: Intent Understanding extracted "total units
+        traded" where the real glossary synonym is exactly "units traded"
+        -- the exact match finds nothing, but the fuzzy fallback must
+        recover it via token-subsequence containment."""
+
+        client = MagicMock()
+        agent = OntologyAgent(client=client)
+
+        with (
+            patch(
+                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
+                return_value=[],
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.list_business_concepts",
+                return_value=self._glossary,
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
+                return_value=None,
+            ),
+        ):
+            output = await agent.run(_make_input(["total units traded"]))
+
+        resolution = output.result.concept_resolutions[0]
+        assert resolution.resolved is True
+        assert resolution.catalog_column_id == "col-units"
+        assert resolution.table_name == "STAGING_TRANSACTIONS"
+        assert output.result.unresolved_terms == []
+
+    async def test_fuzzy_fallback_not_consulted_when_exact_match_succeeds(self) -> None:
+        """The fuzzy fallback must never even be queried for an entity
+        whose exact match already succeeded -- it only ever recovers a
+        term that would otherwise be completely unresolved."""
+
+        client = MagicMock()
+        agent = OntologyAgent(client=client)
+
+        exact_record = [
+            {
+                "business_concept": "Revenue",
+                "catalog_column_id": "col-revenue",
+                "column_name": "TOTALVALUE",
+                "table_name": "STAGING_TRANSACTIONS",
+                "preferred": True,
+                "source": "schema_enrichment",
+            }
+        ]
+
+        with (
+            patch(
+                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
+                return_value=exact_record,
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.list_business_concepts",
+            ) as mock_list_concepts,
+            patch(
+                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
+                return_value=None,
+            ),
+        ):
+            output = await agent.run(_make_input(["revenue"]))
+
+        assert output.result.concept_resolutions[0].resolved is True
+        mock_list_concepts.assert_not_called()
+
+    async def test_fuzzy_fallback_avoids_short_word_substring_collision(self) -> None:
+        """Real risk found while designing the fix: the real glossary has
+        genuinely short synonyms (e.g. "state", "tax", "date", "isin").
+        Naive substring matching (erasing word boundaries) would wrongly
+        match the glossary synonym "state" inside an unrelated entity like
+        "real estate report" (since "estate" literally contains "state").
+        The token-based design must NOT match this."""
+
+        client = MagicMock()
+        agent = OntologyAgent(client=client)
+
+        with (
+            patch(
+                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
+                return_value=[],
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.list_business_concepts",
+                return_value=self._glossary,
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
+                return_value=None,
+            ),
+        ):
+            output = await agent.run(_make_input(["real estate report"]))
+
+        resolution = output.result.concept_resolutions[0]
+        assert resolution.resolved is False
+        assert output.result.unresolved_terms == ["real estate report"]
+
+    async def test_fuzzy_fallback_ambiguous_match_stays_unresolved(self) -> None:
+        """Two DIFFERENT glossary concepts (mapping to different real
+        columns) both match the same entity via the fuzzy fallback --
+        which one is actually meant can't be determined, so it must stay
+        unresolved rather than guessing, matching every other "never
+        guess" guard in this codebase."""
+
+        client = MagicMock()
+        agent = OntologyAgent(client=client)
+
+        ambiguous_glossary = [
+            {
+                "business_concept": "Units Traded",
+                "synonyms": ["units traded"],
+                "catalog_column_id": "col-units",
+                "column_name": "UNITS",
+                "table_name": "STAGING_TRANSACTIONS",
+                "preferred": True,
+                "source": "schema_enrichment",
+            },
+            {
+                "business_concept": "Total Transaction Value",
+                "synonyms": ["units traded value"],
+                "catalog_column_id": "col-value",
+                "column_name": "TOTALVALUE",
+                "table_name": "STAGING_TRANSACTIONS",
+                "preferred": True,
+                "source": "schema_enrichment",
+            },
+        ]
+
+        with (
+            patch(
+                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
+                return_value=[],
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.list_business_concepts",
+                return_value=ambiguous_glossary,
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
+                return_value=None,
+            ),
+        ):
+            output = await agent.run(_make_input(["total units traded value today"]))
+
+        resolution = output.result.concept_resolutions[0]
+        assert resolution.resolved is False
+        assert output.result.unresolved_terms == ["total units traded value today"]
+
+    async def test_fuzzy_fallback_fetches_glossary_only_once_per_run(self) -> None:
+        """Multiple entities needing the fallback in the same request must
+        only trigger one `list_business_concepts` call, not one per
+        entity -- a small, real efficiency guarantee this test locks in."""
+
+        client = MagicMock()
+        agent = OntologyAgent(client=client)
+
+        with (
+            patch(
+                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
+                return_value=[],
+            ),
+            patch(
+                "navigraph_agents.understanding.ontology.agent.list_business_concepts",
+                return_value=self._glossary,
+            ) as mock_list_concepts,
+            patch(
+                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
+                return_value=None,
+            ),
+        ):
+            await agent.run(_make_input(["total units traded", "some other region"]))
+
+        mock_list_concepts.assert_called_once()
 
 
 class TestRelationshipResolution:

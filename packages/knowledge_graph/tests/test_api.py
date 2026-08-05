@@ -15,6 +15,7 @@ from navigraph_kg.api import (
     get_column_for_concept,
     get_relationship_concept,
     list_assets_by_sector,
+    list_business_concepts,
     list_markets_for_exchange,
     resolve_business_term,
 )
@@ -66,6 +67,42 @@ class TestResolveBusinessTerm:
         client.run.return_value = []
 
         result = resolve_business_term(client, tenant_id="tenant-a", term="nonexistent")
+
+        assert result == []
+
+
+class TestListBusinessConcepts:
+    def test_queries_every_concept_for_the_tenant_with_no_term_filter(self) -> None:
+        client = MagicMock()
+        client.run.return_value = [
+            {
+                "business_concept": "Units Traded",
+                "synonyms": ["quantity", "shares traded", "volume", "trade quantity"],
+                "catalog_column_id": "col-1",
+                "column_name": "UNITS",
+                "table_name": "STAGING_TRANSACTIONS",
+                "preferred": True,
+                "source": "schema_enrichment",
+            }
+        ]
+
+        result = list_business_concepts(client, tenant_id="tenant-a")
+
+        client.run.assert_called_once()
+        cypher = client.run.call_args.args[0]
+        assert "tenant_id" in cypher
+        assert "WHERE" not in cypher
+        assert "synonyms" in cypher
+        kwargs = client.run.call_args.kwargs
+        assert kwargs == {"tenant_id": "tenant-a"}
+        assert "term" not in kwargs
+        assert result == client.run.return_value
+
+    def test_returns_empty_list_when_tenant_has_no_glossary(self) -> None:
+        client = MagicMock()
+        client.run.return_value = []
+
+        result = list_business_concepts(client, tenant_id="tenant-a")
 
         assert result == []
 
