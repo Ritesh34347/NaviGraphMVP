@@ -1,0 +1,364 @@
+<mxfile host="app.diagrams.net" agent="Claude Code" version="24.0.0" type="device">
+  <diagram id="navigraph-arch" name="NaviGraph Architecture">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1450" pageHeight="1250" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="NaviGraph — Implemented Architecture (as of 2026-08-05)" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="380" y="15" width="700" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Clients -->
+        <mxCell id="client-web" value="Web Browser&#10;(End-User Chat UI)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="150" y="80" width="280" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="client-agent" value="Headless Client / AI Agent&#10;(direct HTTP — no UI)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="900" y="80" width="280" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Ingress -->
+        <mxCell id="ingress" value="ingress-nginx + cert-manager&#10;(TLS · canary weight routing)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="470" y="190" width="380" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- App layer -->
+        <mxCell id="web-app" value="Web (Next.js)&#10;web-stable / web-canary" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="230" y="300" width="300" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="gateway" value="Gateway (FastAPI)&#10;gateway-stable / gateway-canary&#10;POST /ask · /healthz · /readyz" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="790" y="300" width="300" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Agent runtime wrapper (behind everything) -->
+        <mxCell id="agent-runtime-wrapper" value="agent-runtime (FastAPI, single deployment, modular monolith — ~25 agents, each also HTTP-invokable at /agents/{domain}/{agent}/invoke)" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=8;fillColor=none;strokeColor=#999999;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="70" y="415" width="1300" height="465" as="geometry" />
+        </mxCell>
+
+        <!-- Orchestrator domain -->
+        <mxCell id="dom-orch" value="Orchestrator domain" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=center;spacingTop=6;fontStyle=1;fontSize=12;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="100" y="450" width="1240" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="orch-1" value="Request Orchestrator" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="120" y="490" width="400" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="orch-2" value="Session / Context Manager" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="540" y="490" width="380" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="orch-3" value="Clarification Coordinator" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="940" y="490" width="380" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Understanding domain -->
+        <mxCell id="dom-understanding" value="Understanding (6)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=center;spacingTop=6;fontStyle=1;fontSize=12;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="100" y="580" width="230" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="u1" value="Conversation" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="110" y="615" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="u2" value="Intent Understanding" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="110" y="651" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="u3" value="Metadata Discovery" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="110" y="687" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="u4" value="Ontology" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="110" y="723" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="u5" value="Semantic Retrieval" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="110" y="759" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="u6" value="Schema Mapping" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="110" y="795" width="210" height="32" as="geometry" />
+        </mxCell>
+
+        <!-- Query domain -->
+        <mxCell id="dom-query" value="Query (6)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=center;spacingTop=6;fontStyle=1;fontSize=12;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="350" y="580" width="230" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="q1" value="Data Source Discovery" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="360" y="615" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="q2" value="SQL Generation" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="360" y="651" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="q3" value="SQL Optimization" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="360" y="687" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="q4" value="Execution Planning" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="360" y="723" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="q5" value="Data Federation" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="360" y="759" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="q6" value="Caching" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="360" y="795" width="210" height="32" as="geometry" />
+        </mxCell>
+
+        <!-- Guardrail domain -->
+        <mxCell id="dom-guardrail" value="Guardrail (4)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=center;spacingTop=6;fontStyle=1;fontSize=12;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="600" y="580" width="230" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="g1" value="Schema Constraint Validator" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="615" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="g2" value="Policy Authorization (OPA)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="651" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="g3" value="Query Cost / Row-Limit Estimator" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="687" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="g4" value="PII Exposure Checker" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="723" width="210" height="32" as="geometry" />
+        </mxCell>
+
+        <!-- Insight domain -->
+        <mxCell id="dom-insight" value="Insight (4)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=center;spacingTop=6;fontStyle=1;fontSize=12;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="850" y="580" width="230" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="i1" value="Chart Selection" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="615" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="i2" value="Anomaly / Outlier Highlighter" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="651" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="i3" value="Grounded Narrative Generation" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="687" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="i4" value="Follow-up Suggestion" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="723" width="210" height="32" as="geometry" />
+        </mxCell>
+
+        <!-- Ops domain -->
+        <mxCell id="dom-ops" value="Ops (2)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=center;spacingTop=6;fontStyle=1;fontSize=12;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="580" width="230" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="o1" value="Lineage Recorder" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="615" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="o2" value="Evaluation Judge" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="651" width="210" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="ops-note" value="eval/run_harness.py&#10;golden set + LLM-as-judge" style="text;html=1;fontSize=9;fontStyle=2;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="690" width="210" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Data stores -->
+        <mxCell id="ds-postgres" value="Postgres&#10;metadata_catalog + lineage" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="935" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="ds-neo4j" value="Neo4j&#10;knowledge graph (BusinessConcept,&#10;RelationshipConcept, reference nodes)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="350" y="935" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="ds-redis" value="Redis&#10;session state + query cache" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="600" y="935" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="ds-opa" value="OPA&#10;authz.rego (RBAC/ABAC)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="935" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="ds-snowflake" value="Snowflake (external)&#10;2 tenants: FIDELITY_POC (brokerage),&#10;ECOMMERCE_POC" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="935" width="220" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Observability -->
+        <mxCell id="obs-otel" value="OTel Collector" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="350" y="1055" width="220" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="obs-prom" value="Prometheus" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="600" y="1055" width="220" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="obs-grafana" value="Grafana" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="1055" width="220" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- CI/CD -->
+        <mxCell id="ci-actions" value="GitHub Actions&#10;(ci.yml + cd-deploy.yml)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="1150" width="240" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-acr" value="ACR&#10;(container images)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="380" y="1150" width="220" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="ci-aks" value="AKS canary rollout&#10;10% → 50% → 100% → promote" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="640" y="1150" width="280" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="legend-box" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;align=left;spacingLeft=10;spacingTop=6;fontStyle=1;fontSize=12;fillColor=#ffffff;strokeColor=#999999;" vertex="1" parent="1">
+          <mxGeometry x="980" y="1150" width="360" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-1" value="Orchestrator" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="990" y="1175" width="100" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-2" value="Understanding" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="1175" width="100" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-3" value="Query" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1210" y="1175" width="100" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-4" value="Guardrail" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="990" y="1198" width="100" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-5" value="Insight" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="1198" width="100" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-6" value="Ops" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="1210" y="1198" width="100" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-7" value="Data store / infra" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="990" y="1221" width="150" height="18" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-8" value="dashed = lineage / async" style="text;html=1;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1150" y="1221" width="170" height="18" as="geometry" />
+        </mxCell>
+
+        <!-- Edges: client -> ingress -> apps -->
+        <mxCell id="e1" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="client-web" target="ingress">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="client-agent" target="ingress">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="app.navigraph.*" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="ingress" target="web-app">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" value="api.navigraph.*" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="ingress" target="gateway">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="GATEWAY_URL (SSR, always -stable)" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="web-app" target="gateway">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Gateway -> orchestrator -->
+        <mxCell id="e6" value="POST /agents/orchestrator/request_orchestrator/invoke" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="gateway" target="orch-1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Pipeline flow between domains -->
+        <mxCell id="e7" value="1. resolve intent/entities" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="orch-1" target="dom-understanding">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="215" y="530" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8" value="2. generate SQL" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="dom-understanding" target="dom-query">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="3. validate / authorize / cost-check" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="dom-query" target="dom-guardrail">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="approved statement" style="endArrow=classic;html=1;fontSize=9;dashed=1;" edge="1" parent="1" source="dom-guardrail" target="dom-query">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="715" y="875" />
+              <mxPoint x="465" y="875" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e11" value="4. execute -&gt; results" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="dom-query" target="dom-insight">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="chart / narrative / anomalies / follow-ups" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="dom-insight" target="orch-1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="965" y="560" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e13" value="lineage recorded at every stage" style="endArrow=classic;html=1;fontSize=9;dashed=1;" edge="1" parent="1" source="orch-1" target="dom-ops">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="320" y="555" />
+              <mxPoint x="1215" y="555" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e14" value="response" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="orch-1" target="gateway">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="940" y="330" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Data store connections -->
+        <mxCell id="e15" value="business terms, relationships" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="u4" target="ds-neo4j">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" value="catalog + glossary" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="u3" target="ds-postgres">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="215" y="900" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e17" value="RBAC/ABAC decision" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="g2" target="ds-opa">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" value="PII / constraint check" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="g4" target="ds-postgres">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="715" y="915" />
+              <mxPoint x="210" y="915" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e19" value="query cache" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="q6" target="ds-redis">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e20" value="session state" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="orch-2" target="ds-redis">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="730" y="900" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e21" value="direct connector / Trino route" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="q5" target="ds-snowflake">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="465" y="900" />
+              <mxPoint x="1210" y="900" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e22" value="lineage_events" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="o1" target="ds-postgres">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1215" y="900" />
+              <mxPoint x="210" y="900" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Observability -->
+        <mxCell id="e23" value="OTel spans (all agents + gateway)" style="endArrow=classic;html=1;fontSize=9;dashed=1;" edge="1" parent="1" source="agent-runtime-wrapper" target="obs-otel">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e24" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="obs-otel" target="obs-prom">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e25" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="obs-prom" target="obs-grafana">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- CI/CD -->
+        <mxCell id="e26" value="build + push" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="ci-actions" target="ci-acr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e27" value="deploy canary, bake, promote" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="ci-acr" target="ci-aks">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e28" value="deploys" style="endArrow=classic;html=1;fontSize=9;dashed=1;" edge="1" parent="1" source="ci-aks" target="gateway">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="780" y="1177" />
+              <mxPoint x="940" y="1177" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
