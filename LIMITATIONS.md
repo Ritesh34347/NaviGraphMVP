@@ -3331,3 +3331,63 @@ correctly bound `WHERE` filter (`LOYALTY_TIER = 'Gold'` ->
 dimension reference) still correctly returns the full, unfiltered
 per-channel breakdown -- the fix does not over-trigger on genuine
 group-by questions.
+
+### 96. RESOLVED, SAME DAY, SEVERE: item 91's implied-table relaxation let two conflicting relationship concepts fire for the same question, producing a silent >500x wrong-data inflation
+
+**What was found**: continuing the requested "test the brokerage dataset
+with more named-value questions" pass, "What is the total transaction
+value for the Technology sector?" answered -- but the number looked
+suspicious enough to independently re-derive from Snowflake directly
+before trusting it. The pipeline's real generated SQL joined
+`TRANSACTIONS` to `ASSET_INFORMATION` via `MARKETID` (`"Transaction
+happens in Market"`), returning **$22,818,053,245.26**. A direct,
+independent query using the CORRECT join key (`ISIN`, `"Transaction
+involves Asset"`) returned **$44,664,559.45** -- the pipeline's answer
+was **over 500x too large**, a real, live, silent wrong-data bug, not a
+hypothetical one.
+
+**Root cause**: item 91's implied-table relaxation (`OntologyAgent
+._resolve_relationships`) made `TRANSACTIONS` fire EVERY
+`RelationshipConcept` it realizes unconditionally once ANY resolved term
+implies that table (here, "transaction value") -- including BOTH
+`"Transaction happens in Market"` (key `MARKETID`) and `"Transaction
+involves Asset"` (key `ISIN`) simultaneously, for a question that
+resolved only `TRANSACTIONS` and `ASSET_INFORMATION` (no `MARKETS`
+table). Both independently passed `_build_joins`'s existing item-87
+single-relationship ambiguity guard (each finds `ASSET_INFORMATION` as
+its own sole candidate -- it genuinely has both `MARKETID`, for an
+unrelated "listed on" reason, and `ISIN`). That guard was never designed
+to catch TWO DIFFERENT relationships proposing the SAME table pair via
+DIFFERENT keys -- `_build_joins` simply used whichever join happened to
+be encountered/deduped first, silently fanning every transaction out
+against every Technology-sector asset sharing its market.
+
+**Resolution**: `SchemaMappingAgent._build_joins` now runs in two
+passes. Pass 1 is unchanged (collects every relationship-concept
+proposal that survives the existing single-relationship checks). Pass 2
+is new: proposals are grouped by the unordered `(other_table,
+realizing_table)` pair; if a pair was proposed via 2+ DIFFERENT key
+columns by different relationship concepts, ALL proposals for that pair
+are dropped (never guess which relationship is actually relevant),
+surfacing as a real `unjoined_table_in_multi_table_query` instead of a
+wrong answer. This does not regress the e-commerce category/tier fix
+(items 91/95): e-commerce's dimension tables use real, uniquely-named
+surrogate keys by design, so no two relationships there ever propose the
+same table pair via different columns in the first place -- confirmed
+by re-reading the schema before shipping, not assumed. New test:
+`test_two_different_relationships_proposing_the_same_table_pair_via_different_keys_join_neither`.
+290 tests pass (up from 289), `ruff check` clean.
+
+**What full version requires**: (1) live end-to-end re-verification (the
+Technology-sector question now failing safely or resolving via the
+correct `ISIN` join alone) is pending this fix's deploy -- see
+BUILD_LOG.md's matching entry. (2) this guard is reactive -- it catches
+the conflict once both relationships fire, rather than preventing item
+91's relaxation from being this broad in the first place; a more
+targeted relaxation (only expanding the SPECIFIC relationship whose
+object is actually implied, not every relationship sharing a
+`realizing_table`) would avoid the conflict existing at all, but
+requires Ontology to know which real table each relationship's OBJECT
+corresponds to -- data it does not currently have access to. Logged as a
+real, deeper follow-up; the two-pass guard is the safe, correct stopgap
+for now.

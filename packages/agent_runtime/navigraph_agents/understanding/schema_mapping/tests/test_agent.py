@@ -559,6 +559,86 @@ class TestJoinAcrossTwoTables:
         # no partial-but-misleading join either.
         assert output.result.joins == []
 
+    async def test_two_different_relationships_proposing_the_same_table_pair_via_different_keys_join_neither(
+        self,
+    ) -> None:
+        """FOURTH REAL BUG, live-reproduced: "What is the total transaction
+        value for the Technology sector?" resolved TRANSACTIONS (via
+        "transaction value") and ASSET_INFORMATION (via "sector") only --
+        no MARKETS table this time. Once item 91's implied-table relaxation
+        let `TRANSACTIONS` fire EVERY relationship it realizes
+        unconditionally, BOTH "Transaction happens in Market"
+        (key=MARKETID) and "Transaction involves Asset" (key=ISIN)
+        independently found `ASSET_INFORMATION` as their sole candidate
+        (it genuinely has both columns, for unrelated reasons) -- each
+        passes the single-relationship ambiguity guard above on its own.
+        Live-verified this produced a real, silently WRONG answer:
+        joining via MARKETID fanned every transaction out against every
+        Technology asset sharing its market, inflating the true total
+        (independently confirmed via a correct ISIN join) from
+        $44,664,559.45 to $22,818,053,245.26 -- over 500x too large. Since
+        which relationship is actually relevant to THIS question can't be
+        determined from either proposal alone, neither may be joined."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="transaction value",
+                    resolved=True,
+                    catalog_column_id="col-1",
+                    column_name="TOTALVALUE",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="sector",
+                    resolved=True,
+                    catalog_column_id="col-2",
+                    column_name="SECTOR",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Transaction",
+                    predicate="HAPPENS_IN",
+                    object_label="Market",
+                    realizing_table="TRANSACTIONS",
+                    subject_key_column="MARKETID",
+                    object_key_column="MARKETID",
+                ),
+                RelationshipResolution(
+                    subject_label="Transaction",
+                    predicate="INVOLVES",
+                    object_label="Asset",
+                    realizing_table="TRANSACTIONS",
+                    subject_key_column="ISIN",
+                    object_key_column="ISIN",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-1", "TRANSACTIONS", "TOTALVALUE", "NUMBER"),
+                _catalog_entry("col-1b", "TRANSACTIONS", "MARKETID", "TEXT"),
+                _catalog_entry("col-1c", "TRANSACTIONS", "ISIN", "TEXT"),
+                _catalog_entry("col-2", "ASSET_INFORMATION", "SECTOR", "TEXT"),
+                _catalog_entry("col-2b", "ASSET_INFORMATION", "MARKETID", "TEXT"),
+                _catalog_entry("col-2c", "ASSET_INFORMATION", "ISIN", "TEXT"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert set(output.result.tables) == {"TRANSACTIONS", "ASSET_INFORMATION"}
+        # Two different relationships proposed the SAME table pair via
+        # DIFFERENT keys (MARKETID vs. ISIN) -- neither is trustworthy, so
+        # no join is emitted, rather than silently picking one and risking
+        # the exact wrong-data fan-out this guard exists to prevent.
+        assert output.result.joins == []
+
     async def test_no_join_when_realizing_table_not_among_resolved_columns(self) -> None:
         agent = SchemaMappingAgent()
 

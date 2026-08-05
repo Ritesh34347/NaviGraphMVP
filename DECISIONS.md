@@ -1320,3 +1320,27 @@ doesn't regress any of item 95's own established behavior (the "channel"/
 "market" worked-example cases remain safe; the "market"/`NAME` and
 "customer risk level"/`RISKLEVEL` accepted false positives remain
 false positives, unaffected either way) before shipping.
+
+## 2026-08-05 — `_build_joins` gets a cross-relationship ambiguity guard, not a narrower relaxation, to fix a live wrong-data bug at its true source
+
+Found via requested further live testing on the brokerage tenant: item
+91's implied-table relaxation let TWO different relationship concepts
+(`"Transaction happens in Market"`/`MARKETID`, `"Transaction involves
+Asset"`/`ISIN`) both fire for one question, each independently passing
+the existing single-relationship ambiguity guard, silently producing a
+>500x wrong total. Two fixes were considered: (a) make item 91's
+relaxation narrower/smarter so only the truly-relevant relationship
+fires, or (b) accept that Ontology cannot always know which single
+relationship is "the right one" when several share a `realizing_table`,
+and instead catch the resulting CONFLICT downstream, where the real
+catalog data needed to detect it already lives. (b) was chosen: (a)
+would require Ontology to know which real table each relationship's
+OBJECT maps to -- data it doesn't have and that would need real design
+work to add safely; (b) reuses the exact judgment already established
+for item 87's single-relationship guard (never guess when a shared key
+could mean two different things) and required no new data access, just
+grouping proposals that already exist in `_build_joins`'s own pass.
+Chosen specifically because it was the fastest path to a CORRECT,
+tested fix for a live wrong-data bug -- the narrower-relaxation
+alternative is logged as a real follow-up in `LIMITATIONS.md` item 96,
+not abandoned, just not the emergency fix.

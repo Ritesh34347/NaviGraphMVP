@@ -567,8 +567,12 @@ class SchemaMappingAgent:
         def _table_has_column(table_name: str, column_name: str) -> bool:
             return column_name.upper() in table_columns.get(table_name.upper(), set())
 
-        joins: list[JoinSpec] = []
-        seen_joins: set[tuple[str, str, str, str]] = set()
+        # Pass 1: collect every relationship that independently passes the
+        # existing per-relationship checks below. Each survivor is a
+        # candidate `JoinSpec`, grouped by the unordered (other_table,
+        # realizing_table) pair it would connect.
+        candidate_joins: list[tuple[JoinSpec, frozenset[str]]] = []
+        key_columns_by_pair: dict[frozenset[str], set[str]] = {}
 
         for rel in payload.relationship_resolutions:
             # Both sides of the join must actually be present among the
@@ -611,17 +615,10 @@ class SchemaMappingAgent:
                 continue
 
             other_table = candidates[0]
-
-            join_key = (
-                other_table,
-                rel.subject_key_column,
-                real_realizing_table,
-                rel.subject_key_column,
-            )
-            if join_key not in seen_joins:
-                seen_joins.add(join_key)
-
-                joins.append(
+            pair_key = frozenset({other_table, real_realizing_table})
+            key_columns_by_pair.setdefault(pair_key, set()).add(rel.subject_key_column)
+            candidate_joins.append(
+                (
                     JoinSpec(
                         left_table=other_table,
                         left_column=rel.subject_key_column,
@@ -630,8 +627,56 @@ class SchemaMappingAgent:
                         relationship_concept=(
                             f"{rel.subject_label} {rel.predicate} {rel.object_label}"
                         ),
-                    )
+                    ),
+                    pair_key,
                 )
+            )
+
+        # Pass 2: FOURTH REAL BUG, found live (item 91's implied-table
+        # relaxation made this reachable): once a fact table like
+        # `TRANSACTIONS` is implied by ANY resolved measure, EVERY
+        # relationship concept realized by it fires unconditionally (per
+        # `understanding.ontology.agent._resolve_relationships`'s own
+        # documented design) -- including ones utterly irrelevant to the
+        # actual question. For "total transaction value for the Technology
+        # sector", BOTH "Transaction happens in Market" (key `MARKETID`)
+        # and "Transaction involves Asset" (key `ISIN`) fired and both
+        # independently found `ASSET_INFORMATION` as their sole candidate
+        # (it has both columns, for unrelated reasons) -- Pass 1 above
+        # can't tell these apart, since each relationship is checked in
+        # isolation. Without this guard, whichever proposal happened to be
+        # deduped in first silently won: live-verified, the resulting SQL
+        # joined `TRANSACTIONS` to `ASSET_INFORMATION` via `MARKETID` (every
+        # transaction fanned out against every Technology asset sharing its
+        # market -- confirmed independently: real total `$44,664,559.45` via
+        # the correct `ISIN` join vs. the pipeline's actual
+        # `$22,818,053,245.26`, a >500x inflation from the fan-out). This
+        # pass detects exactly that: when the SAME (other_table,
+        # realizing_table) pair was proposed via 2+ DIFFERENT key columns
+        # by different relationship concepts, which one is actually
+        # relevant to this specific question cannot be determined here --
+        # guessing either risks silently wrong data, so BOTH are dropped,
+        # surfacing as a real, explicit `unjoined_table_in_multi_table_query`
+        # instead. A pair proposed via only ONE distinct key column (the
+        # common, safe case -- e.g. e-commerce's uniquely-keyed dimension
+        # tables never produce a second candidate column for the same
+        # table pair) is unaffected.
+        joins: list[JoinSpec] = []
+        seen_joins: set[tuple[str, str, str, str]] = set()
+
+        for join_spec, pair_key in candidate_joins:
+            if len(key_columns_by_pair[pair_key]) != 1:
+                continue
+
+            join_key = (
+                join_spec.left_table,
+                join_spec.left_column,
+                join_spec.right_table,
+                join_spec.right_column,
+            )
+            if join_key not in seen_joins:
+                seen_joins.add(join_key)
+                joins.append(join_spec)
 
         return joins
 

@@ -1739,3 +1739,42 @@ gateway:
 All three real bugs found and fixed this session in the SQL Generation
 predicate-resolution path (items 95 and this entry) are now live and
 verified. Documented the final live results in `LIMITATIONS.md` item 95.
+
+## 2026-08-05 — SEVERE: found and fixed a live, silent >500x wrong-data bug while continuing to test brokerage named-value questions
+
+Per the user's request to enhance brokerage testing with more
+named-value questions, pulled real reference values live (channel,
+customer type, risk level, sector, exchange names) via a direct
+Snowflake query, then live-tested 5 named-value questions against the
+real gateway. Channel ("Internet Banking"), customer type ("Premium"),
+and risk level ("Aggressive") all answered correctly with real, single-row
+filtered results. "What is the total transaction value for the Technology
+sector?" answered too -- but the number looked suspicious, so it was
+independently re-derived directly from Snowflake before being trusted
+(this session's standing discipline: never trust a plausible-looking
+number without verification when in doubt).
+
+**Confirmed a real, severe bug**: the pipeline's actual SQL joined
+`TRANSACTIONS` to `ASSET_INFORMATION` via `MARKETID`, returning
+**$22,818,053,245.26**. A correct, independent query joining via `ISIN`
+returned **$44,664,559.45** -- the live answer was over 500x inflated.
+Root cause: item 91's implied-table relaxation let both
+`"Transaction happens in Market"` and `"Transaction involves Asset"`
+fire simultaneously for this question (only `TRANSACTIONS` +
+`ASSET_INFORMATION` resolved, no `MARKETS` table), and
+`SchemaMappingAgent._build_joins`'s existing single-relationship
+ambiguity guard (item 87) couldn't catch it, since each relationship
+independently found `ASSET_INFORMATION` as its own sole candidate.
+
+**Fix**: `_build_joins` now runs a second pass grouping join proposals
+by the unordered `(other_table, realizing_table)` pair; a pair proposed
+via 2+ DIFFERENT key columns by different relationship concepts has ALL
+its proposals dropped rather than guessing which one applies. New test:
+`test_two_different_relationships_proposing_the_same_table_pair_via_different_keys_join_neither`.
+290 tests pass (up from 289), `ruff check` clean. Documented as
+`LIMITATIONS.md` item 96 and a new `DECISIONS.md` entry.
+
+Remaining: commit + push (both remotes) IMMEDIATELY given this is a live
+wrong-data bug in production, deploy, and re-test the Technology-sector
+question to confirm it now either resolves correctly via the ISIN join
+alone or fails safely -- not yet done as of this entry.
