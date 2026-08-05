@@ -1815,3 +1815,43 @@ live wrong-data bug (this item), and surfaced one separate, lower-
 severity, pre-existing gap (documented, not fixed). The originally-
 reported Euronext/multi-hop-join failure from the earlier testing pass
 remains open and not yet investigated.
+
+## 2026-08-05 — Fixed the Euronext multi-hop join gap (item 97), on request
+
+Diagnosed live (via `kubectl port-forward` + direct per-agent HTTP calls,
+same discipline as every prior fix today): "average closing price for
+assets on Euronext - Growth Paris" failed with
+`unjoined_table_in_multi_table_query` even though Ontology's
+`relationship_resolutions` already returned everything needed to answer
+it. Root cause confirmed with certainty: `_build_joins` only ever
+considered a relationship whose realizing_table was already among the
+resolved (column-selected) tables -- `ASSET_INFORMATION`, the required
+2-hop bridge between `CLOSE_PRICES` and `MARKETS`, was never
+independently resolved for this question, so the relevant relationship
+was silently skipped no matter how clearly Ontology flagged it.
+
+Designed and implemented a new, narrow Pass 1.5 bridge search in
+`_build_joins` -- see DECISIONS.md's matching entry for why a general
+graph search was rejected in favor of requiring a candidate bridge to
+prove itself via its own separate relationship. Added `left_schema`/
+`right_schema` to `JoinSpec` (both schema_mapping's and sql_generation's
+sibling contracts, in the same commit, plus a new cross-agent conversion
+test) so a bridge table -- which contributes no selected column -- still
+gets correctly schema-qualified in the generated SQL rather than left
+bare.
+
+Five new regression tests added: three in schema_mapping (the exact
+Euronext scenario including the LIMIT_PRICES false-positive exclusion, a
+no-bridge-found case, an ambiguous-bridge case), one in sql_generation
+(the bridge table's schema qualification in the actual generated SQL),
+one in request_orchestrator (the new JoinSpec fields survive the
+sibling-contract conversion without a `pydantic.ValidationError`, per
+item 93's own lesson). 406 tests pass (up from 403). `ruff check` clean.
+`mypy --exclude '(^|[\/])(tests|migrations)([\/]|$)' packages/` clean
+(the project's real CI invocation, run from repo root).
+
+Next: commit, rebase against any new CD promote commit, push to both
+remotes, monitor the CD deploy to completion, then live-verify the exact
+Euronext question against the real deployed gateway plus a no-regression
+spot-check on previously-working brokerage questions before considering
+this item closed.

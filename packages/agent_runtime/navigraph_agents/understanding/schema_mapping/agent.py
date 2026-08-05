@@ -550,6 +550,41 @@ class SchemaMappingAgent:
         `TRANSACTIONS` and `ASSET_INFORMATION` via the correct `ISIN` key
         is a separate, deliberate addition, not a side effect of this
         safety fix.
+
+        FIFTH REAL BUG, found live via "What is the average closing price
+        for assets on Euronext - Growth Paris?": `CLOSE_PRICES` and
+        `MARKETS` both resolve directly (closing price, market name), but
+        no term ever resolves anything from `ASSET_INFORMATION` -- yet the
+        real join path is CLOSE_PRICES --[ISIN]--> ASSET_INFORMATION
+        --[MARKETID]--> MARKETS, a genuine 2-hop bridge through a table
+        that contributes zero selected columns of its own. Pass 1 above
+        only ever considers a relationship whose `realizing_table` is
+        ALREADY one of the resolved tables, so "Asset traded in Market"
+        (realizing_table=ASSET_INFORMATION) was silently skipped even
+        though Ontology correctly returned it as relevant, and the
+        question failed with `unjoined_table_in_multi_table_query` despite
+        the exact relationship data needed already being present.
+
+        A fully general graph-based multi-hop solver was deliberately
+        rejected here: broadening the "other_table" candidate pool to
+        every relationship's realizing_table (regardless of whether that
+        relationship ends up used) re-introduces exactly the kind of
+        coincidental-shared-key-name ambiguity the FOURTH REAL BUG's guard
+        exists to prevent -- e.g. `LIMIT_PRICES` also shares `ISIN` with
+        `CLOSE_PRICES` purely because both are asset-keyed tables, which
+        would make "Asset has ClosingPrice"'s bridge search spuriously
+        ambiguous. Pass 1.5 below instead requires the bridge to prove
+        itself via its OWN, separate relationship: a candidate bridge
+        table only counts if some OTHER relationship's realizing_table (a)
+        genuinely carries the key the stuck relationship needs AND (b)
+        independently and unambiguously reaches a SECOND, different
+        resolved table via its own key. `LIMIT_PRICES` fails part (b) --
+        it has no relationship connecting it to `MARKETS` at all -- so it
+        is correctly excluded without any dataset-specific special-casing.
+        Bounded to exactly one bridge hop (two joins), consistent with
+        every other guard in this method: prefer a safe, explicit failure
+        (`unjoined_table_in_multi_table_query`) over guessing a longer or
+        ambiguous chain.
         """
 
         def _core_name(table_name: str) -> str:
@@ -559,13 +594,47 @@ class SchemaMappingAgent:
         core_to_real = {_core_name(table): table for table in resolved_tables}
 
         table_columns: dict[str, set[str]] = {}
+        table_schema: dict[str, str] = {}
+        real_tables_by_core: dict[str, list[str]] = {}
         for entry in payload.catalog_inventory:
             table_columns.setdefault(entry.table_name.upper(), set()).add(
                 entry.column_name.upper()
             )
+            table_schema.setdefault(entry.table_name, entry.schema_name)
+            core = _core_name(entry.table_name)
+            if entry.table_name not in real_tables_by_core.setdefault(core, []):
+                real_tables_by_core[core].append(entry.table_name)
 
         def _table_has_column(table_name: str, column_name: str) -> bool:
             return column_name.upper() in table_columns.get(table_name.upper(), set())
+
+        def _resolve_bridge_table(name: str) -> str | None:
+            """Resolve a `RelationshipConcept.realizing_table` name to the
+            one real catalog table it refers to, for use as a join-only
+            bridge (no columns are ever selected from it). Prefers an
+            already-resolved table for that core name if one exists;
+            otherwise the single real catalog variant if there is exactly
+            one. Two or more real variants with neither already resolved
+            are, in this catalog, always the bare/`STAGING_`-prefixed
+            duplicate pair for the same real table (item 14) -- since a
+            bridge contributes no selected column, either registration's
+            join-key VALUES are identical, so the `STAGING_`-prefixed one
+            is picked deterministically (matching this codebase's
+            established STAGING_-is-canonical convention) rather than
+            refused as ambiguous."""
+
+            core = _core_name(name)
+            if core in core_to_real:
+                return core_to_real[core]
+            variants = real_tables_by_core.get(core, [])
+            if not variants:
+                return None
+            if len(variants) == 1:
+                return variants[0]
+            staging_variant = next(
+                (v for v in variants if v.upper().startswith("STAGING_")), None
+            )
+            return staging_variant if staging_variant is not None else variants[0]
 
         # Pass 1: collect every relationship that independently passes the
         # existing per-relationship checks below. Each survivor is a
@@ -632,6 +701,109 @@ class SchemaMappingAgent:
                 )
             )
 
+        # Pass 1.5: FIFTH REAL BUG (see this method's docstring for the
+        # full Euronext worked example). For a relationship whose
+        # realizing_table IS already resolved but found ZERO direct
+        # candidates in Pass 1 above (its key isn't shared by any other
+        # resolved table), look for a 2-hop bridge: another relationship
+        # `rel2` whose OWN realizing_table (resolved via
+        # `_resolve_bridge_table`, since a bridge is by definition never
+        # independently resolved) both (a) genuinely carries `rel`'s key
+        # column, and (b) independently and unambiguously reaches a
+        # SECOND, distinct resolved table via `rel2`'s own key. Only fires
+        # when exactly one such bridge resolution exists across every
+        # candidate `rel2` -- multiple distinct candidates are a real
+        # ambiguity, left unresolved rather than guessed.
+        for rel in payload.relationship_resolutions:
+            real_realizing_table = core_to_real.get(_core_name(rel.realizing_table))
+            if real_realizing_table is None:
+                continue
+            if not _table_has_column(real_realizing_table, rel.subject_key_column):
+                continue
+
+            other_tables = {
+                table for table in resolved_tables if table != real_realizing_table
+            }
+            direct_candidates = [
+                table for table in other_tables if _table_has_column(table, rel.subject_key_column)
+            ]
+            if direct_candidates:
+                # Pass 1 either already joined this (exactly one candidate)
+                # or correctly rejected it as ambiguous (2+ candidates) --
+                # a bridge search is only for the "nothing shares this key
+                # at all" case.
+                continue
+
+            bridge_matches: set[tuple[str, str, str]] = set()
+            for rel2 in payload.relationship_resolutions:
+                if rel2 is rel:
+                    continue
+                bridge_table = _resolve_bridge_table(rel2.realizing_table)
+                if bridge_table is None or bridge_table == real_realizing_table:
+                    continue
+                if not _table_has_column(bridge_table, rel.subject_key_column):
+                    continue
+                if not _table_has_column(bridge_table, rel2.subject_key_column):
+                    # Curated seed data disagrees with the real catalog for
+                    # rel2's own key -- never trust the seed over the real
+                    # schema, same discipline as Pass 1.
+                    continue
+
+                second_candidates = [
+                    table
+                    for table in resolved_tables
+                    if table != real_realizing_table
+                    and _table_has_column(table, rel2.subject_key_column)
+                ]
+                if len(second_candidates) != 1:
+                    continue
+
+                bridge_matches.add(
+                    (bridge_table, rel2.subject_key_column, second_candidates[0])
+                )
+
+            if len(bridge_matches) != 1:
+                # Zero: no relationship in this question's own
+                # relationship_resolutions bridges the gap -- leave it
+                # unjoined. Two or more: which bridge is actually intended
+                # can't be determined -- same "never guess" discipline as
+                # every other guard in this method.
+                continue
+
+            bridge_table, bridge_key, second_table = next(iter(bridge_matches))
+
+            hop1_pair = frozenset({real_realizing_table, bridge_table})
+            key_columns_by_pair.setdefault(hop1_pair, set()).add(rel.subject_key_column)
+            candidate_joins.append(
+                (
+                    JoinSpec(
+                        left_table=real_realizing_table,
+                        left_column=rel.subject_key_column,
+                        right_table=bridge_table,
+                        right_column=rel.subject_key_column,
+                        relationship_concept=(
+                            f"{rel.subject_label} {rel.predicate} {rel.object_label} (bridge)"
+                        ),
+                    ),
+                    hop1_pair,
+                )
+            )
+
+            hop2_pair = frozenset({bridge_table, second_table})
+            key_columns_by_pair.setdefault(hop2_pair, set()).add(bridge_key)
+            candidate_joins.append(
+                (
+                    JoinSpec(
+                        left_table=second_table,
+                        left_column=bridge_key,
+                        right_table=bridge_table,
+                        right_column=bridge_key,
+                        relationship_concept=f"bridge via {bridge_table}",
+                    ),
+                    hop2_pair,
+                )
+            )
+
         # Pass 2: FOURTH REAL BUG, found live (item 91's implied-table
         # relaxation made this reachable): once a fact table like
         # `TRANSACTIONS` is implied by ANY resolved measure, EVERY
@@ -678,7 +850,20 @@ class SchemaMappingAgent:
                 seen_joins.add(join_key)
                 joins.append(join_spec)
 
-        return joins
+        # Populate schema for every emitted join directly from the real
+        # catalog inventory, rather than leaving SQL Generation to derive
+        # it from `columns` alone -- a bridge table (Pass 1.5) contributes
+        # no `ResolvedColumnRef`, so a `columns`-only derivation would have
+        # nothing to find for it. See `JoinSpec.left_schema`'s docstring.
+        return [
+            join.model_copy(
+                update={
+                    "left_schema": table_schema.get(join.left_table),
+                    "right_schema": table_schema.get(join.right_table),
+                }
+            )
+            for join in joins
+        ]
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:

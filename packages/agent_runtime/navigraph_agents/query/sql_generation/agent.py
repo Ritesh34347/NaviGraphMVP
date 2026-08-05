@@ -681,6 +681,18 @@ class SqlGenerationAgent:
         schema_by_table: dict[str, str] = {}
         for column in columns:
             schema_by_table.setdefault(column.table_name, column.schema_name)
+        # A join-only bridge table (schema_mapping's `_build_joins`, "FIFTH
+        # REAL BUG") contributes no `ResolvedColumnRef`, so it would have no
+        # entry above -- `JoinSpec.left_schema`/`right_schema` are schema_
+        # mapping's own catalog-derived source of truth for exactly this
+        # case, populated for every join, and are only consulted here as a
+        # fallback (a `columns`-derived entry always wins, though the two
+        # should never actually disagree).
+        for join in payload.schema_mapping.joins:
+            if join.left_schema:
+                schema_by_table.setdefault(join.left_table, join.left_schema)
+            if join.right_schema:
+                schema_by_table.setdefault(join.right_table, join.right_schema)
 
         from_clause, unjoined_tables = _build_from_clause(
             tables, payload.schema_mapping.joins, schema_by_table

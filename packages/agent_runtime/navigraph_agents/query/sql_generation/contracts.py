@@ -77,7 +77,10 @@ class ResolvedColumnRef(BaseModel):
 
 
 class JoinSpec(BaseModel):
-    """Mirrors `schema_mapping.contracts.JoinSpec` field-for-field."""
+    """Mirrors `schema_mapping.contracts.JoinSpec` field-for-field, including
+    `left_schema`/`right_schema` -- see that module's docstring for why a
+    bridge table (one contributing no `ResolvedColumnRef`) needs its schema
+    threaded through the join itself rather than derived from `columns`."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -85,6 +88,8 @@ class JoinSpec(BaseModel):
     left_column: str
     right_table: str
     right_column: str
+    left_schema: str | None = None
+    right_schema: str | None = None
     relationship_concept: str | None = None
 
 

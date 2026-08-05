@@ -135,6 +135,7 @@ from navigraph_agents.understanding.ontology.contracts import (
     OntologyResult,
 )
 from navigraph_agents.understanding.schema_mapping.contracts import (
+    JoinSpec,
     ResolvedColumnRef,
     SchemaMappingOutput,
     SchemaMappingResult,
@@ -553,6 +554,63 @@ async def test_happy_path_returns_answered_with_full_result() -> None:
     assert forwarded.term == "units"
     assert forwarded.table_name == "STAGING_TRANSACTIONS"
     assert forwarded.column_name == "UNITS"
+
+
+async def test_schema_mapping_joins_with_bridge_schema_convert_to_sql_generation_without_error() -> None:
+    """Real, non-empty conversion from Schema Mapping's `JoinSpec` (now
+    carrying `left_schema`/`right_schema` -- see that module's docstring
+    for why a 2-hop bridge table needs them) into SQL Generation's sibling
+    mirror must actually succeed and preserve every field. This is exactly
+    the class of gap that took production down once already this session
+    (see `test_happy_path_returns_answered_with_full_result`'s docstring
+    on the `table_name` field) -- adding a field to one sibling contract
+    without the other raises `pydantic.ValidationError: extra_forbidden`
+    at this exact `**model_dump()` conversion site."""
+
+    agent = _make_agent()
+    _wire_happy_path(agent)
+    column = ResolvedColumnRef(
+        term="units",
+        catalog_column_id="col-1",
+        table_name="STAGING_TRANSACTIONS",
+        schema_name="STAGING",
+        column_name="UNITS",
+        data_type="NUMBER",
+        role="measure",
+    )
+    agent._schema_mapping_agent.run = AsyncMock(
+        return_value=SchemaMappingOutput(
+            result=SchemaMappingResult(
+                tables=["STAGING_TRANSACTIONS"],
+                columns=[column],
+                joins=[
+                    JoinSpec(
+                        left_table="STAGING_TRANSACTIONS",
+                        left_column="ISIN",
+                        right_table="STAGING_ASSET_INFORMATION",
+                        right_column="ISIN",
+                        left_schema="STAGING",
+                        right_schema="STAGING",
+                        relationship_concept="Asset HAS_CLOSING_PRICE Price (bridge)",
+                    )
+                ],
+                unmapped_terms=[],
+            ),
+            confidence=1.0,
+            lineage_events=_lineage("understanding.schema_mapping"),
+            errors=[],
+            metadata=_METADATA,
+        )
+    )
+
+    with patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[MagicMock(id="ds-1")]):
+        output = await agent.run(_make_input(data_source_id="ds-1"))
+
+    assert output.result.outcome == "answered"
+    forwarded_join = agent._sql_generation_agent.run.await_args.args[0].payload.schema_mapping.joins[0]
+    assert forwarded_join.left_schema == "STAGING"
+    assert forwarded_join.right_schema == "STAGING"
+    assert forwarded_join.right_table == "STAGING_ASSET_INFORMATION"
 
 
 async def test_empty_schema_mapping_triggers_clarification_not_failure() -> None:

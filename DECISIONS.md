@@ -1344,3 +1344,43 @@ Chosen specifically because it was the fastest path to a CORRECT,
 tested fix for a live wrong-data bug -- the narrower-relaxation
 alternative is logged as a real follow-up in `LIMITATIONS.md` item 96,
 not abandoned, just not the emergency fix.
+
+## 2026-08-05 — `_build_joins` gets a narrow, pairwise 2-hop bridge search rather than a general graph-based join solver
+
+**Context**: the Euronext multi-hop join gap (LIMITATIONS.md item 97)
+needed `_build_joins` to support joining through a table
+(`ASSET_INFORMATION`) that contributes no selected column of its own --
+a genuine capability gap, not a bug in an existing check.
+
+**Decision**: rather than broaden the existing single-relationship
+search to treat every relationship's realizing_table as a candidate join
+partner (a general graph search), the fix requires a candidate bridge
+table to prove itself via its OWN, separate relationship: it must
+independently and unambiguously reach a second, distinct resolved table
+via its own key. Bounded to exactly one bridge hop.
+
+**Why**: a naive broadening was prototyped by hand-tracing first and
+found to reintroduce exactly the coincidental-shared-key-name ambiguity
+item 87's guard exists to prevent -- `LIMIT_PRICES` shares `ISIN` with
+`CLOSE_PRICES` purely because both are asset-keyed tables, which would
+make the bridge search for `CLOSE_PRICES` spuriously ambiguous against
+`LIMIT_PRICES` even though `LIMIT_PRICES` has no real path to `MARKETS`.
+Requiring the bridge to prove itself via its own relationship (reaching
+a DIFFERENT resolved table through its OWN key) naturally excludes this
+false positive with no dataset-specific special-casing, and reuses the
+exact same `key_columns_by_pair` ambiguity-detection machinery Pass 2
+already has, rather than adding a second, parallel safety mechanism.
+
+**Also decided**: `JoinSpec` gains `left_schema`/`right_schema`,
+populated from `catalog_inventory` for every join (not just bridges) at
+the source (Schema Mapping), rather than left for SQL Generation to
+re-derive from `columns` alone -- a bridge table by definition
+contributes no `ResolvedColumnRef`, so a `columns`-only derivation would
+have nothing to find for it and could silently emit an unqualified table
+reference. Given item 93's production incident was exactly a sibling-
+contract field mismatch, this addition ships together with the matching
+field on `sql_generation`'s sibling `JoinSpec` and a new, explicit
+cross-agent conversion test (`test_schema_mapping_joins_with_bridge_
+schema_convert_to_sql_generation_without_error`) in the SAME commit --
+never split across separate changes the way item 93's original field
+addition was.

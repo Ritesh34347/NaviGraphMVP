@@ -707,6 +707,106 @@ async def test_multi_table_join_produces_correct_join_clause() -> None:
 
 
 # ---------------------------------------------------------------------------
+# (c2) FIFTH REAL BUG (schema_mapping's `_build_joins`): a 2-hop bridge join
+# through a table that contributes no selected column at all (e.g.
+# STAGING_ASSET_INFORMATION, needed only to connect CLOSE_PRICES to
+# MARKETS). Proves the bridge table's schema comes from `JoinSpec.left_
+# schema`/`right_schema` (schema_mapping's own catalog-derived source of
+# truth), since `schema_by_table`'s `columns`-only derivation has no entry
+# for a table that was never independently resolved.
+# ---------------------------------------------------------------------------
+
+_BRIDGE_COLUMNS = [
+    ResolvedColumnRef(
+        term="average closing price",
+        catalog_column_id="col_close",
+        table_name="CLOSE_PRICES",
+        schema_name="FAR_TRANS",
+        column_name="CLOSEPRICE",
+        data_type="NUMBER",
+        role="measure",
+    ),
+    ResolvedColumnRef(
+        term="Euronext - Growth Paris",
+        catalog_column_id="col_market",
+        table_name="MARKETS",
+        schema_name="FAR_TRANS",
+        column_name="NAME",
+        data_type="TEXT",
+        role="dimension",
+    ),
+]
+
+_BRIDGE_JOINS = [
+    JoinSpec(
+        left_table="CLOSE_PRICES",
+        left_column="ISIN",
+        right_table="STAGING_ASSET_INFORMATION",
+        right_column="ISIN",
+        left_schema="FAR_TRANS",
+        right_schema="STAGING",
+        relationship_concept="Asset HAS_CLOSING_PRICE Price (bridge)",
+    ),
+    JoinSpec(
+        left_table="MARKETS",
+        left_column="MARKETID",
+        right_table="STAGING_ASSET_INFORMATION",
+        right_column="MARKETID",
+        left_schema="FAR_TRANS",
+        right_schema="STAGING",
+        relationship_concept="bridge via STAGING_ASSET_INFORMATION",
+    ),
+]
+
+_BRIDGE_DATA_SOURCES = [
+    ResolvedDataSource(
+        table_name="CLOSE_PRICES",
+        data_source_id="ds_snowflake_prod",
+        source_type="snowflake",
+        reachable=True,
+    ),
+    ResolvedDataSource(
+        table_name="MARKETS",
+        data_source_id="ds_snowflake_prod",
+        source_type="snowflake",
+        reachable=True,
+    ),
+]
+
+
+async def test_two_hop_bridge_join_qualifies_bridge_table_schema_from_join_spec() -> None:
+    fake_llm = FakeLLMClient(response=json.dumps({"predicates": []}))
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question="What is the average closing price for assets on Euronext - Growth Paris?",
+            tables=["CLOSE_PRICES", "MARKETS"],
+            columns=_BRIDGE_COLUMNS,
+            joins=_BRIDGE_JOINS,
+            resolved_data_sources=_BRIDGE_DATA_SOURCES,
+        )
+    )
+
+    assert output.errors == []
+    assert len(output.result.statements) == 1
+    statement = output.result.statements[0]
+    # The bridge table (STAGING_ASSET_INFORMATION) contributes no selected
+    # column, so it appears only in the FROM/JOIN chain, correctly schema-
+    # qualified via the join spec's own `left_schema`/`right_schema` --
+    # never left bare (which would depend on the connection's default
+    # schema and could silently resolve to the wrong registration).
+    assert statement.sql == (
+        "SELECT MARKETS.NAME, SUM(CLOSE_PRICES.CLOSEPRICE) AS CLOSEPRICE_TOTAL\n"
+        "FROM STAGING.STAGING_ASSET_INFORMATION\n"
+        "JOIN FAR_TRANS.CLOSE_PRICES ON CLOSE_PRICES.ISIN = STAGING_ASSET_INFORMATION.ISIN\n"
+        "JOIN FAR_TRANS.MARKETS ON MARKETS.MARKETID = STAGING_ASSET_INFORMATION.MARKETID\n"
+        "GROUP BY MARKETS.NAME"
+    )
+    assert set(statement.referenced_tables) == {"CLOSE_PRICES", "MARKETS"}
+
+
+# ---------------------------------------------------------------------------
 # (d2) Real bug found live: "What is the total transaction volume by
 # market?" resolving STAGING_TRANSACTIONS + STAGING_MARKETS with an empty
 # `joins` list (no curated RelationshipConcept exists yet for this table

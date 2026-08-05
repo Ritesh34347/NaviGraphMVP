@@ -715,6 +715,264 @@ class TestJoinAcrossTwoTables:
         assert output.result.joins == []
 
 
+class TestBridgeTableJoin:
+    async def test_two_hop_bridge_through_unresolved_asset_information(self) -> None:
+        """FIFTH REAL BUG, live-reproduced: "What is the average closing
+        price for assets on Euronext - Growth Paris?" resolves only
+        `CLOSE_PRICES` (closing price) and `MARKETS` (market name) --
+        `ASSET_INFORMATION` is never independently resolved (no term needs
+        any of its own columns). Ontology still returns three relevant
+        relationships: "Asset traded in Market" (realizing_table
+        ASSET_INFORMATION/STAGING_ASSET_INFORMATION -- both catalog
+        registrations present, exercising the bridge/STAGING_-preference
+        path too), "Asset has ClosingPrice" (realizing_table CLOSE_PRICES,
+        key ISIN), and "Asset has LimitPrice" (realizing_table
+        LIMIT_PRICES, key ISIN -- a same-key coincidental collision that
+        must NOT be mistaken for the real bridge, since LIMIT_PRICES has
+        no relationship reaching MARKETS at all). The real join path is
+        CLOSE_PRICES --[ISIN]--> ASSET_INFORMATION --[MARKETID]--> MARKETS."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="average closing price",
+                    resolved=True,
+                    catalog_column_id="col-close",
+                    column_name="CLOSEPRICE",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="Euronext - Growth Paris",
+                    resolved=True,
+                    catalog_column_id="col-market",
+                    column_name="NAME",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Asset",
+                    predicate="TRADED_IN",
+                    object_label="Market",
+                    realizing_table="ASSET_INFORMATION",
+                    subject_key_column="MARKETID",
+                    object_key_column="MARKETID",
+                ),
+                RelationshipResolution(
+                    subject_label="Asset",
+                    predicate="HAS_CLOSING_PRICE",
+                    object_label="Price",
+                    realizing_table="CLOSE_PRICES",
+                    subject_key_column="ISIN",
+                    object_key_column="ISIN",
+                ),
+                RelationshipResolution(
+                    subject_label="Asset",
+                    predicate="HAS_LIMIT_PRICE",
+                    object_label="Price",
+                    realizing_table="LIMIT_PRICES",
+                    subject_key_column="ISIN",
+                    object_key_column="ISIN",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-close", "CLOSE_PRICES", "CLOSEPRICE", "NUMBER", "FAR_TRANS"),
+                _catalog_entry("col-close-isin", "CLOSE_PRICES", "ISIN", "TEXT", "FAR_TRANS"),
+                _catalog_entry("col-market", "MARKETS", "NAME", "TEXT", "FAR_TRANS"),
+                _catalog_entry("col-market-id", "MARKETS", "MARKETID", "TEXT", "FAR_TRANS"),
+                _catalog_entry(
+                    "col-ai-isin", "ASSET_INFORMATION", "ISIN", "TEXT", "FAR_TRANS"
+                ),
+                _catalog_entry(
+                    "col-ai-market", "ASSET_INFORMATION", "MARKETID", "TEXT", "FAR_TRANS"
+                ),
+                _catalog_entry(
+                    "col-sai-isin",
+                    "STAGING_ASSET_INFORMATION",
+                    "ISIN",
+                    "TEXT",
+                    "STAGING",
+                ),
+                _catalog_entry(
+                    "col-sai-market",
+                    "STAGING_ASSET_INFORMATION",
+                    "MARKETID",
+                    "TEXT",
+                    "STAGING",
+                ),
+                _catalog_entry("col-lp-isin", "LIMIT_PRICES", "ISIN", "TEXT", "FAR_TRANS"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert set(output.result.tables) == {"CLOSE_PRICES", "MARKETS"}
+
+        joins_by_pair = {
+            frozenset({j.left_table, j.right_table}): j for j in output.result.joins
+        }
+        assert len(output.result.joins) == 2
+        assert frozenset({"CLOSE_PRICES", "STAGING_ASSET_INFORMATION"}) in joins_by_pair
+        assert frozenset({"STAGING_ASSET_INFORMATION", "MARKETS"}) in joins_by_pair
+
+        hop1 = joins_by_pair[frozenset({"CLOSE_PRICES", "STAGING_ASSET_INFORMATION"})]
+        assert hop1.left_column == "ISIN"
+        assert hop1.right_column == "ISIN"
+        assert hop1.left_schema == "FAR_TRANS"
+        assert hop1.right_schema == "STAGING"
+
+        hop2 = joins_by_pair[frozenset({"STAGING_ASSET_INFORMATION", "MARKETS"})]
+        assert hop2.left_column == "MARKETID"
+        assert hop2.right_column == "MARKETID"
+
+    async def test_no_bridge_when_no_relationship_reaches_the_gap(self) -> None:
+        """Two resolved tables sharing no key at all, and no relationship
+        in `relationship_resolutions` bridges the gap -- must stay
+        unjoined rather than inventing a connection."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="closing price",
+                    resolved=True,
+                    catalog_column_id="col-close",
+                    column_name="CLOSEPRICE",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="market name",
+                    resolved=True,
+                    catalog_column_id="col-market",
+                    column_name="NAME",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-close", "CLOSE_PRICES", "CLOSEPRICE", "NUMBER"),
+                _catalog_entry("col-close-isin", "CLOSE_PRICES", "ISIN", "TEXT"),
+                _catalog_entry("col-market", "MARKETS", "NAME", "TEXT"),
+                _catalog_entry("col-market-id", "MARKETS", "MARKETID", "TEXT"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.joins == []
+
+    async def test_ambiguous_bridge_candidate_joins_neither(self) -> None:
+        """Two DIFFERENT relationships each independently propose a
+        different bridge resolution for the same gap (different bridge
+        table, or the same bridge table reaching a different second
+        table) -- which one is correct can't be determined, so no bridge
+        join is emitted, matching every other "never guess" guard in this
+        method."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="closing price",
+                    resolved=True,
+                    catalog_column_id="col-close",
+                    column_name="CLOSEPRICE",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="market name",
+                    resolved=True,
+                    catalog_column_id="col-market",
+                    column_name="NAME",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="sector",
+                    resolved=True,
+                    catalog_column_id="col-sector",
+                    column_name="SECTOR",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                # Bridge candidate A: ASSET_INFORMATION reaches MARKETS via
+                # MARKETID and has ISIN too.
+                RelationshipResolution(
+                    subject_label="Asset",
+                    predicate="TRADED_IN",
+                    object_label="Market",
+                    realizing_table="ASSET_INFORMATION",
+                    subject_key_column="MARKETID",
+                    object_key_column="MARKETID",
+                ),
+                RelationshipResolution(
+                    subject_label="Asset",
+                    predicate="HAS_CLOSING_PRICE",
+                    object_label="Price",
+                    realizing_table="CLOSE_PRICES",
+                    subject_key_column="ISIN",
+                    object_key_column="ISIN",
+                ),
+                # Bridge candidate B: a second, independent bridge that ALSO
+                # reaches a resolved table (SECTOR_INFO) via a different key,
+                # while also carrying ISIN -- a genuine second candidate.
+                RelationshipResolution(
+                    subject_label="Asset",
+                    predicate="IN_SECTOR",
+                    object_label="Sector",
+                    realizing_table="SECTOR_BRIDGE",
+                    subject_key_column="SECTORID",
+                    object_key_column="SECTORID",
+                ),
+                RelationshipResolution(
+                    subject_label="Asset",
+                    predicate="HAS_SECTOR_BRIDGE",
+                    object_label="Sector",
+                    realizing_table="SECTOR_BRIDGE",
+                    subject_key_column="ISIN",
+                    object_key_column="ISIN",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-close", "CLOSE_PRICES", "CLOSEPRICE", "NUMBER"),
+                _catalog_entry("col-close-isin", "CLOSE_PRICES", "ISIN", "TEXT"),
+                _catalog_entry("col-market", "MARKETS", "NAME", "TEXT"),
+                _catalog_entry("col-market-id", "MARKETS", "MARKETID", "TEXT"),
+                _catalog_entry("col-sector", "SECTOR_INFO", "SECTOR", "TEXT"),
+                _catalog_entry("col-sector-id", "SECTOR_INFO", "SECTORID", "TEXT"),
+                _catalog_entry("col-ai-isin", "ASSET_INFORMATION", "ISIN", "TEXT"),
+                _catalog_entry("col-ai-market", "ASSET_INFORMATION", "MARKETID", "TEXT"),
+                _catalog_entry("col-sb-isin", "SECTOR_BRIDGE", "ISIN", "TEXT"),
+                _catalog_entry("col-sb-sector", "SECTOR_BRIDGE", "SECTORID", "TEXT"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        # CLOSE_PRICES<->MARKETS has two distinct, conflicting bridge
+        # candidates (via ASSET_INFORMATION or via SECTOR_BRIDGE) -- neither
+        # should be guessed.
+        joins_by_pair = {
+            frozenset({j.left_table, j.right_table}) for j in output.result.joins
+        }
+        assert frozenset({"CLOSE_PRICES", "ASSET_INFORMATION"}) not in joins_by_pair
+        assert frozenset({"CLOSE_PRICES", "SECTOR_BRIDGE"}) not in joins_by_pair
+        assert frozenset({"ASSET_INFORMATION", "MARKETS"}) not in joins_by_pair
+
+
 class TestUnmappedTerms:
     async def test_unresolved_term_not_rescued_by_semantic_match_is_unmapped(self) -> None:
         agent = SchemaMappingAgent()

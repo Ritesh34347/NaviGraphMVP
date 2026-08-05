@@ -3425,3 +3425,71 @@ failure, not wrong data, and a real design tradeoff exists: relaxing
 `resolve_business_term` to substring matching risks over-matching short,
 common synonym words against unrelated entity text, unlike a column-name
 check where the identifier itself is usually distinctive).
+
+### 97. RESOLVED, SAME DAY: `_build_joins` had no concept of a 2-hop bridge table, causing "average closing price for Euronext - Growth Paris" to fail even though Ontology already returned everything needed to answer it
+
+**What was found**: continuing the requested Euronext/multi-hop-join
+investigation (flagged open at the end of item 96's testing pass),
+"What is the average closing price for assets on Euronext - Growth
+Paris?" failed with `unjoined_table_in_multi_table_query` for
+`['CLOSE_PRICES', 'MARKETS']`. Live diagnostic calls (Intent
+Understanding -> Ontology, via `kubectl port-forward` to the real
+agent-runtime pod) confirmed Ontology already returns everything
+needed: `relationship_resolutions` includes both `"Asset traded in
+Market"` (realizing_table `ASSET_INFORMATION`, key `MARKETID`) and
+`"Asset has ClosingPrice"` (realizing_table `CLOSE_PRICES`, key `ISIN`)
+-- the real join path is `CLOSE_PRICES --[ISIN]--> ASSET_INFORMATION
+--[MARKETID]--> MARKETS`, a genuine 2-hop bridge through a table
+(`ASSET_INFORMATION`) that no term ever needs a column from.
+
+**Root cause**: `SchemaMappingAgent._build_joins` (all passes, items
+83-96) only ever considered a relationship whose `realizing_table` was
+ALREADY one of the resolved (column-selected) tables. `ASSET_INFORMATION`
+was never independently resolved for this question (nothing needs any
+of its own columns), so `"Asset traded in Market"` was silently skipped
+by the `if real_realizing_table is None: continue` guard every single
+time, regardless of how many other real, relevant relationships pointed
+at it.
+
+**Resolution**: a new Pass 1.5 in `_build_joins`, between the existing
+Pass 1 (direct joins) and Pass 2 (cross-relationship ambiguity guard).
+For a relationship whose realizing_table IS resolved but found ZERO
+direct candidates in Pass 1, it looks for a bridge: another relationship
+in the SAME question's `relationship_resolutions` whose own
+realizing_table (a) genuinely carries the stuck relationship's key
+column, and (b) independently and unambiguously reaches a SECOND,
+distinct resolved table via its own key. Only fires when exactly one
+such bridge resolution exists. A fully general graph-based multi-hop
+solver was deliberately rejected: broadening the candidate pool to every
+relationship's realizing_table (not just ones that prove themselves via
+their own separate relationship) reproduces the exact
+coincidental-shared-key-name ambiguity item 87's guard exists to
+prevent -- concretely, `LIMIT_PRICES` also shares `ISIN` with
+`CLOSE_PRICES` purely because both are asset-keyed, but has no
+relationship reaching `MARKETS` at all, so it is correctly excluded
+without any dataset-specific special-casing. Also added: `JoinSpec`
+gained `left_schema`/`right_schema` fields (mirrored into
+`sql_generation`'s sibling contract, with a new cross-agent conversion
+test guarding against the exact class of gap that caused item 93's
+production incident), populated from `catalog_inventory` for every join
+-- a bridge table contributes no `ResolvedColumnRef`, so SQL
+Generation's `columns`-only schema derivation would otherwise have no
+entry for it and could emit an unqualified, connection-default-schema-
+dependent table reference. New tests:
+`test_two_hop_bridge_through_unresolved_asset_information`,
+`test_no_bridge_when_no_relationship_reaches_the_gap`,
+`test_ambiguous_bridge_candidate_joins_neither` (schema_mapping),
+`test_two_hop_bridge_join_qualifies_bridge_table_schema_from_join_spec`
+(sql_generation),
+`test_schema_mapping_joins_with_bridge_schema_convert_to_sql_generation_without_error`
+(request_orchestrator). 406 tests pass (up from 403), `ruff check` and
+`mypy --exclude '(^|[\/])(tests|migrations)([\/]|$)' packages/` both
+clean.
+
+**What full version requires**: bounded to exactly one bridge hop (two
+joins) by design -- a genuine 3-hop question (if one exists in this
+dataset) would still fail safely rather than being guessed. Live
+end-to-end re-verification of the Euronext question, plus a regression
+spot-check on previously-working brokerage questions, is pending this
+fix's deploy -- see BUILD_LOG.md's matching entry for the live-verified
+result.

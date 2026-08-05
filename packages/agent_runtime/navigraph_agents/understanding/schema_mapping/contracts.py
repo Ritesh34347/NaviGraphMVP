@@ -155,7 +155,17 @@ class ResolvedColumnRef(BaseModel):
 
 class JoinSpec(BaseModel):
     """A SQL join between two tables, derived from a resolved relationship
-    concept that spans them."""
+    concept that spans them.
+
+    `left_schema`/`right_schema` are populated from `catalog_inventory` for
+    EVERY join (not just bridge joins) directly at the source, rather than
+    left for SQL Generation to re-derive from `columns` alone -- a table
+    pulled in purely as a 2-hop bridge (see `_build_joins`'s "FIFTH REAL
+    BUG") contributes no `ResolvedColumnRef`, so `columns`-derived schema
+    lookups have nothing to find for it. Optional because a caller
+    constructing this in a test fixture may not care about schema
+    qualification.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -163,6 +173,8 @@ class JoinSpec(BaseModel):
     left_column: str
     right_table: str
     right_column: str
+    left_schema: str | None = None
+    right_schema: str | None = None
     relationship_concept: str | None = None
 
 
