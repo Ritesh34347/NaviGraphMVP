@@ -48,4 +48,6 @@ asyncio_mode = "auto"
 markers = [
     "llm_integration: tests that call the real Anthropic API (excluded by default; run with `pytest -m llm_integration`, requires ANTHROPIC_API_KEY)",
     "snowflake_integration: tests that connect to a real Snowflake account (excluded by default; run with `pytest -m snowflake_integration`, requires real SNOWFLAKE_* env vars)",
+    "postgres_integration: tests that connect to a real Postgres data source (excluded by default; run with `pytest -m postgres_integration`, requires real SOURCE_POSTGRES_* env vars)",
+    "databricks_integration: tests that connect to a real Databricks workspace (excluded by default; run with `pytest -m databricks_integration`, requires real DATABRICKS_* env vars)",
 ]

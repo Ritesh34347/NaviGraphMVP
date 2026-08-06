@@ -6,7 +6,7 @@
         <mxCell id="1" parent="0" />
 
         <!-- Title -->
-        <mxCell id="title" value="NaviGraph — Implemented Architecture (as of 2026-08-05)" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
+        <mxCell id="title" value="NaviGraph — Implemented Architecture (as of 2026-08-06)" style="text;html=1;fontSize=20;fontStyle=1;align=center;verticalAlign=middle;" vertex="1" parent="1">
           <mxGeometry x="380" y="15" width="700" height="30" as="geometry" />
         </mxCell>
 
@@ -16,6 +16,9 @@
         </mxCell>
         <mxCell id="client-agent" value="Headless Client / AI Agent&#10;(direct HTTP — no UI)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="900" y="80" width="280" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="client-mcp" value="MCP Client&#10;(Claude, custom agent harness — tool calls, no REST knowledge needed)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="80" width="220" height="60" as="geometry" />
         </mxCell>
 
         <!-- Ingress -->
@@ -27,8 +30,11 @@
         <mxCell id="web-app" value="Web (Next.js)&#10;web-stable / web-canary" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="230" y="300" width="300" height="70" as="geometry" />
         </mxCell>
-        <mxCell id="gateway" value="Gateway (FastAPI)&#10;gateway-stable / gateway-canary&#10;POST /ask · /healthz · /readyz" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+        <mxCell id="gateway" value="Gateway (FastAPI)&#10;gateway-stable / gateway-canary&#10;POST /ask · /mcp (MCP server) · /healthz · /readyz" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="790" y="300" width="300" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="gateway-azuread-note" value="Azure AD JWT/JWKS verification: real mechanism built &amp; tested, feature-flagged OFF (azure_ad_enabled=False) pending a real tenant — see LIMITATIONS.md item 23/99" style="text;html=1;fontSize=9;fontStyle=2;align=left;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="790" y="373" width="360" height="34" as="geometry" />
         </mxCell>
 
         <!-- Agent runtime wrapper (behind everything) -->
@@ -160,6 +166,9 @@
         <mxCell id="ds-snowflake" value="Snowflake (external)&#10;2 tenants: FIDELITY_POC (brokerage),&#10;ECOMMERCE_POC" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" vertex="1" parent="1">
           <mxGeometry x="1100" y="935" width="220" height="80" as="geometry" />
         </mxCell>
+        <mxCell id="ds-connectors-note" value="connector_sdk also has real, tested Postgres + Databricks connectors registered — zero live instances connected yet (LIMITATIONS.md item 100)" style="text;html=1;fontSize=9;fontStyle=2;align=left;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="1018" width="220" height="42" as="geometry" />
+        </mxCell>
 
         <!-- Observability -->
         <mxCell id="obs-otel" value="OTel Collector" style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
@@ -218,6 +227,13 @@
         </mxCell>
         <mxCell id="e2" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="client-agent" target="ingress">
           <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2b" value="MCP tool calls (api.navigraph.*/mcp)" style="endArrow=classic;html=1;fontSize=9;" edge="1" parent="1" source="client-mcp" target="ingress">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1330" y="160" />
+            </Array>
+          </mxGeometry>
         </mxCell>
         <mxCell id="e3" value="app.navigraph.*" style="endArrow=classic;html=1;fontSize=10;" edge="1" parent="1" source="ingress" target="web-app">
           <mxGeometry relative="1" as="geometry" />

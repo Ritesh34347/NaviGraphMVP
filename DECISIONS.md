@@ -1417,3 +1417,115 @@ mapping to different real columns for one entity, it stays unresolved
 rather than guessed -- reuses this session's standing "never guess"
 philosophy rather than introducing a new, separate risk tolerance for
 this one fallback path.
+
+## 2026-08-06 — MCP server is mounted on the existing gateway, not a new service
+
+**Context**: a whiteboard-sketch architecture comparison identified MCP
+as a real, missing entry point (NaviGraph exposed REST only). Building
+it required deciding where it lives.
+
+**Decision**: `packages/gateway/navigraph_gateway/mcp_tools.py` builds a
+real `mcp` SDK (`mcp.server.fastmcp.FastMCP`, pinned `mcp>=1,<2` --
+the official package shipped a breaking `2.0.0` on 2026-07-28 renaming
+`FastMCP`→`MCPServer`) and mounts it at `/mcp` on the EXISTING gateway
+FastAPI app, at the very end of `main.py` (after every other route),
+sharing the gateway's already-provisioned `http_client` connection pool
+to agent-runtime rather than opening a new one.
+
+**Why not a new service**: a separate MCP service would only be
+justified by an independent scaling/auth boundary from `/ask` -- none
+exists. Reusing the gateway avoids a new deployment, Kubernetes
+manifests, ingress route, or CD pipeline job; the existing
+`gateway-stable`/`gateway-canary` tracks already cover it.
+
+**Two real integration gotchas found and fixed** (both would otherwise
+cause silent production failures): (1) Starlette doesn't run a mounted
+sub-app's own lifespan, so `FastMCP`'s internal `session_manager` must be
+started explicitly inside the OUTER app's `lifespan()`
+(`async with mcp_server.session_manager.run(): yield`) -- confirmed live
+via a real integration reproduction, not assumed from docs. (2) mounting
+at `/mcp` would have produced the real path `/mcp/mcp`, since
+`streamable_http_app()` already defines its own internal `/mcp` route --
+fixed by mounting at root (`/`) instead, and moving that mount to the
+very END of route registration (Starlette matches in registration order;
+a root `Mount` registered early silently 404s every later route).
+
+**Auth for now**: explicit `tenant_id`/`roles`/`claims` tool parameters,
+matching `/ask`'s exact current trust model -- extends naturally to the
+same verified-identity injection point once Azure AD (below) is wired to
+a live tenant, not built blind against a mechanism with nothing real to
+verify yet.
+
+## 2026-08-06 — Azure AD JWT/JWKS verification: build the real mechanism now, feature-flag it OFF until a real tenant exists
+
+**Context**: `RequestContext.roles`/`claims` have always been
+caller-supplied (LIMITATIONS.md item 23) -- a caller can self-declare
+`admin`. The user confirmed via `AskUserQuestion`: build the real
+mechanism now, generically and fully tested, wire it up later -- not a
+placeholder, and not blocked on a real Azure AD tenant existing yet.
+
+**Decision**: `packages/shared/navigraph_shared/auth/azure_ad.py` follows
+the exact ABC/real/fake triad already established by `LLMClient`/
+`AnthropicLLMClient`/`FakeLLMClient` and `OpaClient`/`HttpOpaClient`/
+`FakeOpaClient` -- `AzureADTokenVerifier` (ABC), `HttpAzureADTokenVerifier`
+(real: fetches the tenant's real JWKS over HTTPS, verifies RS256
+signature/issuer/audience/expiry via `PyJWT`, TTL-caches the JWKS
+response), `FakeAzureADTokenVerifier` (test double, at-most-one-configured-
+behavior). `AzureADSettings.azure_ad_enabled` defaults to `False`.
+Gateway's `/ask` gets a new `_verify_identity` FastAPI dependency that is
+a complete no-op passthrough while disabled -- zero behavior change to
+`/ask` today -- and, once enabled, requires and verifies a real
+`Authorization: Bearer` token, with the VERIFIED identity's roles/tenant_id
+overriding whatever the request body self-declares.
+
+**Why `pyjwt[crypto]` over `PyJWKClient`**: PyJWT ships its own JWKS
+client (`PyJWKClient`), but this codebase's established convention for
+every HTTP-backed client (`HttpOpaClient`, `AnthropicLLMClient`) is a
+custom `httpx`-based fetch with an explicit `transport` injection point
+for tests (`httpx.MockTransport`) -- reusing that exact pattern here
+keeps the auth module testable the same way as everything else, rather
+than introducing a second, differently-shaped test-injection convention
+just for this one client.
+
+**Why build-now-wire-later**: mirrors this session's standing discipline
+for Snowflake/Anthropic/Azure credentials -- never fabricate a tenant,
+never fake a token, but the mechanism itself must be real, complete, and
+provably correct today (proven via a real self-signed RSA keypair and a
+real signed JWT in tests, JWKS fetch mocked via `httpx.MockTransport`,
+never the signature verification itself).
+
+## 2026-08-06 — Postgres and Databricks connectors: both built together, Postgres settings prefixed to avoid a real collision
+
+**Context**: only one real connector (Snowflake) existed -- one source
+per tenant, not genuine multi-source ingestion. The user confirmed via
+`AskUserQuestion`: build BOTH a Postgres connector AND a Databricks
+connector, not just one.
+
+**Decision**: both live under `navigraph_connectors` following the exact
+Snowflake trio's shape (`settings.py`/`connector.py`, the same 4-method
+`Connector` ABC, zero changes to `base.py`). `PostgresConnector` uses
+`psycopg` v3 and ANSI `information_schema` (deliberately more portable
+SQL than Snowflake's proprietary introspection commands -- a real,
+honest test that the abstraction generalizes). `DatabricksConnector`
+uses `databricks-sql-connector` against Unity-Catalog-scoped
+`information_schema`, with a `_to_named_paramstyle()` regex transform
+bridging the driver's NATIVE-mode `:name` parameter style to this
+codebase's universal `%(name)s` pyformat convention (confirmed via the
+driver's own docstring, not assumed compatible).
+
+**Why `PostgresSettings` uses a `source_postgres_*` prefix, not bare
+`postgres_*`**: `MetadataCatalogSettings` already reads bare `postgres_*`
+env vars for NaviGraph's OWN internal catalog database. A same-named
+`PostgresSettings` field/env-var scheme would have silently pointed a
+new tenant's Postgres connector at NaviGraph's own catalog DB, or made
+the two settings classes fight over the same env vars -- caught by
+reading `MetadataCatalogSettings` before naming the new fields, not
+discovered later as a live bug.
+
+**Capabilities reported honestly, not copied across connectors**:
+Postgres reports `supports_column_masking=False` (real RLS via
+`supports_row_level_security=True`, but no native column-masking
+primitive); Databricks reports both `True` (genuine Unity Catalog
+features) -- capability flags are asserted per-connector against what
+each platform actually supports, not defaulted from Snowflake's or each
+other's shape.

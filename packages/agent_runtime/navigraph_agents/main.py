@@ -32,6 +32,18 @@ Exposes:
   - GET  /lineage/{trace_id}  -- real, live retrieval of one trace's full
                                   assembled lineage chain (tenant-scoped via
                                   a required `tenant_id` query param)
+  - GET  /data_sources  -- real, live listing of every DataSource registered
+                            for a tenant (tenant-scoped via a required
+                            `tenant_id` query param) -- added for the MCP
+                            server's `list_data_sources` tool (see
+                            `navigraph_gateway.mcp_tools`), same plain-route
+                            precedent as `/lineage/{trace_id}`.
+  - GET  /glossary  -- real, live listing of every BusinessConcept in a
+                        tenant's glossary (tenant-scoped via a required
+                        `tenant_id` query param) -- added for the MCP
+                        server's `list_business_glossary` tool, reuses
+                        `navigraph_kg.api.list_business_concepts` (already
+                        built for `OntologyAgent`'s fuzzy-fallback fix).
                      -- invokes the six Understanding-domain, six Query-domain,
                         four Guardrail-domain, four Insight-domain, two
                         Ops-domain, and three Orchestrator-domain agents
@@ -52,21 +64,28 @@ import os
 from contextlib import asynccontextmanager
 from typing import cast
 
-# Import side effect only: registers "snowflake" in
-# `navigraph_connectors.registry` (see
-# `navigraph_connectors/snowflake/__init__.py`'s `register_connector(...)`
-# call). Without this import somewhere in the process, the registry is
-# empty and every connector-dependent agent (Data Source Discovery, Data
-# Federation) fails at runtime with "No connector registered for
-# source_type='snowflake'" -- a real bug caught live via a direct HTTP call
-# against this service after Phase 5's rebuild (unit tests never caught it
-# because they inject a fake connector directly, and the pytest-based
-# integration test imports this module itself).
+# Import side effect only: registers "snowflake"/"postgres"/"databricks"
+# in `navigraph_connectors.registry` (see each connector package's own
+# `__init__.py`'s `register_connector(...)` call). Without these imports
+# somewhere in the process, the registry is empty and every
+# connector-dependent agent (Data Source Discovery, Data Federation) fails
+# at runtime with "No connector registered for source_type='...'" -- a
+# real bug caught live via a direct HTTP call against this service after
+# Phase 5's rebuild (unit tests never caught it because they inject a fake
+# connector directly, and the pytest-based integration test imports this
+# module itself). "postgres"/"databricks" added alongside the original
+# "snowflake" registration, following the exact same pattern -- see
+# `navigraph_connectors.postgres`/`.databricks`'s own module docstrings.
+import navigraph_connectors.databricks
+import navigraph_connectors.postgres
 import navigraph_connectors.snowflake  # noqa: F401
 import redis
 from fastapi import FastAPI, HTTPException
+from navigraph_catalog.api import list_data_sources
 from navigraph_catalog.db import get_engine, get_session_factory
+from navigraph_catalog.db import session_scope as catalog_session_scope
 from navigraph_federation.trino_client import TrinoClient
+from navigraph_kg.api import list_business_concepts
 from navigraph_kg.client import Neo4jClient
 from navigraph_lineage.api import get_trace
 from navigraph_lineage.db import get_engine as get_lineage_engine
@@ -830,5 +849,64 @@ async def get_lineage_trace(trace_id: str, tenant_id: str) -> dict:
                 "trace_id": record.trace_id,
             }
             for record in records
+        ],
+    }
+
+
+@app.get("/data_sources")
+async def list_data_sources_route(tenant_id: str) -> dict:
+    """Real, live listing of every `DataSource` registered for a tenant.
+
+    A plain FastAPI route, not an `_invoke_agent`-wrapped POST -- same
+    "reading isn't agent-shaped" precedent as `/lineage/{trace_id}` above.
+    Added for the MCP server's `list_data_sources` tool
+    (`navigraph_gateway.mcp_tools`), which needs a plain HTTP endpoint to
+    call rather than duplicating `navigraph_catalog.api` access inside the
+    gateway service. Same tenant-scoping discipline as `/lineage/{trace_id}`
+    -- `tenant_id` is a REQUIRED query param, not inferred (see
+    LIMITATIONS.md item 23).
+    """
+
+    with catalog_session_scope(app.state.catalog_session_factory) as session:
+        data_sources = list_data_sources(session, tenant_id=tenant_id)
+
+    return {
+        "tenant_id": tenant_id,
+        "data_sources": [
+            {
+                "id": str(ds.id),
+                "name": ds.name,
+                "source_type": ds.source_type,
+            }
+            for ds in data_sources
+        ],
+    }
+
+
+@app.get("/glossary")
+async def list_glossary_route(tenant_id: str) -> dict:
+    """Real, live listing of every `BusinessConcept` in a tenant's
+    glossary.
+
+    A plain FastAPI route, same precedent as `/lineage/{trace_id}` and
+    `/data_sources` above. Added for the MCP server's
+    `list_business_glossary` tool; reuses `navigraph_kg.api.
+    list_business_concepts` verbatim (already built for `OntologyAgent`'s
+    fuzzy-fallback fix -- see LIMITATIONS.md item 98), not duplicated.
+    """
+
+    concepts = list_business_concepts(app.state.neo4j_client, tenant_id=tenant_id)
+
+    return {
+        "tenant_id": tenant_id,
+        "concepts": [
+            {
+                "business_concept": c.get("business_concept"),
+                "synonyms": c.get("synonyms") or [],
+                "table_name": c.get("table_name"),
+                "column_name": c.get("column_name"),
+                "catalog_column_id": c.get("catalog_column_id"),
+            }
+            for c in concepts
         ],
     }

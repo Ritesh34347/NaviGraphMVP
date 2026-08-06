@@ -1966,3 +1966,114 @@ deployed through a full canary rollout, and live-verified against the
 real production gateway -- with one additional real bug (the
 unnecessary-bridge-join regression) found and fixed along the way during
 the Euronext fix's own regression testing, never shipped unverified.
+
+## 2026-08-06 — Phase 1: MCP server mounted on the gateway (5 tools)
+
+Prompted by the user sharing a whiteboard-sketch architecture and asking
+how aligned NaviGraph's real, built architecture is with it. Gave a real
+gap analysis (3 real gaps: no MCP entry point, RBAC not backed by
+verified identity, only one real connector) before building anything.
+The user confirmed via `AskUserQuestion` to build the Azure AD mechanism
+now (feature-flagged off) and both a Postgres AND a Databricks connector
+-- this entry covers the first of the three resulting build phases.
+
+Built `packages/gateway/navigraph_gateway/mcp_tools.py` using the real
+`mcp` SDK (`mcp.server.fastmcp.FastMCP`, pinned `mcp>=1,<2` after live
+research found the official package shipped a breaking `2.0.0` a week
+earlier). Five tools (`ask_navigraph`, `resolve_business_term`,
+`list_data_sources`, `list_business_glossary`, `get_lineage`), the first
+two new plain `GET /data_sources`/`GET /glossary` routes added to
+agent-runtime. Mounted at `/mcp` on the existing gateway app, reusing its
+shared `http_client`.
+
+Found and fixed 5 real integration gotchas via live, iterative smoke
+testing before writing production code (not assumed from docs): mount
+path doubling (`/mcp/mcp`), a `Task group is not initialized` lifespan
+error (Starlette doesn't run a mounted sub-app's lifespan), a `421
+Misdirected Request` (FastMCP's default transport security only allows
+localhost), route-shadowing (a root `Mount` registered early 404s every
+later route), and a `session_manager.run() can only be called once`
+error surfaced by this repo's own pre-existing tests reusing `TestClient(app)`
+across multiple test functions.
+
+New `packages/gateway/tests/test_mcp_tools.py` -- all 5 tools plus
+`build_mcp_server` registration/round-trip tested via real `list_tools()`/
+`call_tool()` calls. 453 tests pass (up from 440). `ruff check` and
+`mypy --exclude '(^|[\/])(tests|migrations)([\/]|$)' packages/` both clean.
+
+## 2026-08-06 — Phase 2: Azure AD JWT/JWKS verification mechanism (built, feature-flagged off)
+
+Built the real, generic Azure AD (Entra ID) bearer-token verifier the
+user asked for: `packages/shared/navigraph_shared/auth/azure_ad.py`
+(`AzureADSettings`, `VerifiedIdentity`, `AzureADTokenError`,
+`AzureADTokenVerifier` ABC, `HttpAzureADTokenVerifier`,
+`FakeAzureADTokenVerifier`), following the exact triad convention already
+established by `LLMClient`/`OpaClient`. Real RS256 JWT/JWKS verification
+(issuer/audience/expiry checks, `roles`/`tid` claim extraction, TTL-cached
+JWKS fetch), tested against a real self-signed RSA keypair and a real
+signed JWT -- only the JWKS HTTP fetch is mocked (`httpx.MockTransport`),
+never the cryptographic verification itself. `AzureADSettings.azure_ad_enabled`
+defaults to `False`.
+
+Wired the mechanism into gateway's `/ask` route: a new `_verify_identity`
+FastAPI dependency that is a complete no-op passthrough while disabled
+(today's default, zero behavior change) and, once enabled, requires and
+verifies a real `Authorization: Bearer` token, overriding the request
+body's self-declared `roles`/`claims`/`tenant_id` with the VERIFIED
+identity's own. New `packages/gateway/tests/test_azure_ad_wiring.py`
+covers both states directly against the real dependency function.
+
+Found and fixed one real, pre-existing latent issue while getting a
+clean `ruff check --no-cache packages/` (the real CI invocation, not the
+cached one this session had been implicitly relying on): 3 gateway test
+files had an unaddressed `I001` (import-block formatting) violation that
+ruff's cache had been silently hiding. Auto-fixed (blank-line-only,
+zero behavior change) and added the `[tool.ruff]`/`[tool.mypy]` config
+gateway's own `pyproject.toml` had been missing (present in `shared`'s
+but never copied to `gateway`'s), plus the standard `flake8-bugbear`
+`extend-immutable-calls` allowance ruff itself documents for FastAPI's
+`Depends()` pattern -- the first real `Depends()` call anywhere in this
+codebase.
+
+459 tests pass (up from 453), `ruff check --no-cache packages/` and
+`mypy --exclude '(^|[\/])(tests|migrations)([\/]|$)' packages/` both
+clean.
+
+## 2026-08-06 — Phase 3: Postgres and Databricks connectors
+
+Built both connectors the user asked for (`AskUserQuestion`: "Do it for
+postgres and databricks both"), following the exact Snowflake trio's
+shape with zero changes needed to `connector_sdk`'s `base.py` ABC --
+confirming the interface really is source-agnostic as designed back in
+Phase 2.
+
+`navigraph_connectors.postgres.PostgresConnector` (`psycopg` v3, ANSI
+`information_schema` introspection -- genuinely portable SQL, a real test
+of the abstraction against Snowflake's proprietary `SHOW`/`DESCRIBE`
+convention). `PostgresSettings` deliberately prefixed `source_postgres_*`
+to avoid a real, caught-before-shipping collision with
+`MetadataCatalogSettings`'s own bare `postgres_*` fields (NaviGraph's
+internal catalog DB).
+
+`navigraph_connectors.databricks.DatabricksConnector`
+(`databricks-sql-connector`, Unity-Catalog-scoped `information_schema`),
+plus a `_to_named_paramstyle()` regex transform bridging the driver's
+NATIVE-mode `:name` parameter style to this codebase's universal
+`%(name)s` pyformat convention (confirmed via the driver's own docstring
+before assuming compatibility). Capabilities reported honestly per
+connector: Postgres reports real RLS but no column masking; Databricks
+reports both as real Unity Catalog features.
+
+Both registered via the existing `register_connector(...)` registry,
+triggered by 2 new import lines in `agent_runtime/main.py`. New unit
+tests (mocked driver `connect()`) plus skipped-without-real-credentials
+integration tests, mirroring Snowflake's exact test-tier split. 2 new
+pytest markers (`postgres_integration`, `databricks_integration`) added
+to BOTH `connector_sdk`'s own `pyproject.toml` and the root
+`packages/pyproject.toml` (the file CI's `pytest packages/` actually uses
+as its marker registry -- confirmed this is a real, separately-maintained
+duplicate, not an oversight, while adding the new markers).
+
+Zero real Postgres or Databricks instances registered as an actual
+tenant `DataSource` yet -- both connectors are real, tested, and
+registry-wired, but unexercised against a live instance.

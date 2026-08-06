@@ -17,6 +17,9 @@ dependencies = [
     "prometheus-client",
     "anthropic",
     "httpx",
+    # Azure AD JWT/JWKS verification (`navigraph_shared.auth.azure_ad`).
+    # `[crypto]` pulls in `cryptography` for RS256 signature verification.
+    "pyjwt[crypto]",
 ]
 
 [project.optional-dependencies]

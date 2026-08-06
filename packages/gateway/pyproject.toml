@@ -26,6 +26,15 @@ dependencies = [
     # Not in the original spec's minimal dep list, but required for the
     # "OTel FastAPI auto-instrumentation" requirement on this service.
     "opentelemetry-instrumentation-fastapi",
+    # MCP (Model Context Protocol) server, mounted at `/mcp` -- see
+    # `mcp_tools.py`. Pinned to the 1.x line deliberately: the official
+    # `mcp` package shipped a breaking 2.0.0 (2026-07-28) that renames
+    # `FastMCP` -> `MCPServer`, moves `mcp.server.fastmcp` ->
+    # `mcp.server.mcpserver`, raises the `pydantic`/`anyio` floors, and
+    # drops `httpx` for a new `httpx2` package -- an unpinned install
+    # would silently break every import in this module on the next
+    # `pip install`.
+    "mcp>=1,<2",
 ]
 
 [project.optional-dependencies]
@@ -42,3 +51,17 @@ include = ["navigraph_gateway*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint.flake8-bugbear]
+# `Depends(...)` in a route's default args is FastAPI's own real DI
+# mechanism, not a mutable-default bug -- this is ruff's own documented
+# allowance for FastAPI (https://docs.astral.sh/ruff/rules/function-call-in-default-argument/).
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

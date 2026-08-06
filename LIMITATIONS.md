@@ -8,7 +8,7 @@ incomplete, but nobody has recorded it as an intentional deferral.
 
 ---
 
-### 1. Only a Snowflake connector is implemented
+### 1. Only a Snowflake connector is implemented — PARTIALLY RESOLVED: Postgres and Databricks connectors now built (item 100)
 
 **What's deferred**: Postgres and generic REST reference connectors.
 
@@ -21,6 +21,12 @@ credential handling are all behind an interface), but that interface is unproven
 against a second, differently-shaped source. A Postgres connector should be built
 next specifically to pressure-test the abstraction, followed by a generic REST/API
 connector for sources with no SQL surface at all.
+
+**Update (item 100)**: real, tested `PostgresConnector` and `DatabricksConnector`
+implementations now exist in `navigraph_connectors` — see item 100 for the
+full detail. Zero real Postgres/Databricks instances have been registered
+as an actual `DataSource` for any tenant yet; a generic REST/API connector
+(sources with no SQL surface at all) is still not built.
 
 ### 2. Neo4j runs as a single local instance
 
@@ -426,7 +432,7 @@ intent-aware or policy-aware cache TTLs to populate `policy_version` and
 vary `ttl_seconds` accordingly — not addressed here since nothing yet
 depends on it.
 
-### 23. Azure AD token verification is not implemented — `RequestContext.roles`/`claims` remain caller-supplied
+### 23. Azure AD token verification is not implemented — `RequestContext.roles`/`claims` remain caller-supplied — MECHANISM BUILT in item 99, still OFF pending a real tenant
 
 **What's deferred**: Real JWT/OIDC validation of an Azure AD (Entra ID)
 token, extracting `roles`/`claims` from a cryptographically verified
@@ -449,6 +455,17 @@ middleware in the gateway (or agent-runtime), populating
 `RequestContext.roles`/`claims` from a verified token rather than a
 caller-supplied field — the terraform/entra-app-registration skeleton
 (item 5) and a real dev app registration are prerequisites.
+
+**Update (item 99)**: the real, generic verification mechanism now
+exists — `navigraph_shared.auth.azure_ad.HttpAzureADTokenVerifier` (real
+RS256 JWT/JWKS verification, fully tested against real signed tokens) and
+`/ask`'s `_verify_identity` FastAPI dependency (`packages/gateway/navigraph_gateway/main.py`).
+It is feature-flagged OFF by default (`AzureADSettings.azure_ad_enabled =
+False`) — the self-declared-role gap described above is still real and
+still exploitable today, exactly as before, until a real Azure AD app
+registration (tenant_id, client_id) is provided and the flag is flipped.
+Once flipped, a caller's `roles`/`claims` are overridden by the VERIFIED
+token's own claims, closing this gap for real.
 
 ### 24. Query Cost/Row-Limit Estimator's per-role limits are a hardcoded Python dict, not policy-driven
 
@@ -3632,3 +3649,96 @@ and the correct `RISKLEVEL = 'Aggressive'` filter. This no longer
 depends on which exact phrasing Intent Understanding happens to extract
 on a given run -- the fuzzy fallback recovers the compound phrase every
 time now.
+
+### 99. NEW: MCP (Model Context Protocol) server mounted on the gateway, plus the real Azure AD JWT/JWKS verification mechanism (built now, OFF until a real tenant is provided)
+
+**Context**: the user shared a whiteboard-sketch architecture (clients →
+MCP → AD Security Group/RBAC → Schema/Enrich/Ingestion → Graph
+Database/Ontology → SQL/RunSQL → least-privilege guardrails → Insight
+Generation) and asked how aligned NaviGraph's real, built architecture
+is. The middle-to-right of that sketch was already built, tested, and
+deployed (and more decomposed than the sketch — 4 real Guardrail agents,
+4 real Insight agents). Three real gaps sat at the edges; this item and
+item 100 close two of them.
+
+**MCP server (gap #1, now CLOSED)**: `packages/gateway/navigraph_gateway/mcp_tools.py`
+mounts a real `mcp` SDK (`mcp>=1,<2`) `FastMCP` server at `/mcp` on the
+existing gateway app (not a new service — reuses the gateway's already-
+provisioned `http_client`/connection pool to agent-runtime). Five tools:
+`ask_navigraph` (the full real Request Orchestrator pipeline),
+`resolve_business_term` (direct Ontology Agent lookup),
+`list_data_sources`/`list_business_glossary` (two new plain `GET` routes
+on agent-runtime), `get_lineage` (the existing lineage route). Any
+MCP-speaking AI agent (Claude, a custom agent harness, etc.) can now call
+NaviGraph's real capabilities headlessly, without knowing its internal
+REST shape. Auth for now: explicit `tenant_id`/`roles`/`claims` tool
+parameters, matching `/ask`'s own current trust model exactly (see item
+23/99 below for the real fix in progress).
+
+**Azure AD mechanism (gap #2, MECHANISM BUILT, still OFF)**: see item 23
+(updated) for the full detail — `navigraph_shared.auth.azure_ad` is a
+real, generic, fully-tested RS256 JWT/JWKS verifier, wired into `/ask`
+via a feature-flagged FastAPI dependency (`_verify_identity`), defaulting
+to `azure_ad_enabled=False` so today's behavior (including item 23's
+self-declared-role gap) is completely unchanged. Confirmed with the user
+via `AskUserQuestion`: build the real mechanism now, wire it up later —
+mirrors the exact "never fabricate credentials, build for real, wire
+when real credentials exist" discipline already used for Snowflake/
+Anthropic/Azure this session.
+
+**What full version requires**: a real Azure AD app registration
+(tenant_id, client_id) provided by the user, then flipping
+`azure_ad_enabled=True` — no further code changes needed, the mechanism
+is already complete and tested (`packages/shared/tests/test_azure_ad.py`,
+`packages/gateway/tests/test_azure_ad_wiring.py`). MCP's own tool-level
+auth similarly extends naturally to the same verified-identity injection
+point once that flag flips, but is not built blind against a mechanism
+with no real tenant to test against yet.
+
+### 100. NEW: real Postgres and Databricks connectors added to `connector_sdk` (gap #3, mechanism built, zero live instances registered)
+
+**Context**: the third real gap from the whiteboard-sketch comparison
+(item 99) — only one real connector (Snowflake) existed, one source per
+tenant, not genuine multi-source ingestion. The user confirmed via
+`AskUserQuestion`: build BOTH a real Postgres connector AND a real
+Databricks connector, not just one.
+
+**What was built**: `navigraph_connectors.postgres.PostgresConnector`
+(via `psycopg` v3, ANSI `information_schema` introspection — genuinely
+portable SQL, unlike Snowflake's proprietary `SHOW`/`DESCRIBE`, a real,
+honest test that the `Connector` ABC abstraction (designed in Phase 2)
+generalizes to a second, differently-shaped source) and
+`navigraph_connectors.databricks.DatabricksConnector` (via
+`databricks-sql-connector`, Unity-Catalog-scoped `information_schema`,
+with a `_to_named_paramstyle()` regex bridge for the driver's `:name`
+parameter style vs. this codebase's universal `%(name)s` pyformat
+convention). Both registered via the existing `register_connector(...)`
+registry — zero changes needed in `navigraph_catalog.api.register_data_source`,
+confirming the abstraction really is source-agnostic as designed.
+`PostgresSettings` is deliberately prefixed `source_postgres_*` (not bare
+`postgres_*`) to avoid colliding with `MetadataCatalogSettings`'s own
+internal-catalog-DB env vars.
+
+**What's still missing**: zero real Postgres or Databricks instances have
+been registered as an actual tenant `DataSource` — both connectors are
+built, unit-tested, and registry-wired, but genuinely untested against a
+live Postgres/Databricks instance (each has a real `@pytest.mark.postgres_integration`/
+`databricks_integration`-marked integration test, skipped without real
+credentials, mirroring Snowflake's exact precedent). A tenant still has
+exactly one real data source in practice. A generic REST/API connector
+(no SQL surface at all) remains entirely unbuilt (see item 1).
+
+### 101. NEW: NaviGraph's architecture diagram (`docs/architecture/navigraph-architecture.drawio`) needs updating for items 99/100
+
+**What's deferred**: adding the `/mcp` entry point next to the Gateway
+box, and noting Postgres/Databricks as registered-but-not-instance-
+connected connector types near the Snowflake data-store box.
+
+**Why**: the diagram was built once, from the implementation as of just
+before items 99/100 landed — it's now one step behind the real code
+again, the same drift class already logged for the markdown docs
+(item 32).
+
+**What full version requires**: a direct edit to the `.drawio` XML adding
+one new box/edge for `/mcp` and a small annotation near Snowflake. Low
+effort, tracked here so it isn't silently forgotten.

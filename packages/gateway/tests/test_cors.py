@@ -6,6 +6,7 @@ rejects an arbitrary, unrelated origin.
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+
 from navigraph_gateway.main import app
 from navigraph_gateway.settings import get_gateway_settings
 

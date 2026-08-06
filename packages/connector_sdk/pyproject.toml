@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "navigraph-connector-sdk"
 version = "0.1.0"
-description = "NaviGraph connector SDK: a source-agnostic plugin interface for talking to external data sources (Snowflake today, Postgres/REST later) and describing their schemas."
+description = "NaviGraph connector SDK: a source-agnostic plugin interface for talking to external data sources (Snowflake, Postgres, Databricks) and describing their schemas."
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
 dependencies = [
@@ -23,6 +23,11 @@ dependencies = [
     "snowflake-connector-python",
     # Needed to load an RSA private key for Snowflake key-pair auth.
     "cryptography",
+    # Postgres connector -- v3 (`psycopg`, not the legacy `psycopg2`),
+    # matching `metadata_catalog`'s own already-established choice.
+    "psycopg[binary]",
+    # Databricks (Unity Catalog) connector.
+    "databricks-sql-connector",
 ]
 
 [project.optional-dependencies]
@@ -41,4 +46,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "snowflake_integration: tests that connect to a real Snowflake account (excluded by default; run with `pytest -m snowflake_integration`, requires real SNOWFLAKE_* env vars)",
+    "postgres_integration: tests that connect to a real Postgres data source (excluded by default; run with `pytest -m postgres_integration`, requires real SOURCE_POSTGRES_* env vars)",
+    "databricks_integration: tests that connect to a real Databricks workspace (excluded by default; run with `pytest -m databricks_integration`, requires real DATABRICKS_* env vars)",
 ]
