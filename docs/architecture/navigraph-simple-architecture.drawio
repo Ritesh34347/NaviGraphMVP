@@ -1,0 +1,36 @@
+<mxfile host="app.diagrams.net" agent="Claude Code" version="24.0.0" type="device">
+  <diagram id="navigraph-simple-arch" name="NaviGraph Simple Architecture">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1450" pageHeight="800" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+<mxCell id="dtitle" value="NaviGraph — How It Works (Simplified)" style="text;html=1;fontSize=20;fontStyle=1;align=center;" vertex="1" parent="1"><mxGeometry x="300" y="10" width="800" height="34" as="geometry" /></mxCell>
+<mxCell id="dsubtitle" value="One question, four automatic steps, checked at every stage before an answer comes back" style="text;html=1;fontSize=12;align=center;" vertex="1" parent="1"><mxGeometry x="300" y="46" width="900" height="24" as="geometry" /></mxCell>
+<mxCell id="clients" value="Users &amp; AI Agents&#10;Web chat · API calls · MCP tool calls (e.g. Claude)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="420" y="110" width="560" height="70" as="geometry" /></mxCell>
+<mxCell id="gateway" value="Gateway&#10;Single entry point — receives every question" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="420" y="220" width="560" height="70" as="geometry" /></mxCell>
+<mxCell id="orch" value="Orchestrator&#10;Runs the question through the pipeline below, end to end" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="420" y="330" width="560" height="70" as="geometry" /></mxCell>
+<mxCell id="und" value="1. Understand&#10;Works out what&#x27;s being asked and which&#10;tables/columns answer it" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="60" y="450" width="310" height="90" as="geometry" /></mxCell>
+<mxCell id="qry" value="2. Query&#10;Writes and safely executes the SQL" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="400" y="450" width="310" height="90" as="geometry" /></mxCell>
+<mxCell id="grd" value="3. Guardrails&#10;Checks permissions, PII, and cost&#10;before anything runs" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F8CECC;strokeColor=#B85450;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="740" y="450" width="310" height="90" as="geometry" /></mxCell>
+<mxCell id="ins" value="4. Insights&#10;Builds the chart, narrative, and&#10;anomaly callouts" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="1080" y="450" width="310" height="90" as="geometry" /></mxCell>
+<mxCell id="knowledge" value="Knowledge Base&#10;Catalog of tables/columns + a business&#10;glossary + relationship graph" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F5F5F5;strokeColor=#666666;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="130" y="590" width="400" height="90" as="geometry" /></mxCell>
+<mxCell id="sources" value="Company Data&#10;Snowflake today — Postgres/Databricks&#10;ready to connect when needed" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="580" y="590" width="460" height="90" as="geometry" /></mxCell>
+<mxCell id="security" value="Security &amp; Access&#10;Every request is checked against&#10;real permission rules (who can see what)" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#F8CECC;strokeColor=#B85450;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="1080" y="590" width="310" height="90" as="geometry" /></mxCell>
+<mxCell id="ops" value="Lineage &amp; Quality Tracking&#10;Records what happened at every step for audit and improvement" style="rounded=1;whiteSpace=wrap;html=1;arcSize=8;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1"><mxGeometry x="420" y="710" width="560" height="70" as="geometry" /></mxCell>
+<mxCell id="e1" value="" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="clients" target="gateway"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e2" value="" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="gateway" target="orch"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e3" value="1" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="orch" target="und"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e4" value="2" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="und" target="qry"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e5" value="3" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="qry" target="grd"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e6" value="approved" style="endArrow=classic;html=1;fontSize=10;rounded=0;dashed=1;" edge="1" parent="1" source="grd" target="qry"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e7" value="4" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="qry" target="ins"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e8" value="answer" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="ins" target="orch"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e9" value="response" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="orch" target="gateway"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e10" value="" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="und" target="knowledge"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e11" value="" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="qry" target="sources"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e12" value="" style="endArrow=classic;html=1;fontSize=10;rounded=0;" edge="1" parent="1" source="grd" target="security"><mxGeometry relative="1" as="geometry" /></mxCell>
+<mxCell id="e13" value="" style="endArrow=classic;html=1;fontSize=10;rounded=0;dashed=1;" edge="1" parent="1" source="orch" target="ops"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
