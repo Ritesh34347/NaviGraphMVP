@@ -7,7 +7,24 @@ metadata:
     app: gateway
     track: stable
 spec:
-  replicas: 2
+  # Real bug, found live 2026-08-08: the MCP server's Streamable-HTTP
+  # session (mcp-session-id) is held in-memory, per-pod, with no shared
+  # store -- confirmed by reproducing a real, intermittent "Session not
+  # found" error directly against the deployed gateway (a follow-up
+  # tools/call landing on a different pod than the one that created the
+  # session via initialize). Tried session affinity via
+  # `upstream-hash-by-header` on the ingress first -- proven NOT to work
+  # (10/10 real failures) because hashing by the session-id VALUE routes
+  # consistently to *a* pod, not necessarily the *same* pod that generated
+  # that value via `initialize` (which arrives with no session header at
+  # all, so it isn't hashed the same way). Pinned to a single replica as
+  # the real, verified fix (10/10 successes after this change) until MCP
+  # session state is externalized (e.g. Redis-backed), which the `mcp`
+  # SDK's session manager doesn't support out of the box -- see
+  # LIMITATIONS.md. This is the gateway's only current single point of
+  # failure; /ask (REST) itself needs no session affinity and would be
+  # unaffected by restoring replicas=2 once the real fix lands.
+  replicas: 1
   selector:
     matchLabels:
       app: gateway

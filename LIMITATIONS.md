@@ -3742,3 +3742,62 @@ again, the same drift class already logged for the markdown docs
 **What full version requires**: a direct edit to the `.drawio` XML adding
 one new box/edge for `/mcp` and a small annotation near Snowflake. Low
 effort, tracked here so it isn't silently forgotten.
+
+### 102. NEW: gateway runs at 1 replica (no HA) for the MCP path -- real in-memory MCP session state doesn't survive multiple pods
+
+**What's deferred**: `gateway-stable`/`gateway-canary` are pinned to
+`replicas: 1` (`infra/k8s/base/gateway/deployment-{stable,canary}.yaml`),
+removing gateway's redundancy/HA for both `/ask` and `/mcp`.
+
+**Why**: the `mcp` SDK's `StreamableHTTPSessionManager` holds each MCP
+session (`mcp-session-id`) in-memory, in the single process that created
+it, with no shared/external store. With 2 replicas and no session
+affinity, a real, live bug reproduced directly (independent of any MCP
+client): a follow-up `tools/call` landing on a different pod than the one
+that ran `initialize` gets a genuine `"Session not found"` error from
+that pod's own, correctly-empty session table -- confirmed via 10
+repeated real calls against the live cluster, ~50% failure rate,
+consistent with random 2-pod load balancing. A first fix attempt
+(`nginx.ingress.kubernetes.io/upstream-hash-by-header` on the
+`mcp-session-id` header, scoped to a path-specific `/mcp` Ingress) was
+built, deployed, and directly disproven (10/10 real failures) -- hashing
+by the session-id VALUE doesn't route to the pod that GENERATED that
+value, since the `initialize` call that mints it carries no session
+header at all. Scaling to 1 replica was verified live (10/10 successes,
+including one full real `ask_navigraph` round-trip against Snowflake) and
+is the actual fix in place today.
+
+**What full version requires**: externalize MCP session state (e.g. a
+Redis-backed session/event store) so `gateway` can run 2+ replicas again
+without this failure mode -- requires either a custom `EventStore`/session
+backend for the `mcp` SDK's session manager (if it exposes one) or a
+different affinity mechanism that works correctly for a
+stateful-but-header-only protocol (cookie-based affinity was considered
+but not implemented: it depends on the MCP client actually storing and
+resending a `Set-Cookie` response, which isn't guaranteed for arbitrary
+MCP clients/SDKs, so it wasn't trusted as a real fix without being able to
+verify client-side cookie handling). REST `/ask` itself needs no session
+affinity and was never the affected path -- this limitation exists purely
+because `/mcp` and `/ask` currently share the same replica count.
+
+### 103. NEW: `gateway-canary`'s live `canary: "true"` annotation is missing from its own committed manifest -- a real, pre-existing git/cluster drift, found but not fixed
+
+**What was found**: while diagnosing item 102, `kubectl get ingress
+gateway-canary -o jsonpath='{.metadata.annotations}'` showed a real,
+live `nginx.ingress.kubernetes.io/canary: "true"` annotation that does
+not appear anywhere in this repo's `infra/k8s/overlays/dev/ingress-patch.yaml`
+(the file that otherwise fully defines this Ingress's real, deployed
+annotations) or in `cd-deploy.yml`'s canary-weight patch commands.
+
+**Why it wasn't fixed here**: unclear when or how it was applied --
+possibly a one-time manual `kubectl annotate`/`edit` during Phase 10b's
+original cluster bootstrap that was never backported into git. Correcting
+it blind, as an unrelated side effect of the item 102 fix, risked masking
+how it actually got there or breaking the real, working canary mechanism
+it currently enables.
+
+**What full version requires**: confirm live whether removing this
+annotation from the cluster (to match git) breaks canary routing before
+deciding whether to add it to `ingress-patch.yaml` (matching the live
+cluster) or remove it live (matching git) -- either resolution is fine,
+but it should be a deliberate one, not an accidental one.

@@ -1529,3 +1529,52 @@ primitive); Databricks reports both `True` (genuine Unity Catalog
 features) -- capability flags are asserted per-connector against what
 each platform actually supports, not defaulted from Snowflake's or each
 other's shape.
+
+## 2026-08-08 — Gateway pinned to 1 replica: ingress-level session affinity for MCP was tried, disproven, and reverted rather than kept as a non-fix
+
+**Context**: a real, live "Session not found" bug on `ask_navigraph`/other
+MCP tool calls, reported through Claude Desktop and independently
+reproduced via direct `curl` against the deployed gateway. Root cause:
+the `mcp` SDK's session manager holds `mcp-session-id` state in-memory,
+per-pod, with no shared store; `gateway-stable` runs 2 replicas with no
+affinity, so a follow-up call can land on a pod that never saw the
+`initialize` call that created the session.
+
+**Decision**: pin `gateway-stable`/`gateway-canary` to `replicas: 1`
+rather than keep the ingress-level `upstream-hash-by-header` fix that was
+built first.
+
+**Why the header-hash approach was rejected**: it was actually deployed
+and directly tested against the live cluster -- 10/10 real failures. The
+flaw: `upstream-hash-by-header` consistently routes requests carrying the
+SAME header value to the SAME backend, which is the right primitive for
+"repeat calls with this key should hit one pod" but the WRONG primitive
+for "route this call back to whichever pod already has state for it" --
+the `initialize` call that actually creates the session carries no
+`mcp-session-id` header at all (the server hasn't issued one yet), so it
+gets hashed/routed independently of where the resulting session's later
+`tools/call`s get hashed to. There is no guarantee, and empirically no
+reliable correlation, between the two. Cookie-based affinity
+(`nginx.ingress.kubernetes.io/affinity: cookie`) was considered as an
+alternative but not built, because it depends on the calling MCP client
+storing and resending a `Set-Cookie` response -- not a behavior this
+project could verify holds for arbitrary MCP clients/SDKs, and a fix that
+can't be verified isn't a fix.
+
+**Why 1 replica, not a code-level session-store fix**: externalizing MCP
+session state (e.g. Redis-backed) is the real, durable fix, but requires
+either a custom `EventStore`/session backend the `mcp` SDK may or may not
+expose, or a deeper look at that SDK's session-manager internals -- more
+investigation than this fix's urgency (a live, user-blocking outage)
+justified before shipping something that actually works. 1 replica was
+verified live (10/10 real successes, including a full `ask_navigraph`
+round-trip against Snowflake) in minutes; it's a real trade of HA for
+correctness, logged honestly in LIMITATIONS.md item 102, not hidden
+behind a fix that only looked like it worked.
+
+**Discipline reinforced**: the header-hash Ingress objects and the
+matching `cd-deploy.yml` canary-weight sync lines were fully REMOVED once
+proven ineffective, rather than left in place "since they're harmless."
+A non-working fix left in the codebase is worse than no fix -- it reads
+as solved when it isn't, and would mislead the next person (or agent)
+who checks whether this is handled.

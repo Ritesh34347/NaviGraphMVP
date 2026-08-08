@@ -2077,3 +2077,52 @@ duplicate, not an oversight, while adding the new markers).
 Zero real Postgres or Databricks instances registered as an actual
 tenant `DataSource` yet -- both connectors are real, tested, and
 registry-wired, but unexercised against a live instance.
+
+## 2026-08-08 — Fixed a real, live MCP bug: intermittent "Session not found" on every other `tools/call`
+
+Reported live, through an actual Claude Desktop connector session: every
+MCP tool call was failing with a generic execution error, across
+multiple different questions. Two prior rounds of remote diagnosis (from
+inside that same Claude Desktop session) guessed the backend/orchestrator
+itself was down or unreachable -- confirmed both times, live, that this
+was wrong: `/healthz`/`/readyz` were 200 OK throughout, and a real
+`ask_navigraph` call succeeded with a correct answer in the middle of the
+reported outage window.
+
+Root-caused by reproducing the failure directly, independent of any
+client: ran the real MCP `initialize` -> `tools/call` sequence via `curl`
+repeatedly and got a genuine, intermittent `"Session not found"` error --
+proving it wasn't a Claude Desktop timeout (the earlier theory) or a
+backend outage (the theory this replaced), but a real infrastructure gap.
+`gateway-stable` runs 2 replicas; the `mcp` SDK's `StreamableHTTPSessionManager`
+holds session state in-memory, per-process, with no shared store. With no
+session affinity on the ingress, a follow-up call landing on a different
+pod than the one that ran `initialize` gets a real "unknown session"
+error from that pod's own, genuinely-empty session table.
+
+First fix attempt -- `nginx.ingress.kubernetes.io/upstream-hash-by-header`
+on a new path-scoped `/mcp` Ingress, hashing by the real `mcp-session-id`
+header -- was built, deployed, and then DISPROVEN by direct testing (10/10
+real failures against the live cluster): hashing by the session-id VALUE
+routes consistently to *a* pod, not necessarily the pod that generated
+that value, since the `initialize` call that creates the session carries
+no session header at all and is hashed differently (or not at all).
+Removed rather than left in place once proven ineffective, matching this
+project's standing "never leave a fix that doesn't actually work" rule.
+
+Real fix: scaled `gateway-stable` to 1 replica live, re-verified 10/10
+real successes (including a full real `ask_navigraph` round-trip against
+Snowflake), then made the change permanent in
+`infra/k8s/base/gateway/deployment-stable.yaml` (and mirrored on
+`deployment-canary.yaml`, so a future canary bake window doesn't
+reintroduce the exact same bug) so the next `cd-deploy.yml` run doesn't
+silently revert it. Logged as a new `LIMITATIONS.md` item (gateway now
+has no HA/redundancy) -- REST `/ask` itself needs no session affinity and
+is unaffected; only the MCP session-affinity gap forced this tradeoff.
+
+Also found, while diagnosing: the live `gateway-canary` Ingress carries a
+real `nginx.ingress.kubernetes.io/canary: "true"` annotation that was
+never present in this repo's own `infra/k8s/overlays/dev/ingress-patch.yaml`
+-- a real, pre-existing drift between git and the cluster, logged but not
+touched as part of this fix (out of scope, and risky to "correct" without
+first understanding how/when it was applied).

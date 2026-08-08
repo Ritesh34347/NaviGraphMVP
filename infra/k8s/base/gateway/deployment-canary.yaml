@@ -7,12 +7,17 @@ metadata:
     app: gateway
     track: canary
 spec:
-  # Fixed at 2, not scaled with traffic weight -- NGINX's canary-weight
-  # annotation controls the request PERCENTAGE independently of replica
-  # count on either side. Scaled to 0 only when no rollout is in flight
-  # (infra/k8s's steady state) or when tools/scripts/canary_gate.py's
-  # automated rollback fires.
-  replicas: 2
+  # Matches gateway-stable's own replicas=1 -- see that file's comment for
+  # the real MCP in-memory-session bug this avoids. If this ever goes back
+  # to 2 without also fixing the underlying in-memory session-affinity
+  # gap, a canary bake window would silently reintroduce the exact same
+  # "Session not found" failures for any MCP session whose calls land on
+  # two different canary pods. NGINX's canary-weight annotation still
+  # controls the request PERCENTAGE independently of replica count.
+  # Scaled to 0 only when no rollout is in flight (infra/k8s's steady
+  # state) or when tools/scripts/canary_gate.py's automated rollback
+  # fires.
+  replicas: 1
   selector:
     matchLabels:
       app: gateway
