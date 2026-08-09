@@ -52,3 +52,38 @@ export interface AskResponse {
   confidence?: number;
   errors?: { code: string; message: string; recoverable: boolean }[];
 }
+
+/**
+ * Mirrors `navigraph_agents.main`'s `GET /lineage` (search) and
+ * `GET /lineage/{trace_id}` (detail) response shapes -- see
+ * `navigraph_lineage.api.TraceSummary`/`get_trace` for the Python side.
+ */
+
+export interface TraceSummary {
+  trace_id: string;
+  first_event_at: string;
+  last_event_at: string;
+  event_count: number;
+  agent_names: string[];
+}
+
+export interface LineageSearchResponse {
+  tenant_id: string;
+  traces: TraceSummary[];
+}
+
+export interface LineageEventRecord {
+  event_id: string;
+  agent_name: string;
+  timestamp: string;
+  input_summary: string;
+  output_summary: string;
+  tenant_id: string;
+  trace_id: string;
+}
+
+export interface LineageTraceResponse {
+  trace_id: string;
+  tenant_id: string;
+  events: LineageEventRecord[];
+}

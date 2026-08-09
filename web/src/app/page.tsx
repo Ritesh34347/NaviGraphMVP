@@ -43,6 +43,9 @@ export default async function HomePage() {
       <p>
         <Link href="/chat">Open the chat UI</Link>
       </p>
+      <p>
+        <Link href="/admin/lineage">Open lineage search (admin)</Link>
+      </p>
     </main>
   );
 }

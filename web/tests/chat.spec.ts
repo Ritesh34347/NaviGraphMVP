@@ -11,13 +11,22 @@ import type { AskResponse } from '@/lib/gateway-types';
  * values, not a mock of the UI itself.
  */
 
-function mockAskResponse(page: import('@playwright/test').Page, response: AskResponse): Promise<void> {
-  return page.route('**/api/ask', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(response) });
+async function mockAskResponse(
+  page: import('@playwright/test').Page,
+  response: AskResponse,
+): Promise<void> {
+  await page.route('**/api/ask', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(response),
+    });
   });
 }
 
-test('renders a narrative, a result table, and follow-up suggestions for outcome=answered', async ({ page }) => {
+test('renders a narrative, a result table, and follow-up suggestions for outcome=answered', async ({
+  page,
+}) => {
   await mockAskResponse(page, {
     result: {
       outcome: 'answered',
@@ -42,7 +51,9 @@ test('renders a narrative, a result table, and follow-up suggestions for outcome
   await expect(assistantMessage).toContainText('Revenue grew 12%');
   await expect(assistantMessage.locator('table')).toContainText('quarter');
   await expect(assistantMessage.locator('table')).toContainText('1120');
-  await expect(assistantMessage.getByRole('button', { name: 'What drove the Q2 growth?' })).toBeVisible();
+  await expect(
+    assistantMessage.getByRole('button', { name: 'What drove the Q2 growth?' }),
+  ).toBeVisible();
 });
 
 test('renders a clarifying question for outcome=needs_clarification', async ({ page }) => {
@@ -58,7 +69,9 @@ test('renders a clarifying question for outcome=needs_clarification', async ({ p
   await page.getByLabel('Question').fill('What was revenue?');
   await page.getByRole('button', { name: 'Send' }).click();
 
-  await expect(page.getByTestId('message-assistant').last()).toContainText('Which region did you mean?');
+  await expect(page.getByTestId('message-assistant').last()).toContainText(
+    'Which region did you mean?',
+  );
 });
 
 test('renders a failure reason for outcome=failed', async ({ page }) => {
@@ -112,7 +125,9 @@ test('shows an inline error when the gateway is unreachable', async ({ page }) =
     await route.fulfill({
       status: 502,
       contentType: 'application/json',
-      body: JSON.stringify({ error: 'gateway is unreachable -- is it running and is GATEWAY_URL correct?' }),
+      body: JSON.stringify({
+        error: 'gateway is unreachable -- is it running and is GATEWAY_URL correct?',
+      }),
     });
   });
 
@@ -120,5 +135,7 @@ test('shows an inline error when the gateway is unreachable', async ({ page }) =
   await page.getByLabel('Question').fill('anything');
   await page.getByRole('button', { name: 'Send' }).click();
 
-  await expect(page.getByTestId('message-assistant').last()).toContainText('gateway is unreachable');
+  await expect(page.getByTestId('message-assistant').last()).toContainText(
+    'gateway is unreachable',
+  );
 });
