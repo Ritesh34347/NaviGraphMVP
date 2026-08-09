@@ -49,19 +49,32 @@ schema (`far_trans`, `staging`).
 executions currently use) is `route="direct_connector"` -- see item 18
 below for why.
 
-### 4. OPA runs an allow-all placeholder policy
+### 4. RESOLVED (Phase 6) — was a duplicate of item 18, never updated: OPA runs an allow-all placeholder policy
 
-**What's deferred**: Real RBAC/ABAC and row-/column-level authorization Rego
+**What was deferred**: Real RBAC/ABAC and row-/column-level authorization Rego
 policies.
 
-**Why**: The policy engine needs to be wired into the request path structurally
-before the real policy logic is written and tested — otherwise policy changes have
-no enforcement point to land in.
+**Why it was deferred**: The policy engine needed to be wired into the request
+path structurally before the real policy logic was written and tested —
+otherwise policy changes would have had no enforcement point to land in.
 
-**What full version requires**: A dedicated later phase to author tenant-, role-,
-and attribute-aware Rego policies, plus an adversarial test suite (see
-`tests/security/`) that must pass before the placeholder is removed. This is
-explicitly not to be marked done without that adversarial test coverage.
+**Resolution**: Phase 6 authored the real policy (`infra/opa/policies/authz.rego`
+— deny-by-default RBAC against an allowed-roles set, plus tenant ABAC
+matching `claims.tenant_id` against the request's `tenant_id`), backed by
+the real adversarial suite `tests/security/test_opa_policy_adversarial.py`
+and `tests/security/test_tenant_isolation.py`. This is the exact same
+resolution item 18 already documented in full — item 4 was left behind as
+an unmarked duplicate during Phase 6 and only caught during the 2026-08-09
+docs reconciliation pass, which itself briefly re-propagated the stale
+"allow-all" claim into `README.md`/`docs/architecture/overview.md`/
+`docs/architecture/data-flow.md`/`docs/architecture/single-stage-mvp.md`
+before this correction. See item 18 for full detail, and the still-genuinely-open
+narrower gaps: row-level/non-PII column-level ABAC (the policy has no
+live-data-API integration into OPA's `data` document, so it only ever sees
+role + tenant, never column-level detail — PII specifically is a separate
+enforcement layer, the PII Exposure Checker agent) and Azure AD JWT
+verification (item 23) to make `claims.tenant_id` itself trustworthy rather
+than caller-supplied.
 
 ### 5. RESOLVED (2026-07-30, Phase 10b): Terraform for Azure is a validated skeleton only
 

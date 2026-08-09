@@ -78,10 +78,14 @@ Authorization** (`guardrail.policy_authorization`, backed by OPA), and —
 after SQL Optimization rewrites the statement — **Query Cost/Row-Limit
 Estimator** (`guardrail.query_cost_estimator`). Any rejection at any of
 these four stops the pipeline with `outcome="failed"` and a `failure_stage`
-naming exactly which check failed. Today, OPA enforces a placeholder
-allow-all policy (see `LIMITATIONS.md` item 4) — the gate exists
-structurally and runs for real on every request, but its real RBAC/ABAC
-policy logic is not yet written.
+naming exactly which check failed. OPA enforces a real, deny-by-default
+RBAC + tenant-ABAC policy (`infra/opa/policies/authz.rego`, hardened via
+`tests/security/`'s adversarial suite — `LIMITATIONS.md` item 4, RESOLVED),
+not a placeholder. What it doesn't do: see row-/column-level detail (PII
+specifically is the separate PII Exposure Checker agent's job), or verify
+that the caller's claims are cryptographically genuine — no real Azure AD
+JWT verification exists yet (item 23), so `claims.tenant_id` is trusted as
+given.
 
 ## 5. Query domain: optimization, planning, and real execution
 

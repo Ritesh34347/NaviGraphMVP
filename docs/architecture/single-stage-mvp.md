@@ -138,7 +138,7 @@ correctness gate.
 | 8 | `query.sql_generation` | Query | Generates schema-grounded SQL from the resolved mapping and intent | LLM |
 | 9 | `guardrail.schema_constraint_validator` | Guardrail | Deterministic reject if the SQL violates known schema constraints | Deterministic |
 | 10 | `guardrail.pii_exposure_checker` | Guardrail | Rejects if the caller's role would see a column flagged `is_pii` | Postgres (`metadata_catalog`) |
-| 11 | `guardrail.policy_authorization` | Guardrail | Real OPA policy decision (today: allow-all placeholder — see below) | OPA |
+| 11 | `guardrail.policy_authorization` | Guardrail | Real OPA decision: deny-by-default RBAC + tenant ABAC (not a placeholder — see below) | OPA |
 | 12 | `query.sql_optimization` | Query | Rewrites/optimizes the guardrail-approved statement | Deterministic |
 | 13 | `guardrail.query_cost_estimator` | Guardrail | Rejects if estimated cost/row volume exceeds configured limits | Deterministic |
 | 14 | `query.execution_planning` | Query | Builds the final `ExecutionPlan`: route, bind-parameterized SQL, row cap, timeout | Deterministic (real SQL-shape validation: single read-only `SELECT`/`WITH` only) |
@@ -177,7 +177,7 @@ context, regardless of how this one ended.
 | Snowflake execution | **Real** | `route="direct_connector"` is the only assigned route; a live, read-only account with zero write privileges (`LIMITATIONS.md` item 3, `DECISIONS.md` "Execution defaults to the direct Snowflake connector, not Trino") |
 | Trino federation | Built, unused | `route="trino"` is fully implemented and unit-tested but not the default — promoting it is a one-line change in Execution Planning, gated on either a second real data source or an independent security review of Trino's own access control |
 | Guardrail SQL-injection defense | **Real, structural** | Execution Planning's parser accepts only a single read-only `SELECT`/`WITH` statement, bind-parameterized values only, plus a hard row-cap/timeout — proven against an adversarial `; DROP TABLE` test, independent of OPA |
-| OPA policy | Placeholder | Runs a real allow-all policy today; real RBAC/ABAC/row-column Rego rules are a dedicated later phase (`LIMITATIONS.md` item 4) |
+| OPA policy | **Real** (not a placeholder) | Deny-by-default RBAC + tenant ABAC (`infra/opa/policies/authz.rego`), hardened via adversarial tests (`LIMITATIONS.md` item 4, RESOLVED). Still narrow: no row-/column-level detail beyond PII (a separate agent's job), and trusts caller-supplied claims pending real Azure AD JWT verification (item 23) |
 | Session state | **Real** | Redis, same key/TTL pattern as the query-result cache |
 | Lineage | **Real** | Postgres, one incremental append per stage, keyed by `trace_id` |
 | Knowledge graph | **Real**, single instance | Neo4j; no HA/clustering yet (`LIMITATIONS.md` item 2) |
@@ -187,7 +187,9 @@ context, regardless of how this one ended.
 
 - A second connector (Postgres/REST) to pressure-test the source-agnostic
   connector interface (item 1).
-- Real Rego policy logic beyond the allow-all placeholder (item 4).
+- Row-/column-level ABAC beyond PII, and real Azure AD JWT verification so
+  OPA's already-real RBAC/ABAC policy can trust claims cryptographically
+  (item 23).
 - Promoting the Trino route to default (item 3).
 - Mid-pipeline crash recovery / resumability — the one capability traded
   away by dropping LangGraph (item 39).

@@ -95,8 +95,10 @@ Postgres Flexible Server, Entra app registration), created via a real,
 human-approved `terraform apply` — Terraform itself still never applies from
 CI.
 
-What's still genuinely deferred, not designed-but-unbuilt: OPA enforces a
-placeholder allow-all policy rather than real tenant RBAC/ABAC; only one
+What's still genuinely deferred, not designed-but-unbuilt: OPA already
+enforces a real RBAC/ABAC policy (not a placeholder), but it has no real
+Azure AD JWT verification behind it yet, so it trusts caller-supplied
+claims, and it never sees row-/column-level detail beyond PII; only one
 Snowflake connector exists; Trino federation is built but not yet the
 default execution route; the built `query.caching` agent isn't yet wired
 into the live request pipeline; and SOC 2 controls are scaffolded, not

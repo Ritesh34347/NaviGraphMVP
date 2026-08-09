@@ -125,12 +125,15 @@ executes against real data.
 |---|---|---|
 | Schema Constraint Validator (`guardrail.schema_constraint_validator`) | **BUILT** | Deterministic reject on schema-constraint violations |
 | PII Exposure Checker (`guardrail.pii_exposure_checker`) | **BUILT** | Rejects if the caller's role can't see a column flagged `is_pii` |
-| Policy Authorization (`guardrail.policy_authorization`) | **BUILT** | Real OPA policy decision — OPA itself still runs an allow-all placeholder policy (`LIMITATIONS.md` item 4) |
+| Policy Authorization (`guardrail.policy_authorization`) | **BUILT** | Real OPA decision against a real deny-by-default RBAC + tenant-ABAC Rego policy (`infra/opa/policies/authz.rego`), hardened via `tests/security/`'s adversarial suite (`LIMITATIONS.md` item 4, RESOLVED) |
 | Query Cost/Row-Limit Estimator (`guardrail.query_cost_estimator`) | **BUILT** | Rejects if estimated cost/row volume exceeds configured limits |
 
-All four originally-planned Guardrail agents are built. The gap is not the
-agents — it's that Policy Authorization currently enforces a placeholder
-allow-all Rego policy rather than real RBAC/ABAC rules.
+All four originally-planned Guardrail agents are built, including a real
+(not placeholder) OPA policy. What's still genuinely open: the policy only
+ever sees role + tenant, never row-/column-level detail (PII specifically
+is a separate layer, the PII Exposure Checker agent); and it trusts
+caller-supplied `claims.tenant_id` since no real Azure AD JWT verification
+exists yet (`LIMITATIONS.md` item 23).
 
 ### Query execution and Ops domains
 
@@ -182,8 +185,9 @@ and 35 (all marked RESOLVED as of this pass) — see those entries for the
 history of how stale this document previously was.
 
 What's genuinely still open is not "which agents exist" but specific,
-already-logged functional gaps: OPA's allow-all placeholder policy (item 4),
-Trino not yet the default execution route (item 3), `query.caching` not
-wired into the live Request Orchestrator sequence (item 59), and no
-mid-pipeline crash recovery given the LangGraph-to-plain-function reversal
-(item 39). See `LIMITATIONS.md` for the complete, current list.
+already-logged functional gaps: no Azure AD JWT verification, so OPA's real
+RBAC/ABAC policy still trusts caller-supplied claims (item 23); Trino not
+yet the default execution route (item 3); `query.caching` not wired into
+the live Request Orchestrator sequence (item 59); and no mid-pipeline crash
+recovery given the LangGraph-to-plain-function reversal (item 39). See
+`LIMITATIONS.md` for the complete, current list.
