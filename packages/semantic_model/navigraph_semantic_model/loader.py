@@ -198,6 +198,14 @@ def validate_semantic_model_against_catalog(model: SemanticModel, session: Sessi
                 f"binding of entity {metric.entity!r}"
             )
 
+    for lookup in model.reference_lookups:
+        _check_binding(
+            f"reference_lookup {lookup.node_label!r}",
+            lookup.data_source,
+            lookup.table,
+            [lookup.column],
+        )
+
     return issues
 
 

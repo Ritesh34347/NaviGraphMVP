@@ -53,10 +53,37 @@ from navigraph_kg.client import Neo4jClient
 from navigraph_kg.ingestion.pipeline import run_ingestion
 from navigraph_kg.ontology import apply_constraints
 from navigraph_kg.settings import KnowledgeGraphSettings
+from navigraph_semantic_model import Entity, EntityBinding, SemanticModel
 
 pytestmark = pytest.mark.neo4j_integration
 
 _TENANT_ID = "kg-integration-test-tenant"
+
+
+def _semantic_model() -> SemanticModel:
+    """Minimal, real Semantic Model for this test -- no relationships or
+    reference_lookups declared (stages 3's Asset/Market crawl still runs
+    unconditionally; only the four simple lookups and relationship
+    concepts are config-driven, see `pipeline.py`'s module docstring), so
+    this only needs one entity to satisfy `SemanticModel`'s own
+    `min_length=1` requirement."""
+
+    return SemanticModel(
+        tenant_id=_TENANT_ID,
+        version=1,
+        entities=[
+            Entity(
+                name="Asset",
+                bindings=[
+                    EntityBinding(
+                        data_source="kg-integration-test",
+                        table="FAR_TRANS.ASSET_INFORMATION",
+                        key="ISIN",
+                    )
+                ],
+            )
+        ],
+    )
 
 
 def _label_counts(client: Neo4jClient) -> dict[str, int]:
@@ -107,10 +134,12 @@ def test_ingestion_is_idempotent_against_real_neo4j_and_snowflake() -> None:
             tenant_id=_TENANT_ID,
             name=f"kg-integration-{uuid.uuid4().hex[:8]}",
             source_type="snowflake",
-            connection_ref={"env_prefix": "SNOWFLAKE"},
+            connection_ref={"secret_scope": "SNOWFLAKE"},
         )
         crawl_and_store(catalog_session, data_source_id=data_source.id, connector=connector)
         data_source_id = data_source.id
+
+    semantic_model = _semantic_model()
 
     try:
         with session_scope(session_factory) as catalog_session:
@@ -118,6 +147,7 @@ def test_ingestion_is_idempotent_against_real_neo4j_and_snowflake() -> None:
                 catalog_session,
                 neo4j_client,
                 connector,
+                semantic_model,
                 data_source_id=data_source_id,
                 tenant_id=_TENANT_ID,
             )
@@ -134,6 +164,7 @@ def test_ingestion_is_idempotent_against_real_neo4j_and_snowflake() -> None:
                 catalog_session,
                 neo4j_client,
                 connector,
+                semantic_model,
                 data_source_id=data_source_id,
                 tenant_id=_TENANT_ID,
             )

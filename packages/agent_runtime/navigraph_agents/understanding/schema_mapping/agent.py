@@ -227,8 +227,8 @@ class SchemaMappingAgent:
         `RelationshipConcept`s are each realized within a SINGLE
         denormalized table (e.g. "Customer has RiskLevel" realized via
         `CUSTOMER_INFORMATION.CUSTOMERID` / `.RISKLEVEL` -- see
-        `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`'s module docstring),
-        not as a genuine two-table foreign key. A join is only actually
+        `navigraph_semantic_model.Relationship`'s docstring), not as a
+        genuine two-table foreign key. A join is only actually
         needed when the resolved columns ALSO include a column from some
         OTHER table (e.g. a measure from `TRANSACTIONS`) that must be
         connected to the relationship's `realizing_table` to pull in that

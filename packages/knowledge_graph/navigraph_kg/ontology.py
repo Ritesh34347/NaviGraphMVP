@@ -1,5 +1,5 @@
-"""The knowledge graph's ontology: node labels, relationship types, schema
-constraints, and hand-curated relationship-concept seed data.
+"""The knowledge graph's ontology: node labels, relationship types, and
+schema constraints.
 
 Two tiers (see `navigraph_kg`'s package docstring for the full rationale):
 
@@ -9,7 +9,10 @@ Two tiers (see `navigraph_kg`'s package docstring for the full rationale):
   `InvestmentCapacityBand`.
 - Tier 2 -- business-concept/schema-mapping layer: `BusinessConcept`,
   `Table`, `Column` (thin proxies referencing the Postgres catalog by UUID),
-  `RelationshipConcept` (hand-curated, not crawled).
+  `RelationshipConcept` (compiled from a per-tenant
+  `navigraph_semantic_model.SemanticModel`'s `relationships`, not
+  hand-curated Python -- see `navigraph_kg.ingestion.pipeline
+  ._sync_relationship_concepts`, LIMITATIONS.md item 38's structural fix).
 """
 
 from __future__ import annotations
@@ -101,65 +104,3 @@ def apply_constraints(client: Neo4jClient) -> None:
 
     for statement in SCHEMA_CONSTRAINTS:
         client.run(statement)
-
-
-# Hand-curated seed data for `RelationshipConcept` nodes (see
-# `navigraph_kg.ingestion.pipeline._sync_relationship_concepts`) -- these are
-# NEVER crawled or auto-derived; customer- and transaction-cardinality data
-# is explicitly excluded from the graph itself (see the module docstring of
-# `navigraph_kg.ingestion.pipeline`), so a `Customer` node never actually
-# exists in Neo4j. What these seed entries capture instead is *how* a
-# `Customer`-to-X relationship would be realized in Snowflake if a caller
-# needed to generate SQL for it: which real table/columns to join.
-RELATIONSHIP_CONCEPTS: list[dict[str, str]] = [
-    {
-        "name": "Customer holds Asset",
-        "subject_label": "Customer",
-        "predicate": "HOLDS",
-        "object_label": "Asset",
-        "realizing_table": "CUSTOMER_ASSET_AGG",
-        "subject_key_column": "CUSTOMERID",
-        "object_key_column": "ISIN",
-    },
-    {
-        "name": "Customer uses Channel",
-        "subject_label": "Customer",
-        "predicate": "USES",
-        "object_label": "Channel",
-        "realizing_table": "TRANSACTIONS",
-        "subject_key_column": "CUSTOMERID",
-        "object_key_column": "CHANNEL",
-    },
-    {
-        "name": "Customer has RiskLevel",
-        "subject_label": "Customer",
-        "predicate": "HAS",
-        "object_label": "RiskLevel",
-        "realizing_table": "CUSTOMER_INFORMATION",
-        "subject_key_column": "CUSTOMERID",
-        "object_key_column": "RISKLEVEL",
-    },
-    {
-        # Real bug found live in Phase 9's real HTTP smoke test of the
-        # Request Orchestrator: "What is the total transaction volume by
-        # market?" resolved TRANSACTIONS.TOTALVALUE and MARKETS.NAME with
-        # zero relationship concepts (Ontology's curated set had no entry
-        # linking them), so Schema Mapping's `_build_joins` -- which ONLY
-        # derives joins from `relationship_resolutions` -- emitted no join
-        # at all. SQL Generation then had no way to connect the two tables,
-        # producing a single ungrouped grand total cross-joined against
-        # every distinct market name (same wrong value on all 38 rows).
-        # Unlike the other three entries, MARKETID is the literal SAME
-        # column name on both sides (TRANSACTIONS.MARKETID is a real
-        # foreign key to MARKETS.MARKETID) rather than a Customer-style
-        # subject/object key split, so `subject_key_column` and
-        # `object_key_column` are identical here.
-        "name": "Transaction happens in Market",
-        "subject_label": "Transaction",
-        "predicate": "HAPPENS_IN",
-        "object_label": "Market",
-        "realizing_table": "TRANSACTIONS",
-        "subject_key_column": "MARKETID",
-        "object_key_column": "MARKETID",
-    },
-]

@@ -11,6 +11,7 @@ from navigraph_semantic_model.contracts import (
     Entity,
     EntityBinding,
     Metric,
+    ReferenceLookup,
     Relationship,
     RelationshipBinding,
     SemanticModel,
@@ -142,27 +143,33 @@ class TestSemanticModelConstruction:
                 relationships=[relationship, relationship.model_copy()],
             )
 
-    def test_relationship_referencing_undeclared_subject_entity_is_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="not a declared entity"):
-            SemanticModel(
-                tenant_id="navikenz-poc",
-                version=1,
-                entities=[_asset_entity()],
-                relationships=[
-                    Relationship(
-                        name="Customer holds Asset",
-                        subject="Customer",  # never declared
-                        predicate="HOLDS",
-                        object="Asset",
-                        via=RelationshipBinding(
-                            data_source="fidelity_poc_snowflake_v2",
-                            table="FAR_TRANS.CUSTOMER_ASSET_AGG",
-                            subject_key="CUSTOMERID",
-                            object_key="ISIN",
-                        ),
-                    )
-                ],
-            )
+    def test_relationship_subject_and_object_need_not_be_declared_entities(self) -> None:
+        """`RelationshipConcept`-style labels are deliberately free-form --
+        `Customer`/`Transaction` are real, legitimate subject/object
+        labels that are never declared as catalog-bound `Entity`s (see
+        `navigraph_kg.ingestion.pipeline`'s "customers and transactions
+        are deliberately out of scope" module docstring)."""
+
+        model = SemanticModel(
+            tenant_id="navikenz-poc",
+            version=1,
+            entities=[_asset_entity()],
+            relationships=[
+                Relationship(
+                    name="Customer holds Asset",
+                    subject="Customer",  # never declared as an Entity, and that's fine
+                    predicate="HOLDS",
+                    object="Asset",
+                    via=RelationshipBinding(
+                        data_source="fidelity_poc_snowflake_v2",
+                        table="FAR_TRANS.CUSTOMER_ASSET_AGG",
+                        subject_key="CUSTOMERID",
+                        object_key="ISIN",
+                    ),
+                )
+            ],
+        )
+        assert model.relationships[0].subject == "Customer"
 
     def test_metric_referencing_undeclared_entity_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="not a declared entity"):
@@ -192,3 +199,36 @@ class TestMetric:
     def test_non_count_aggregation_with_a_column_is_valid(self) -> None:
         metric = Metric(name="total_units_traded", entity="Transaction", aggregation="SUM", column="UNITS")
         assert metric.column == "UNITS"
+
+
+class TestReferenceLookup:
+    def test_a_model_with_reference_lookups_constructs(self) -> None:
+        model = SemanticModel(
+            tenant_id="navikenz-poc",
+            version=1,
+            entities=[_customer_entity()],
+            reference_lookups=[
+                ReferenceLookup(
+                    node_label="Channel",
+                    data_source="fidelity_poc_snowflake_v2",
+                    table="FAR_TRANS.TRANSACTIONS",
+                    column="CHANNEL",
+                )
+            ],
+        )
+        assert model.reference_lookups[0].node_label == "Channel"
+
+    def test_duplicate_node_labels_are_rejected(self) -> None:
+        lookup = ReferenceLookup(
+            node_label="Channel",
+            data_source="fidelity_poc_snowflake_v2",
+            table="FAR_TRANS.TRANSACTIONS",
+            column="CHANNEL",
+        )
+        with pytest.raises(ValidationError, match="unique"):
+            SemanticModel(
+                tenant_id="navikenz-poc",
+                version=1,
+                entities=[_customer_entity()],
+                reference_lookups=[lookup, lookup.model_copy()],
+            )

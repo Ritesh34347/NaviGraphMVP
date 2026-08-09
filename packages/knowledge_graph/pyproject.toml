@@ -36,6 +36,15 @@ dependencies = [
     # dependency injection, exactly like
     # `navigraph_catalog.ingestion.snowflake_crawler.crawl_and_store` does.
     "navigraph-connector-sdk",
+    # Same local-workspace-dependency reasoning as above: install
+    #   pip install -e packages/semantic_model
+    # before this package. Ingestion stages 3-4
+    # (`navigraph_kg.ingestion.pipeline._sync_reference_data`'s simple-
+    # lookup portion and `_sync_relationship_concepts`) compile from a
+    # `navigraph_semantic_model.SemanticModel` instead of
+    # `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`/hardcoded reference-data
+    # SQL constants (LIMITATIONS.md item 38's structural fix).
+    "navigraph-semantic-model",
 ]
 
 [project.optional-dependencies]

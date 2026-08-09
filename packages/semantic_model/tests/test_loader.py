@@ -21,6 +21,7 @@ from navigraph_semantic_model.contracts import (
     Entity,
     EntityBinding,
     Metric,
+    ReferenceLookup,
     Relationship,
     RelationshipBinding,
     SemanticModel,
@@ -266,6 +267,29 @@ class TestValidateSemanticModelAgainstCatalog:
         assert any(
             "metric 'total_units_traded': column 'UNITS' not found" in issue for issue in issues
         )
+
+    def test_reference_lookup_column_missing_is_an_issue(self) -> None:
+        model = _model(reference_lookups=[
+            ReferenceLookup(
+                node_label="Channel",
+                data_source=_DATA_SOURCE_NAME,
+                table="FAR_TRANS.TRANSACTIONS",
+                column="CHANNEL",
+            )
+        ])
+        session = MagicMock()
+
+        def _find_column(session, *, data_source_id, table_name, column_name):
+            return None if column_name == "CHANNEL" else MagicMock()
+
+        with (
+            patch(f"{_LOADER_MODULE}.list_data_sources", return_value=[_data_source()]),
+            patch(f"{_LOADER_MODULE}.get_table", return_value=MagicMock()),
+            patch(f"{_LOADER_MODULE}.find_column", side_effect=_find_column),
+        ):
+            issues = validate_semantic_model_against_catalog(model, session)
+
+        assert any("reference_lookup 'Channel'" in issue for issue in issues)
 
     def test_count_metric_with_no_column_is_never_checked(self) -> None:
         model = _model()

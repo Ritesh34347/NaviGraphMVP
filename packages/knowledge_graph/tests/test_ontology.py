@@ -1,19 +1,21 @@
 """Real tests for `navigraph_kg.ontology` -- no mocks needed.
 
-`SCHEMA_CONSTRAINTS` and `RELATIONSHIP_CONCEPTS` are plain Python data, so
-these tests assert directly on their real content rather than mocking
-anything out.
+`SCHEMA_CONSTRAINTS` is plain Python data, so these tests assert directly
+on its real content rather than mocking anything out. `RELATIONSHIP_CONCEPTS`
+(the hand-curated seed list this file used to test directly) has been
+retired -- real relationship data now lives in a per-tenant
+`navigraph_semantic_model.SemanticModel`, compiled into the graph by
+`navigraph_kg.ingestion.pipeline._sync_relationship_concepts` (see
+`packages/knowledge_graph/tests/ingestion/test_pipeline.py` for coverage
+of that compilation) and read back via `navigraph_kg.api
+.list_relationship_concepts`.
 """
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from navigraph_kg.ontology import (
-    RELATIONSHIP_CONCEPTS,
-    SCHEMA_CONSTRAINTS,
-    apply_constraints,
-)
+from navigraph_kg.ontology import SCHEMA_CONSTRAINTS, apply_constraints
 
 
 class TestSchemaConstraints:
@@ -60,45 +62,3 @@ class TestApplyConstraints:
         assert client.run.call_count == len(SCHEMA_CONSTRAINTS)
         run_statements = [call.args[0] for call in client.run.call_args_list]
         assert run_statements == SCHEMA_CONSTRAINTS
-
-
-class TestRelationshipConcepts:
-    def test_has_exactly_the_four_seed_entries(self) -> None:
-        assert len(RELATIONSHIP_CONCEPTS) == 4
-
-    def test_every_entry_has_the_expected_keys(self) -> None:
-        expected_keys = {
-            "name",
-            "subject_label",
-            "predicate",
-            "object_label",
-            "realizing_table",
-            "subject_key_column",
-            "object_key_column",
-        }
-        for concept in RELATIONSHIP_CONCEPTS:
-            assert set(concept.keys()) == expected_keys
-
-    def test_contains_customer_holds_asset(self) -> None:
-        names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
-        assert "Customer holds Asset" in names
-
-    def test_contains_customer_uses_channel(self) -> None:
-        names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
-        assert "Customer uses Channel" in names
-
-    def test_contains_customer_has_risklevel(self) -> None:
-        names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
-        assert "Customer has RiskLevel" in names
-
-    def test_contains_transaction_happens_in_market(self) -> None:
-        names = {c["name"] for c in RELATIONSHIP_CONCEPTS}
-        assert "Transaction happens in Market" in names
-
-    def test_transaction_happens_in_market_uses_marketid_as_the_shared_join_key(self) -> None:
-        concept = next(
-            c for c in RELATIONSHIP_CONCEPTS if c["name"] == "Transaction happens in Market"
-        )
-        assert concept["realizing_table"] == "TRANSACTIONS"
-        assert concept["subject_key_column"] == "MARKETID"
-        assert concept["object_key_column"] == "MARKETID"

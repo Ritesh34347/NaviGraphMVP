@@ -15,6 +15,7 @@ from navigraph_kg.api import (
     get_relationship_concept,
     list_assets_by_sector,
     list_markets_for_exchange,
+    list_relationship_concepts,
     resolve_business_term,
 )
 
@@ -73,6 +74,33 @@ class TestGetColumnForConcept:
         result = get_column_for_concept(client, tenant_id="tenant-a", concept_name="Nope")
 
         assert result is None
+
+
+class TestListRelationshipConcepts:
+    def test_queries_active_concepts_filtered_by_tenant(self) -> None:
+        client = MagicMock()
+        client.run.return_value = [
+            {"subject_label": "Customer", "predicate": "HOLDS", "object_label": "Asset"},
+            {"subject_label": "Transaction", "predicate": "HAPPENS_IN", "object_label": "Market"},
+        ]
+
+        result = list_relationship_concepts(client, tenant_id="tenant-a")
+
+        client.run.assert_called_once()
+        cypher = client.run.call_args.args[0]
+        assert "tenant_id" in cypher
+        assert "active: true" in cypher
+        kwargs = client.run.call_args.kwargs
+        assert kwargs["tenant_id"] == "tenant-a"
+        assert result == client.run.return_value
+
+    def test_returns_empty_list_when_no_concepts_exist(self) -> None:
+        client = MagicMock()
+        client.run.return_value = []
+
+        result = list_relationship_concepts(client, tenant_id="tenant-a")
+
+        assert result == []
 
 
 class TestGetRelationshipConcept:

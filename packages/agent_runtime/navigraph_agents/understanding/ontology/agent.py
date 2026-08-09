@@ -3,9 +3,11 @@
 Fully deterministic: no LLM call, no `prompts/` directory. Resolves each
 entity extracted by Intent Understanding to a `BusinessConcept` -> `Column`
 mapping via `navigraph_kg.api.resolve_business_term`, and separately scans
-the hand-curated `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` seed list for
-any relationship whose subject/object labels are both present among the
-input entities, resolving each match via
+every real `RelationshipConcept` node for this tenant (via
+`navigraph_kg.api.list_relationship_concepts` -- compiled at ingestion time
+from a `navigraph_semantic_model.SemanticModel`'s `relationships`, not a
+hardcoded Python list) for any relationship whose subject/object labels are
+both present among the input entities, resolving each match via
 `navigraph_kg.api.get_relationship_concept`.
 
 Follows the same structural pattern as
@@ -18,9 +20,12 @@ from __future__ import annotations
 
 import time
 
-from navigraph_kg.api import get_relationship_concept, resolve_business_term
+from navigraph_kg.api import (
+    get_relationship_concept,
+    list_relationship_concepts,
+    resolve_business_term,
+)
 from navigraph_kg.client import Neo4jClient
-from navigraph_kg.ontology import RELATIONSHIP_CONCEPTS
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
 from navigraph_shared.telemetry import (
     get_tracer,
@@ -191,13 +196,13 @@ class OntologyAgent:
     def _resolve_relationships(
         self, entities: list[str], *, tenant_id: str
     ) -> list[RelationshipResolution]:
-        """Scan every hand-curated `RelationshipConcept` seed for one whose
-        subject AND object label both appear among the input entities, and
-        resolve each match against the real graph."""
+        """Scan every real `RelationshipConcept` node for this tenant for
+        one whose subject AND object label both appear among the input
+        entities, and resolve each match against the real graph."""
 
         relationship_resolutions: list[RelationshipResolution] = []
 
-        for concept in RELATIONSHIP_CONCEPTS:
+        for concept in list_relationship_concepts(self._client, tenant_id=tenant_id):
             subject_label = concept["subject_label"]
             object_label = concept["object_label"]
 

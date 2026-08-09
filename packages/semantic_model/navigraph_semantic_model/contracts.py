@@ -148,6 +148,30 @@ class Metric(BaseModel):
         return self
 
 
+class ReferenceLookup(BaseModel):
+    """One Tier-1 reference/dimension node type, materialized as one node
+    per distinct, non-null value of one column -- e.g. `Channel`,
+    `CustomerType`, `RiskLevel`, `InvestmentCapacityBand`. Replaces one of
+    `navigraph_kg.ingestion.reference_data_queries`'s hardcoded
+    `SELECT DISTINCT <column> FROM <table> WHERE <column> IS NOT NULL`
+    query constants with per-tenant config.
+
+    `node_label` is deliberately constrained (see
+    `navigraph_kg.ingestion.pipeline`'s consumer, not this module) to the
+    small, fixed set of Tier-1 lookup labels `navigraph_kg.ontology`
+    already declares real uniqueness constraints for -- a Semantic Model
+    cannot introduce an arbitrary new Neo4j label with no corresponding
+    schema constraint.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_label: str
+    data_source: str
+    table: str
+    column: str
+
+
 class PolicyBindings(BaseModel):
     """Tenant-specific policy FACTS -- compiled into a per-tenant OPA data
     document (`navigraph_semantic_model.opa_sync`), never a second Rego
@@ -171,17 +195,33 @@ class SemanticModel(BaseModel):
     entities: list[Entity] = Field(min_length=1)
     relationships: list[Relationship] = Field(default_factory=list)
     metrics: list[Metric] = Field(default_factory=list)
+    reference_lookups: list[ReferenceLookup] = Field(default_factory=list)
     policy_bindings: PolicyBindings = Field(default_factory=PolicyBindings)
 
     @model_validator(mode="after")
     def _internal_references_resolve(self) -> SemanticModel:
-        """Structural validation only -- does every `Relationship`/`Metric`
-        reference a declared `Entity` name, and are entity/relationship
-        names unique. Whether a binding's `(data_source, table, key)`
-        actually exists in the live catalog is `loader.py`'s job, not
-        this model's -- this model must be constructible offline, with no
-        database, so it can be unit-tested and hand-authored/reviewed
+        """Structural validation only -- does every `Metric` reference a
+        declared `Entity` name, and are entity/relationship/reference-
+        lookup names unique. Whether a binding's `(data_source, table,
+        key)` actually exists in the live catalog is `loader.py`'s job,
+        not this model's -- this model must be constructible offline, with
+        no database, so it can be unit-tested and hand-authored/reviewed
         before ever touching a real catalog.
+
+        `Relationship.subject`/`.object` are deliberately NOT required to
+        be declared `Entity` names -- mirroring the real, pre-Semantic-
+        Model `RELATIONSHIP_CONCEPTS`' own `subject_label`/`object_label`
+        fields exactly, these are free-form conceptual labels
+        (`OntologyAgent` matches them against a question's extracted
+        entities as plain strings) that very often name a Tier-1
+        reference/dimension concept (`Channel`, `RiskLevel`, `Market`) or
+        an intentionally graph-excluded concept (`Customer`, `Transaction`
+        -- see `navigraph_kg.ingestion.pipeline`'s module docstring for why
+        those are never materialized as bound `Entity`/`ReferenceLookup`
+        data at all), not necessarily this same document's own `Entity`
+        list. An `Entity` here specifically means "has a real, catalog-
+        validated table binding" -- a narrower, stricter concept than
+        "any label `RelationshipConcept` matching can use."
         """
 
         entity_names = [e.name for e in self.entities]
@@ -193,23 +233,18 @@ class SemanticModel(BaseModel):
             raise ValueError("relationship names must be unique within a Semantic Model")
 
         entity_name_set = set(entity_names)
-        for relationship in self.relationships:
-            if relationship.subject not in entity_name_set:
-                raise ValueError(
-                    f"relationship {relationship.name!r}: subject "
-                    f"{relationship.subject!r} is not a declared entity"
-                )
-            if relationship.object not in entity_name_set:
-                raise ValueError(
-                    f"relationship {relationship.name!r}: object "
-                    f"{relationship.object!r} is not a declared entity"
-                )
-
         for metric in self.metrics:
             if metric.entity not in entity_name_set:
                 raise ValueError(
                     f"metric {metric.name!r}: entity {metric.entity!r} is not a declared entity"
                 )
+
+        lookup_labels = [lookup.node_label for lookup in self.reference_lookups]
+        if len(lookup_labels) != len(set(lookup_labels)):
+            raise ValueError(
+                "reference_lookups' node_labels must be unique within a Semantic Model -- "
+                "two lookups populating the same label is ambiguous"
+            )
 
         return self
 

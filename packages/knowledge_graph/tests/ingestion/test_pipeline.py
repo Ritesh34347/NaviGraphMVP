@@ -8,6 +8,16 @@ query string was run. Asserts each of the four stages issues MERGE-shaped
 Cypher with the right params, and -- the specifically-called-out case --
 that a null `sector`/`industry` correctly produces NO `IN_SECTOR`/
 `IN_INDUSTRY` edge.
+
+Stages 3 (the four simple lookups)/4 (relationship concepts) now compile
+from a `SemanticModel` passed into `run_ingestion` instead of hardcoded
+Python -- `_semantic_model()` below builds one carrying the exact same
+real values `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`/four
+`reference_data_queries.py` constants used to hardcode, so every count
+assertion in this file stays unchanged: this is the "identical output,
+now from config" proof for the unit tier (see `LIMITATIONS.md`/
+`BUILD_LOG.md` for the live-Snowflake golden-set re-run this sandbox
+cannot perform).
 """
 
 from __future__ import annotations
@@ -15,6 +25,7 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock, patch
 
+import pytest
 from navigraph_catalog.models import CatalogColumn, CatalogTable, ColumnGlossary
 from navigraph_connectors.base import (
     ConnectionTestResult,
@@ -25,15 +36,124 @@ from navigraph_connectors.base import (
 from navigraph_kg.ingestion.pipeline import run_ingestion
 from navigraph_kg.ingestion.reference_data_queries import (
     ASSET_INFORMATION_QUERY,
-    DISTINCT_CHANNELS_QUERY,
-    DISTINCT_CUSTOMER_TYPES_QUERY,
-    DISTINCT_INVESTMENT_CAPACITY_QUERY,
-    DISTINCT_RISK_LEVELS_QUERY,
     MARKETS_QUERY,
+)
+from navigraph_semantic_model import (
+    Entity,
+    EntityBinding,
+    ReferenceLookup,
+    Relationship,
+    RelationshipBinding,
+    SemanticModel,
 )
 
 _TENANT_ID = "tenant-a"
 _DATA_SOURCE_ID = uuid.uuid4()
+_DATA_SOURCE_NAME = "fidelity_poc_snowflake_v2"
+
+
+def _semantic_model() -> SemanticModel:
+    """The exact real FIDELITY_POC values `navigraph_kg.ontology
+    .RELATIONSHIP_CONCEPTS` and the four simple-lookup
+    `reference_data_queries.py` constants used to hardcode, now expressed
+    as a `SemanticModel` -- see this module's docstring."""
+
+    return SemanticModel(
+        tenant_id=_TENANT_ID,
+        version=1,
+        entities=[
+            Entity(
+                name="Customer",
+                bindings=[
+                    EntityBinding(
+                        data_source=_DATA_SOURCE_NAME,
+                        table="STAGING.CUSTOMER_INFORMATION",
+                        key="CUSTOMERID",
+                    )
+                ],
+            ),
+        ],
+        relationships=[
+            Relationship(
+                name="Customer holds Asset",
+                subject="Customer",
+                predicate="HOLDS",
+                object="Asset",
+                via=RelationshipBinding(
+                    data_source=_DATA_SOURCE_NAME,
+                    table="FAR_TRANS.CUSTOMER_ASSET_AGG",
+                    subject_key="CUSTOMERID",
+                    object_key="ISIN",
+                ),
+            ),
+            Relationship(
+                name="Customer uses Channel",
+                subject="Customer",
+                predicate="USES",
+                object="Channel",
+                via=RelationshipBinding(
+                    data_source=_DATA_SOURCE_NAME,
+                    table="FAR_TRANS.TRANSACTIONS",
+                    subject_key="CUSTOMERID",
+                    object_key="CHANNEL",
+                ),
+            ),
+            Relationship(
+                name="Customer has RiskLevel",
+                subject="Customer",
+                predicate="HAS",
+                object="RiskLevel",
+                via=RelationshipBinding(
+                    data_source=_DATA_SOURCE_NAME,
+                    table="FAR_TRANS.CUSTOMER_INFORMATION",
+                    subject_key="CUSTOMERID",
+                    object_key="RISKLEVEL",
+                ),
+            ),
+            Relationship(
+                # Real bug found live in Phase 9's real HTTP smoke test of
+                # the Request Orchestrator -- see
+                # `navigraph_semantic_model.Relationship`'s docstring and
+                # `LIMITATIONS.md`'s item 15 for the full root cause.
+                name="Transaction happens in Market",
+                subject="Transaction",
+                predicate="HAPPENS_IN",
+                object="Market",
+                via=RelationshipBinding(
+                    data_source=_DATA_SOURCE_NAME,
+                    table="FAR_TRANS.TRANSACTIONS",
+                    subject_key="MARKETID",
+                    object_key="MARKETID",
+                ),
+            ),
+        ],
+        reference_lookups=[
+            ReferenceLookup(
+                node_label="Channel",
+                data_source=_DATA_SOURCE_NAME,
+                table="FAR_TRANS.TRANSACTIONS",
+                column="CHANNEL",
+            ),
+            ReferenceLookup(
+                node_label="CustomerType",
+                data_source=_DATA_SOURCE_NAME,
+                table="FAR_TRANS.CUSTOMER_INFORMATION",
+                column="CUSTOMERTYPE",
+            ),
+            ReferenceLookup(
+                node_label="RiskLevel",
+                data_source=_DATA_SOURCE_NAME,
+                table="FAR_TRANS.CUSTOMER_INFORMATION",
+                column="RISKLEVEL",
+            ),
+            ReferenceLookup(
+                node_label="InvestmentCapacityBand",
+                data_source=_DATA_SOURCE_NAME,
+                table="FAR_TRANS.CUSTOMER_INFORMATION",
+                column="INVESTMENTCAPACITY",
+            ),
+        ],
+    )
 
 
 class FakeConnector(Connector):
@@ -132,18 +252,21 @@ def _make_connector() -> FakeConnector:
         {
             MARKETS_QUERY: _markets_query_result(),
             ASSET_INFORMATION_QUERY: _asset_information_query_result(),
-            DISTINCT_CHANNELS_QUERY: _simple_lookup_result(
-                "CHANNEL", ["Internet Banking", "Branch"]
+            "SELECT DISTINCT CHANNEL FROM FAR_TRANS.TRANSACTIONS WHERE CHANNEL IS NOT NULL": (
+                _simple_lookup_result("CHANNEL", ["Internet Banking", "Branch"])
             ),
-            DISTINCT_CUSTOMER_TYPES_QUERY: _simple_lookup_result(
-                "CUSTOMERTYPE", ["Mass", "Premium"]
-            ),
-            DISTINCT_RISK_LEVELS_QUERY: _simple_lookup_result(
-                "RISKLEVEL", ["Aggressive", "Balanced"]
-            ),
-            DISTINCT_INVESTMENT_CAPACITY_QUERY: _simple_lookup_result(
-                "INVESTMENTCAPACITY", ["CAP_80K_300K"]
-            ),
+            (
+                "SELECT DISTINCT CUSTOMERTYPE FROM FAR_TRANS.CUSTOMER_INFORMATION "
+                "WHERE CUSTOMERTYPE IS NOT NULL"
+            ): _simple_lookup_result("CUSTOMERTYPE", ["Mass", "Premium"]),
+            (
+                "SELECT DISTINCT RISKLEVEL FROM FAR_TRANS.CUSTOMER_INFORMATION "
+                "WHERE RISKLEVEL IS NOT NULL"
+            ): _simple_lookup_result("RISKLEVEL", ["Aggressive", "Balanced"]),
+            (
+                "SELECT DISTINCT INVESTMENTCAPACITY FROM FAR_TRANS.CUSTOMER_INFORMATION "
+                "WHERE INVESTMENTCAPACITY IS NOT NULL"
+            ): _simple_lookup_result("INVESTMENTCAPACITY", ["CAP_80K_300K"]),
         }
     )
 
@@ -179,6 +302,7 @@ def _run_pipeline() -> tuple[MagicMock, object]:
             catalog_session,
             neo4j_client,
             connector,
+            _semantic_model(),
             data_source_id=_DATA_SOURCE_ID,
             tenant_id=_TENANT_ID,
         )
@@ -339,6 +463,78 @@ class TestSyncRelationshipConcepts:
             assert "REALIZES" in call.args[0]
             assert "SUBJECT_KEY" in call.args[0]
             assert "OBJECT_KEY" in call.args[0]
+
+    def test_realizing_table_is_the_bare_table_name_schema_stripped(self) -> None:
+        """`Relationship.via.table` is `"SCHEMA.TABLE"`; the `Table` node
+        this stage MERGEs must match stage 1's `Table.name` property
+        (`CatalogTable.name`, never schema-qualified) -- so only the bare
+        table name is ever used here, not the full `via.table` string."""
+
+        client, _summary, *_ = _run_pipeline()
+
+        concept_calls = [
+            call
+            for call in client.run.call_args_list
+            if "MERGE (rc:RelationshipConcept" in call.args[0]
+            and call.kwargs["name"] == "Transaction happens in Market"
+        ]
+        assert len(concept_calls) == 1
+        assert concept_calls[0].kwargs["realizing_table"] == "TRANSACTIONS"
+
+
+class TestRunIngestionValidation:
+    def test_mismatched_tenant_id_raises(self) -> None:
+        neo4j_client = MagicMock()
+        catalog_session = MagicMock()
+        connector = _make_connector()
+
+        with (
+            patch("navigraph_kg.ingestion.pipeline.list_tables", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_columns", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_glossary", return_value=[]),
+            pytest.raises(ValueError, match="does not match"),
+        ):
+            run_ingestion(
+                catalog_session,
+                neo4j_client,
+                connector,
+                _semantic_model(),  # tenant_id="tenant-a"
+                data_source_id=_DATA_SOURCE_ID,
+                tenant_id="a-different-tenant",
+            )
+
+    def test_reference_lookup_with_an_unconstrained_node_label_raises(self) -> None:
+        neo4j_client = MagicMock()
+        catalog_session = MagicMock()
+        connector = _make_connector()
+
+        bad_model = _semantic_model().model_copy(
+            update={
+                "reference_lookups": [
+                    ReferenceLookup(
+                        node_label="NotARealTier1Label",
+                        data_source=_DATA_SOURCE_NAME,
+                        table="FAR_TRANS.TRANSACTIONS",
+                        column="CHANNEL",
+                    )
+                ]
+            }
+        )
+
+        with (
+            patch("navigraph_kg.ingestion.pipeline.list_tables", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_columns", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_glossary", return_value=[]),
+            pytest.raises(ValueError, match="not one of the schema-constrained"),
+        ):
+            run_ingestion(
+                catalog_session,
+                neo4j_client,
+                connector,
+                bad_model,
+                data_source_id=_DATA_SOURCE_ID,
+                tenant_id=_TENANT_ID,
+            )
 
 
 class TestRunIngestionSummary:

@@ -1,20 +1,28 @@
 """Build/refresh the knowledge graph from the metadata catalog and Snowflake.
 
 `run_ingestion` is the single entry point, running four ordered, idempotent
-stages against an already-open catalog `Session`, a `Neo4jClient`, and a
-`Connector` (dependency-injected, same pattern as
-`navigraph_catalog.ingestion.snowflake_crawler.crawl_and_store`):
+stages against an already-open catalog `Session`, a `Neo4jClient`, a
+`Connector`, and a per-tenant `SemanticModel` (dependency-injected, same
+pattern as `navigraph_catalog.ingestion.snowflake_crawler.crawl_and_store`):
 
   1. `_sync_schema_structure` -- crawl `Table`/`Column` proxy nodes from
      `navigraph_catalog.api.list_tables`/`list_columns`.
   2. `_sync_business_glossary` -- crawl `BusinessConcept` nodes and their
      `MAPS_TO` edges from `navigraph_catalog.api.list_glossary`.
-  3. `_sync_reference_data` -- crawl real Tier-1 reference/dimension nodes
-     (`Asset`, `Market`, `Exchange`, `Sector`, `Industry`, `Channel`,
-     `CustomerType`, `RiskLevel`, `InvestmentCapacityBand`) via
-     `connector.execute_query` against Snowflake.
-  4. `_sync_relationship_concepts` -- seed the hand-curated
-     `RelationshipConcept` nodes from `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`.
+  3. `_sync_reference_data` -- crawl real Tier-1 reference/dimension nodes.
+     `Asset`/`Market`/`Exchange`/`Sector`/`Industry` still come from
+     `reference_data_queries.py`'s dedicated, richer (edge-producing)
+     crawl logic -- deliberately NOT generalized in this pass, see this
+     module's "Deliberate scope note" below. `Channel`/`CustomerType`/
+     `RiskLevel`/`InvestmentCapacityBand` (the four *simple* lookups, all
+     sharing one exact SQL shape) now compile from `semantic_model
+     .reference_lookups` instead of four hardcoded query constants.
+  4. `_sync_relationship_concepts` -- compile `RelationshipConcept` nodes
+     from `semantic_model.relationships`, replacing the hand-curated,
+     hardcoded `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` list
+     (LIMITATIONS.md item 38's structural half: a missing relationship
+     concept is now a Semantic Model authoring/review gap, not a silent
+     Python-list omission nobody thought to update).
 
 Every stage uses Cypher `MERGE` (never bare `CREATE`), so re-running
 `run_ingestion` for the same `data_source_id`/`tenant_id` is safe and
@@ -31,11 +39,20 @@ need to stay correct on every call.
 
 CUSTOMERS AND TRANSACTIONS ARE DELIBERATELY OUT OF SCOPE. No stage here ever
 creates a `Customer` or `Transaction` node, and no per-customer-cardinality
-data (not even pre-aggregated rows) is ever materialized into Neo4j -- see
-`navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`'s docstring for how
-customer-involving relationships are represented instead (as metadata
-describing how to join Snowflake tables, not as graph edges over real
-customer nodes).
+data (not even pre-aggregated rows) is ever materialized into Neo4j -- a
+`RelationshipConcept` compiled from `semantic_model.relationships` still
+only ever describes *how* to join Snowflake tables for SQL generation, not
+a graph edge over real customer/transaction nodes.
+
+DELIBERATE SCOPE NOTE (Phase 12.2): `Asset`/`Market`'s richer crawl (their
+own dedicated queries, conditional `LISTED_ON`/`IN_SECTOR`/`IN_INDUSTRY`
+edge derivation) is NOT generalized into the Semantic Model in this pass --
+only the four simple lookups, which genuinely share one uniform query
+shape, are. Forcing Asset/Market's real, non-uniform business logic into a
+generic schema without a proper design pass would risk a rushed,
+half-correct generalization of a real financial data pipeline; this is
+named here rather than silently left half-done. See LIMITATIONS.md for the
+tracked follow-up.
 """
 
 from __future__ import annotations
@@ -45,15 +62,12 @@ from datetime import UTC, datetime
 
 from navigraph_catalog.api import list_columns, list_glossary, list_tables
 from navigraph_connectors.base import Connector
+from navigraph_semantic_model import ReferenceLookup, Relationship, SemanticModel
 from sqlalchemy.orm import Session
 
 from navigraph_kg.client import Neo4jClient
 from navigraph_kg.ingestion.reference_data_queries import (
     ASSET_INFORMATION_QUERY,
-    DISTINCT_CHANNELS_QUERY,
-    DISTINCT_CUSTOMER_TYPES_QUERY,
-    DISTINCT_INVESTMENT_CAPACITY_QUERY,
-    DISTINCT_RISK_LEVELS_QUERY,
     MARKETS_QUERY,
 )
 from navigraph_kg.models import AssetRecord, IngestionSummary, MarketRecord
@@ -80,19 +94,43 @@ from navigraph_kg.ontology import (
     REL_PART_OF_EXCHANGE,
     REL_REALIZES,
     REL_SUBJECT_KEY,
-    RELATIONSHIP_CONCEPTS,
 )
+
+# The fixed, schema-constrained set of "simple lookup" Tier-1 labels a
+# Semantic Model's `reference_lookups` may populate -- see
+# `navigraph_kg.ontology.SCHEMA_CONSTRAINTS` (every one of these has a real
+# uniqueness constraint) and `ReferenceLookup`'s own docstring for why this
+# is a closed set, not an arbitrary caller-chosen label.
+_SIMPLE_LOOKUP_LABELS: dict[str, str] = {
+    NODE_CHANNEL: "channels",
+    NODE_CUSTOMER_TYPE: "customer_types",
+    NODE_RISK_LEVEL: "risk_levels",
+    NODE_INVESTMENT_CAPACITY_BAND: "investment_capacity_bands",
+}
 
 
 def run_ingestion(
     catalog_session: Session,
     neo4j_client: Neo4jClient,
     connector: Connector,
+    semantic_model: SemanticModel,
     *,
     data_source_id: uuid.UUID,
     tenant_id: str,
 ) -> IngestionSummary:
-    """Run all four ingestion stages and return per-stage counts."""
+    """Run all four ingestion stages and return per-stage counts.
+
+    `semantic_model.tenant_id` must equal `tenant_id` -- ingesting one
+    tenant's data using another tenant's Semantic Model is a real,
+    catchable bug, not something to silently allow.
+    """
+
+    if semantic_model.tenant_id != tenant_id:
+        raise ValueError(
+            f"semantic_model.tenant_id={semantic_model.tenant_id!r} does not match "
+            f"tenant_id={tenant_id!r} -- refusing to ingest one tenant's data using "
+            "another tenant's Semantic Model"
+        )
 
     synced_at = datetime.now(UTC)
 
@@ -113,11 +151,13 @@ def run_ingestion(
     reference_counts = _sync_reference_data(
         neo4j_client,
         connector,
+        reference_lookups=semantic_model.reference_lookups,
         tenant_id=tenant_id,
         synced_at=synced_at,
     )
     relationship_concepts_synced = _sync_relationship_concepts(
         neo4j_client,
+        relationships=semantic_model.relationships,
         tenant_id=tenant_id,
         synced_at=synced_at,
     )
@@ -250,6 +290,7 @@ def _sync_reference_data(
     neo4j_client: Neo4jClient,
     connector: Connector,
     *,
+    reference_lookups: list[ReferenceLookup],
     tenant_id: str,
     synced_at: datetime,
 ) -> dict[str, int]:
@@ -261,6 +302,12 @@ def _sync_reference_data(
     per the approved design decision against fabricating placeholder
     `Sector`/`Industry` nodes for nulls (~half of real assets legitimately
     have neither -- see `models.AssetRecord`'s docstring).
+
+    `Channel`/`CustomerType`/`RiskLevel`/`InvestmentCapacityBand` are
+    driven entirely by `reference_lookups` -- a label this Semantic Model
+    doesn't declare a lookup for gets NO nodes synced this run, which is
+    the intended, real behavior change from the old unconditional
+    "always sync all four" hardcoding.
     """
 
     synced_at_iso = synced_at.isoformat()
@@ -408,44 +455,44 @@ def _sync_reference_data(
     # Tier-1 lookup nodes with no edges of their own -- customer-level
     # relationships are excluded from the graph entirely (see this module's
     # docstring), so these exist purely as resolvable reference values.
-    counts["channels"] = _sync_simple_lookup(
-        neo4j_client,
-        connector,
-        query=DISTINCT_CHANNELS_QUERY,
-        column="CHANNEL",
-        label=NODE_CHANNEL,
-        tenant_id=tenant_id,
-        synced_at=synced_at_iso,
-    )
-    counts["customer_types"] = _sync_simple_lookup(
-        neo4j_client,
-        connector,
-        query=DISTINCT_CUSTOMER_TYPES_QUERY,
-        column="CUSTOMERTYPE",
-        label=NODE_CUSTOMER_TYPE,
-        tenant_id=tenant_id,
-        synced_at=synced_at_iso,
-    )
-    counts["risk_levels"] = _sync_simple_lookup(
-        neo4j_client,
-        connector,
-        query=DISTINCT_RISK_LEVELS_QUERY,
-        column="RISKLEVEL",
-        label=NODE_RISK_LEVEL,
-        tenant_id=tenant_id,
-        synced_at=synced_at_iso,
-    )
-    counts["investment_capacity_bands"] = _sync_simple_lookup(
-        neo4j_client,
-        connector,
-        query=DISTINCT_INVESTMENT_CAPACITY_QUERY,
-        column="INVESTMENTCAPACITY",
-        label=NODE_INVESTMENT_CAPACITY_BAND,
-        tenant_id=tenant_id,
-        synced_at=synced_at_iso,
-    )
+    # Compiled from `reference_lookups` (Semantic Model config), not four
+    # hardcoded query constants -- a label this Semantic Model doesn't
+    # declare a lookup for simply gets 0 synced this run.
+    for lookup in reference_lookups:
+        summary_key = _SIMPLE_LOOKUP_LABELS.get(lookup.node_label)
+        if summary_key is None:
+            raise ValueError(
+                f"reference_lookups declares node_label={lookup.node_label!r}, which is "
+                f"not one of the schema-constrained simple-lookup labels: "
+                f"{sorted(_SIMPLE_LOOKUP_LABELS)}"
+            )
+        counts[summary_key] = _sync_simple_lookup(
+            neo4j_client,
+            connector,
+            query=_distinct_values_query(lookup),
+            column=lookup.column,
+            label=lookup.node_label,
+            tenant_id=tenant_id,
+            synced_at=synced_at_iso,
+        )
 
     return counts
+
+
+def _distinct_values_query(lookup: ReferenceLookup) -> str:
+    """Build the `SELECT DISTINCT ... WHERE ... IS NOT NULL` query a
+    `ReferenceLookup` describes -- replaces one of
+    `reference_data_queries.py`'s hardcoded query constants per label.
+
+    `lookup.table` is validated (`navigraph_semantic_model.loader
+    .validate_semantic_model_against_catalog`) to be `"SCHEMA.TABLE"`
+    before this is ever called against a real connector -- this function
+    itself does not re-validate that shape, matching every other stage's
+    "validation happens once, at Semantic Model load time" division of
+    responsibility.
+    """
+
+    return f"SELECT DISTINCT {lookup.column} FROM {lookup.table} WHERE {lookup.column} IS NOT NULL"
 
 
 def _sync_simple_lookup(
@@ -481,10 +528,18 @@ def _sync_simple_lookup(
 def _sync_relationship_concepts(
     neo4j_client: Neo4jClient,
     *,
+    relationships: list[Relationship],
     tenant_id: str,
     synced_at: datetime,
 ) -> int:
-    """Stage 4: hand-curated `RelationshipConcept` nodes from `ontology.RELATIONSHIP_CONCEPTS`.
+    """Stage 4: `RelationshipConcept` nodes compiled from `semantic_model.relationships`.
+
+    Each `Relationship.via.table` is `"SCHEMA.TABLE"` (validated against
+    the live catalog at Semantic Model load time) -- only the bare table
+    name is used for the `Table` node MATCH/MERGE below, matching stage 1's
+    `Table.name` property (itself `CatalogTable.name`, never schema-
+    qualified) and the pre-Semantic-Model hardcoded `RELATIONSHIP_CONCEPTS`'
+    own `realizing_table` convention exactly.
 
     TRADEOFF, DELIBERATE AND NOTED: the realizing `Table`/subject-and-object
     `Column` nodes are matched by `name` alone, NOT by `catalog_table_id`/
@@ -517,7 +572,8 @@ def _sync_relationship_concepts(
     synced = 0
     synced_at_iso = synced_at.isoformat()
 
-    for concept in RELATIONSHIP_CONCEPTS:
+    for relationship in relationships:
+        realizing_table = relationship.via.table.split(".", 1)[-1]
         neo4j_client.run(
             f"""
             MERGE (rc:{NODE_RELATIONSHIP_CONCEPT} {{tenant_id: $tenant_id, name: $name}})
@@ -540,13 +596,13 @@ def _sync_relationship_concepts(
             SET r3.active = true, r3.last_synced_at = $synced_at
             """,
             tenant_id=tenant_id,
-            name=concept["name"],
-            subject_label=concept["subject_label"],
-            predicate=concept["predicate"],
-            object_label=concept["object_label"],
-            realizing_table=concept["realizing_table"],
-            subject_key_column=concept["subject_key_column"],
-            object_key_column=concept["object_key_column"],
+            name=relationship.name,
+            subject_label=relationship.subject,
+            predicate=relationship.predicate,
+            object_label=relationship.object,
+            realizing_table=realizing_table,
+            subject_key_column=relationship.via.subject_key,
+            object_key_column=relationship.via.object_key,
             synced_at=synced_at_iso,
         )
         synced += 1

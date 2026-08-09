@@ -83,6 +83,32 @@ def get_column_for_concept(
     return records[0] if records else None
 
 
+def list_relationship_concepts(client: Neo4jClient, *, tenant_id: str) -> list[dict[str, Any]]:
+    """List every active `RelationshipConcept`'s (subject, predicate, object)
+    shape for `tenant_id` -- the candidate list `OntologyAgent
+    ._resolve_relationships` scans against a question's extracted entities.
+
+    Reads the graph directly rather than importing a hardcoded Python list
+    (`navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`, now retired) -- this is
+    what actually makes `OntologyAgent` itself tenant-agnostic code: the
+    graph's `RelationshipConcept` nodes (compiled from a
+    `navigraph_semantic_model.SemanticModel`'s `relationships` at ingestion
+    time, see `navigraph_kg.ingestion.pipeline._sync_relationship_concepts`)
+    are the one real source of truth, not a second, separately-maintained
+    Python-side copy of the same information.
+    """
+
+    return client.run(
+        f"""
+        MATCH (rc:{NODE_RELATIONSHIP_CONCEPT} {{tenant_id: $tenant_id, active: true}})
+        RETURN rc.subject_label AS subject_label,
+               rc.predicate AS predicate,
+               rc.object_label AS object_label
+        """,
+        tenant_id=tenant_id,
+    )
+
+
 def get_relationship_concept(
     client: Neo4jClient,
     *,

@@ -5,6 +5,14 @@ Mocks `Neo4jClient` entirely (a plain `MagicMock`, patched at the
 instance is ever touched. `asyncio_mode = "auto"` is set at the workspace
 root `packages/pyproject.toml`, so `async def test_...` functions run
 without an explicit `@pytest.mark.asyncio` decorator.
+
+`list_relationship_concepts` (the graph read `_resolve_relationships` now
+scans instead of the retired `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`
+Python list) is patched in every test that reaches `_resolve_relationships`,
+returning `_CANDIDATE_RELATIONSHIP_CONCEPTS` -- the same four real
+(subject_label, predicate, object_label) shapes the old hardcoded list
+used to carry, now standing in for "what a Semantic-Model-compiled graph
+would return."
 """
 
 from __future__ import annotations
@@ -18,6 +26,21 @@ from navigraph_agents.understanding.ontology.contracts import (
     OntologyInput,
     OntologyPayload,
 )
+
+_CANDIDATE_RELATIONSHIP_CONCEPTS = [
+    {"subject_label": "Customer", "predicate": "HOLDS", "object_label": "Asset"},
+    {"subject_label": "Customer", "predicate": "USES", "object_label": "Channel"},
+    {"subject_label": "Customer", "predicate": "HAS", "object_label": "RiskLevel"},
+    {"subject_label": "Transaction", "predicate": "HAPPENS_IN", "object_label": "Market"},
+]
+
+
+def _patch_list_relationship_concepts(**kwargs):
+    return patch(
+        "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+        return_value=_CANDIDATE_RELATIONSHIP_CONCEPTS,
+        **kwargs,
+    )
 
 
 def _make_input(entities: list[str], intent: str = "metric_lookup") -> OntologyInput:
@@ -53,6 +76,7 @@ class TestConceptResolution:
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 side_effect=fake_resolve,
             ),
+            _patch_list_relationship_concepts(),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=None,
@@ -93,6 +117,7 @@ class TestConceptResolution:
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 side_effect=fake_resolve,
             ),
+            _patch_list_relationship_concepts(),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=None,
@@ -116,6 +141,7 @@ class TestConceptResolution:
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=[],
             ),
+            _patch_list_relationship_concepts(),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=None,
@@ -154,6 +180,7 @@ class TestConceptResolution:
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=records,
             ),
+            _patch_list_relationship_concepts(),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=None,
@@ -191,6 +218,7 @@ class TestConceptResolution:
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=records,
             ),
+            _patch_list_relationship_concepts(),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=None,
@@ -219,6 +247,7 @@ class TestRelationshipResolution:
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=[],
             ),
+            _patch_list_relationship_concepts(),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=relationship_record,
@@ -246,6 +275,7 @@ class TestRelationshipResolution:
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=[],
             ),
+            _patch_list_relationship_concepts(),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
             ) as mock_get_rel,
@@ -264,6 +294,7 @@ class TestRelationshipResolution:
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=[],
             ),
+            _patch_list_relationship_concepts(),
             patch(
                 "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
                 return_value=None,
