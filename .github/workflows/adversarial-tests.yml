@@ -26,8 +26,28 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
+        # REAL BUG, found live on this PR's first real GitHub Actions run:
+        # this step only ever installed bare `pytest` -- correct back when
+        # this comment block above was written and tests/security/ was
+        # genuinely empty (a vacuous pass), but Phase 6 gave it real content
+        # that imports navigraph_shared/navigraph_connectors/navigraph_agents
+        # directly (real Guardrail agents, real OpaClient), and this step
+        # was never updated. Every real run since has failed at collection
+        # with ModuleNotFoundError -- confirmed via `gh run list` showing
+        # identical failures across unrelated branches, so this was already
+        # broken, not something this PR's own changes caused. Matches
+        # ci.yml's real install list/order exactly, since tests/security/
+        # exercises the same packages that suite installs.
         run: |
           python -m pip install --upgrade pip
+          pip install -e packages/shared
+          pip install -e packages/connector_sdk
+          pip install -e packages/metadata_catalog
+          pip install -e packages/knowledge_graph
+          pip install -e packages/federation
+          pip install -e packages/lineage
+          pip install -e packages/gateway
+          pip install -e packages/agent_runtime
           pip install pytest
           if [ -f tests/security/requirements.txt ]; then
             pip install -r tests/security/requirements.txt
