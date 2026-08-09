@@ -63,18 +63,25 @@ and attribute-aware Rego policies, plus an adversarial test suite (see
 `tests/security/`) that must pass before the placeholder is removed. This is
 explicitly not to be marked done without that adversarial test coverage.
 
-### 5. Terraform for Azure is a validated skeleton only
+### 5. RESOLVED (2026-07-30, Phase 10b): Terraform for Azure is a validated skeleton only
 
-**What's deferred**: Any actually-applied Azure infrastructure.
+**What was deferred**: Any actually-applied Azure infrastructure.
 
-**Why**: Local-first development via docker-compose is the primary inner loop for
-as long as possible. Terraform exists now so the eventual cloud target is designed
-deliberately rather than retrofitted, but it is intentionally never run against a
-real subscription during this phase.
+**Why it was deferred**: Local-first development via docker-compose was the
+primary inner loop for as long as possible. Terraform existed from Phase 1 so
+the eventual cloud target was designed deliberately rather than retrofitted,
+but was intentionally never run against a real subscription until the user
+explicitly provided real Azure credentials.
 
-**What full version requires**: A real Azure subscription, a remote state backend,
-a human sign-off step in front of any `terraform apply`, and CI that only ever runs
-`fmt`, `validate`, and `plan` (never `apply`) — see `terraform/README.md`.
+**Resolution**: Phase 10b ran a real, reviewed `terraform apply` against a
+real Azure subscription, creating a resource group, VNet/subnet, ACR, a
+2-node AKS cluster, Key Vault, Postgres Flexible Server + database, and an
+Entra app registration + service principal — see item 53 for the full detail
+including four real subscription-specific issues `apply` surfaced, and items
+54-58 for the cluster-bootstrap work and two real incidents found and fixed
+afterward. CI (`terraform-plan.yml`) still only ever runs `fmt`/`validate`/
+`plan`, never `apply` — that invariant was never relaxed, only the "nothing
+has ever been applied by a human either" state.
 
 ### 6. SOC 2 Type II controls are scaffolded, not audited
 
@@ -90,19 +97,23 @@ compliance owner, evidence collection over an observation window, and an
 independent auditor engagement. This repository's controls are necessary
 supporting infrastructure, not sufficient proof of compliance on their own.
 
-### 7. Only one real agent exists (Intent Understanding)
+### 7. RESOLVED (Phases 2-9): Only one real agent exists (Intent Understanding)
 
-**What's deferred**: The remaining ~24 agents across the Query, Insight, Guardrail,
+**What was deferred**: The remaining ~24 agents across the Query, Insight, Guardrail,
 Ops, and Orchestrator domains.
 
-**Why**: This repo (Phase 1) is infra scaffolding only. Application agents are
-being built by a parallel workstream, starting with Intent Understanding as the
-proof-of-pattern implementation.
+**Why it was deferred**: This repo started (Phase 1) as infra scaffolding only,
+with Intent Understanding built as the proof-of-pattern implementation ahead
+of the rest.
 
-**What full version requires**: Each remaining agent implemented against the
-formal contract in `docs/architecture/agent-contract.md`, with its own unit tests
-and, where relevant, `@pytest.mark.llm_integration` tests. See
-`docs/architecture/overview.md` for the full named list and current status.
+**Resolution**: Phases 2-9 built all remaining agents for real — 25 agents
+total across all six domains, each with its own `agent.py`/`contracts.py`/
+`tests/` per `docs/architecture/agent-contract.md`, registered in
+`packages/agent_runtime/navigraph_agents/main.py`, and called end-to-end by
+the real Request Orchestrator (Phase 9). See
+`docs/architecture/overview.md` for the current, reconciled per-domain agent
+list and `docs/architecture/single-stage-mvp.md` for the real call sequence.
+This item stayed open long after the underlying gap closed — see item 32.
 
 ### 8. Local tooling versions are not pinned
 
@@ -630,34 +641,57 @@ suggestions, or a recoverable `AgentError` + empty fallback.
 **What full version requires**: Nothing planned — this is a permanent
 design boundary, not a gap expected to close.
 
-### 32. Documentation staleness is broader than previously logged
+### 32. RESOLVED (2026-08-09, docs reconciliation pass): Documentation staleness is broader than previously logged
 
-**What's deferred**: `docs/architecture/overview.md`'s domain status
-tables still mark every Understanding/Query/Guardrail/Insight agent
-`DESIGNED` (none reflect the ~20 real agents actually shipped across
-Phases 4-7); `docs/architecture/data-flow.md` still narrates Query/
-Guardrail/Ops stages as "(designed)" throughout; `packages/agent_runtime/navigraph_agents/__init__.py`'s
-and `packages/gateway/navigraph_gateway/main.py`'s module docstrings still
-say "Currently exactly one agent is registered." None of these were
-updated as Phases 4-7 actually shipped real, verified agents — this is
-stale documentation, not a functional gap.
+**What was deferred**: `docs/architecture/overview.md`'s domain status
+tables still marked every Understanding/Query/Guardrail/Insight agent
+`DESIGNED` (none reflected the real agents actually shipped across Phases
+4-9); `docs/architecture/data-flow.md` still narrated Query/Guardrail/Ops
+stages as "(designed)" throughout, and additionally invented per-phase
+lineage event names (`intent_extracted`, `query_generated`, etc.) that don't
+exist anywhere in the real code — every real `LineageEvent.agent_name` is
+that agent's own registry key, and there is no gateway-level
+`request_received` event; `packages/agent_runtime/navigraph_agents/__init__.py`'s
+module docstring still said "Currently exactly one agent is registered."
+None of these were updated as Phases 4-9 actually shipped real, verified
+agents — this was stale documentation, not a functional gap.
 
-**Why this wasn't fixed in Phase 7**: reconciling ~20 real agent names
-across 4 domains' worth of drift accumulated over 4 prior phases is a
-real, careful task on its own. Bundling it into Phase 7 (or any single
-feature phase) risks fixing one domain's rows while leaving, or further
+**Why this wasn't fixed sooner**: reconciling agent names across several
+domains' worth of drift accumulated over many prior phases was a real,
+careful task on its own, deliberately not bundled into any single feature
+phase (see the original reasoning preserved below).
+
+**Resolution**: this dedicated pass rewrote `docs/architecture/overview.md`'s
+domain tables (all 25 real agents, with notes on which originally-planned
+agents were renamed, consolidated, or never built as separate agents),
+rewrote `docs/architecture/data-flow.md`'s narrative and lineage-event
+description to match real code, added `docs/architecture/single-stage-mvp.md`
+as the authoritative real call-sequence reference, and fixed the one still-stale
+module docstring. `packages/gateway/navigraph_gateway/main.py`'s docstring
+was found to already be accurate (corrected independently at some earlier,
+undocumented point) — only `navigraph_agents/__init__.py` still needed
+fixing. Also found and fixed while reconciling: `README.md`'s Status
+section and `terraform/README.md` both still claimed Terraform had "never
+been applied," which item 5's resolution above already contradicts;
+`tests/security/README.md` and `docs/runbooks/local-dev-smoke-test.md`
+still referenced this item and the pre-Phase-9 one-agent state; and the
+local-dev-smoke-test runbook's "Expected output" section described a
+`POST /ask` round-trip and service checks (`postgres`, `neo4j`, `redis`,
+`web`) that `tools/scripts/smoke-test.sh` does not actually perform — the
+runbook was corrected to match the real script rather than the script being
+changed to match the aspirational runbook, since changing runtime behavior
+was out of scope for a documentation pass.
+
+**Original reasoning preserved**: reconciling ~20 real agent names across 4
+domains' worth of drift accumulated over 4 prior phases was a real, careful
+task on its own. Bundling it into Phase 7 (or any single feature phase)
+would have risked fixing one domain's rows while leaving, or further
 obscuring, the rest inconsistent. `LIMITATIONS.md`/`DECISIONS.md`/
-`BUILD_LOG.md` — the three documents this project's working method
-actually requires kept current every phase — ARE current; the
-`docs/architecture/` narrative docs and two module docstrings are a
-separate, pre-existing set that was never part of that per-phase
+`BUILD_LOG.md` — the three documents this project's working method actually
+requires kept current every phase — were current throughout; the
+`docs/architecture/` narrative docs and the one stale module docstring were
+a separate, pre-existing set that was never part of that per-phase
 discipline.
-
-**What full version requires**: A dedicated, later "docs reconciliation"
-phase whose only job is updating `docs/architecture/overview.md`'s and
-`data-flow.md`'s domain tables/narrative and the two stale module
-docstrings to reflect the real, current agent roster — not addressed
-here, per the recommendation in DECISIONS.md.
 
 ### 33. Golden set is 10 questions, not the README's "50+" target
 
@@ -692,21 +726,25 @@ distinguishes real answer-quality differences.
 **What full version requires**: A human-graded calibration set comparing
 judge scores against real human judgment, once this matters in practice.
 
-### 35. `docs/architecture/overview.md`'s Ops-domain table incorrectly lists two already-shipped Query-domain agents as separate, still-`DESIGNED` work
+### 35. RESOLVED (2026-08-09, docs reconciliation pass): `docs/architecture/overview.md`'s Ops-domain table incorrectly lists two already-shipped Query-domain agents as separate, still-`DESIGNED` work
 
-**What's deferred**: Correcting `overview.md`'s Ops table, which lists
+**What was deferred**: Correcting `overview.md`'s Ops table, which listed
 "Federated Query Executor (Trino)" and "Result Caching" as `DESIGNED`.
 
-**Why**: Both are already shipped, verified, real agents under the Query
-domain (`query.data_federation`, `query.caching`, Phase 5) — the table
-was never updated, consistent with item 32's broader documentation-
-staleness finding. "Error/Retry Handler," the table's 4th listed agent,
-remains genuinely deferred — a separate line in the same document
-explicitly assigns "retries... and error handling across stages" to the
-Orchestrator domain instead, so it is not this phase's job either.
+**Why it was deferred**: Both were already shipped, verified, real agents
+under the Query domain (`query.data_federation`, `query.caching`, Phase 5)
+— the table was never updated, consistent with item 32's broader
+documentation-staleness finding. "Error/Retry Handler," the table's 4th
+listed agent, remains genuinely not built as a standalone agent — a
+separate line in the same document explicitly assigns "retries... and
+error handling across stages" to the Orchestrator domain (the Request
+Orchestrator's own outcome/`failure_stage` model) instead.
 
-**What full version requires**: The same dedicated docs-reconciliation
-phase item 32 recommends, not addressed piecemeal here.
+**Resolution**: item 32's reconciliation pass rewrote `overview.md`'s
+Ops-domain section to list its two real agents (`ops.lineage_recorder`,
+`ops.evaluation_judge` — the latter not in the original design at all) and
+to explain, in the Query-domain section, that Data Federation and Caching
+shipped there instead of under Ops.
 
 ### 36. Evaluation Judge's 1-5 scoring scale and dimension weighting are unvalidated
 
@@ -1278,3 +1316,28 @@ field must repeat the full list item, never just the changed field --
 true for `volumeClaimTemplates`, `rules`, and likely any other bare list
 in this manifest tree that isn't explicitly reviewed against this
 pattern.
+
+### 59. `query.caching` is real and registered but not called by the live Request Orchestrator sequence
+
+**What's deferred**: Wiring the real, built Caching agent
+(`query.caching`, Phase 5) into the Request Orchestrator's real 19-agent
+sequence so query results are actually served from Redis on a cache hit.
+
+**Why**: found live while reconciling `docs/architecture/overview.md`
+against the real orchestrator code (`orchestrator/request_orchestrator/agent.py`)
+during the 2026-08-09 docs pass -- the orchestrator constructs and calls
+Data Federation directly on every request; it never constructs or calls
+`CachingAgent` at all, even though the agent is fully implemented, unit
+tested, and reachable standalone via `POST /agents/query/caching/invoke`.
+This was never caught before because every existing pipeline
+integration/eval-harness test exercises agents individually or via
+`eval/pipeline_chain.py`'s retired helper, neither of which asserted the
+live orchestrator actually calls every registered agent.
+
+**What full version requires**: Decide where in the real 19-step sequence
+a cache lookup/write belongs (most naturally: check before Data Federation
+executes, using the same `tenant_id`+SQL+params key `CachingPayload`
+already supports; write after a successful execution), wire it into
+`RequestOrchestratorAgent.run()`, and add an integration test asserting a
+second identical request is served from cache rather than re-executing
+against Snowflake.

@@ -1,15 +1,25 @@
 # Data Flow: One Request, End to End
 
-This document walks a single request through the full NaviGraph pipeline,
-naming the specific agent responsible for each stage and the lineage event it
-emits. See `docs/architecture/overview.md` for the full agent map and current
-build status, and `docs/architecture/agent-contract.md` for the formal shape of
+This document walks a single request through the full NaviGraph pipeline in
+narrative form, naming the specific real agent responsible for each stage.
+See `docs/architecture/overview.md` for the full agent map and current build
+status, `docs/architecture/single-stage-mvp.md` for the exhaustive, ordered
+19-agent call sequence and outcome model, and
+`docs/architecture/agent-contract.md` for the formal shape of
 `lineage_events`.
 
-**Note**: this document's per-stage "(designed)" labels are stale
-(`LIMITATIONS.md` item 32) — nearly every stage below is a real, built agent
-today. See [`single-stage-mvp.md`](./single-stage-mvp.md) for the accurate,
-current 19-agent sequence and real/stubbed infrastructure status.
+**Reconciled 2026-08-09**: every agent named below is real and built (see
+`LIMITATIONS.md` items 7, 32, 35 — all RESOLVED). This pass also corrected
+how lineage events are described: there is no generic per-phase event name
+(`intent_extracted`, `query_generated`, etc.) anywhere in the real code.
+Every agent's `LineageEvent.agent_name` is that agent's own registry key
+(e.g. `understanding.intent_understanding`), and the Request Orchestrator
+forwards each stage's real `lineage_events` to the Lineage Recorder
+immediately after that stage runs, then emits one final event of its own
+under `orchestrator.request_orchestrator` recording the overall outcome.
+There is also no gateway-level `request_received` event — the gateway
+forwards the request to the agent-runtime and the first real lineage event
+is Conversation's.
 
 Example question used throughout: *"What was our churn rate by region last
 quarter, and why did it spike in the Southwest?"*
@@ -17,93 +27,96 @@ quarter, and why did it spike in the Southwest?"*
 ## 1. Gateway receives the request
 
 The `gateway` service (`packages/gateway`) receives `POST /ask` with the
-question text and the caller's authenticated session (tenant, user, roles from
-Azure AD/Entra ID). It attaches a `RequestContext` (`tenant_id`, `user_id`,
-`trace_id`, `roles`/`claims`) and hands off to the agent runtime's
-Orchestrator.
+question text and the caller's `tenant_id`/`user_id`/`roles`/`claims`
+(caller-supplied today — no real Azure AD JWT verification exists yet, see
+`LIMITATIONS.md`'s Azure AD token-verification item). It mints a `trace_id`,
+builds a `RequestContext`, and forwards the request over HTTP to the
+agent-runtime's real Request Orchestrator (`POST
+/agents/orchestrator/request_orchestrator/invoke`) — a real network hop
+between two separate containers, not an in-process call.
 
-**Lineage event**: `request_received` — records the raw question, tenant, user,
-and trace_id.
+## 2. Understanding domain: conversation, intent, and schema mapping
 
-## 2. Understanding domain: intent + entity extraction
+Six real agents run in sequence. **Conversation**
+(`understanding.conversation`) resolves the raw question against any prior
+turns in this session (read from Redis via Session/Context Manager) into a
+self-contained question. **Intent Understanding**
+(`understanding.intent_understanding`) classifies the intent (e.g. "trend +
+causal explanation request") and extracts entities ("churn rate", "region",
+"last quarter", "Southwest"). **Metadata Discovery**
+(`understanding.metadata_discovery`) lists this tenant's real catalog
+columns for the resolved data source. **Ontology**
+(`understanding.ontology`) resolves the extracted entities/relationships
+against the knowledge graph (Neo4j) — e.g. which upstream attributes are
+known to relate to churn in the Southwest region. **Semantic Retrieval**
+(`understanding.semantic_retrieval`) ranks candidate catalog columns for any
+terms Ontology left unresolved. **Schema Mapping**
+(`understanding.schema_mapping`) is the single assembly point that merges
+all of the above into the final tables/columns/joins the rest of the
+pipeline uses.
 
-The **Intent Understanding** agent (the one agent that is real today) parses
-the question into a structured intent (e.g. "trend + causal explanation
-request") and extracts entities ("churn rate", "region", "last quarter",
-"Southwest"). Downstream **Entity Resolution** and **Ambiguity Detection**
-agents (designed, not yet built) would resolve "Southwest" against the tenant's
-actual region dimension and flag any ambiguous references back to the user.
+If Schema Mapping resolves zero tables, the Orchestrator domain's
+**Multi-turn Clarification Coordinator** (`orchestrator.clarification_coordinator`)
+runs instead of the rest of the pipeline, and the request ends with
+`outcome="needs_clarification"` and a real clarifying question.
 
-**Lineage event**: `intent_extracted` — records the structured intent payload,
-extracted entities, and the agent's confidence score.
+## 3. Query domain: query generation
 
-## 3. Query domain: semantic retrieval
+**Data Source Discovery** (`query.data_source_discovery`) confirms each
+resolved table maps to a real, reachable data source. **SQL Generation**
+(`query.sql_generation`) then produces schema-grounded SQL against the
+resolved tables/columns/joins. There is no separate Cypher-generation step —
+graph-native reasoning already happened inside Ontology in step 2, not as a
+second, independent query language generated here.
 
-The **Semantic Catalog Retrieval** and **Knowledge Graph Retrieval** agents
-(designed) look up which tables/columns define "churn rate" for this tenant
-and traverse the knowledge graph (Neo4j) for relevant relationships — e.g.
-which upstream events or attributes are known to correlate with churn in the
-"Southwest" region.
+## 4. Guardrail domain: validation gate
 
-**Lineage event**: `context_retrieved` — records which catalog entries and
-graph nodes/edges were retrieved and used.
+Before anything executes, four real agents check the generated SQL in
+sequence: **Schema Constraint Validator** (`guardrail.schema_constraint_validator`),
+**PII Exposure Checker** (`guardrail.pii_exposure_checker`), **Policy
+Authorization** (`guardrail.policy_authorization`, backed by OPA), and —
+after SQL Optimization rewrites the statement — **Query Cost/Row-Limit
+Estimator** (`guardrail.query_cost_estimator`). Any rejection at any of
+these four stops the pipeline with `outcome="failed"` and a `failure_stage`
+naming exactly which check failed. Today, OPA enforces a placeholder
+allow-all policy (see `LIMITATIONS.md` item 4) — the gate exists
+structurally and runs for real on every request, but its real RBAC/ABAC
+policy logic is not yet written.
 
-## 4. Query domain: query generation
+## 5. Query domain: optimization, planning, and real execution
 
-The **SQL Generation** agent (designed) produces schema-grounded SQL against
-the resolved tables/columns; if the question requires graph-native reasoning
-(e.g. "why," which may involve relationship traversal beyond a single fact
-table), the **Cypher Generation** agent (designed) produces a complementary
-graph query. The **Query Plan Composer** agent (designed) merges these into a
-single execution plan.
+**SQL Optimization** (`query.sql_optimization`) rewrites the guardrail-
+approved statement. **Execution Planning** (`query.execution_planning`)
+builds the final `ExecutionPlan` — the hard safety gate that only accepts a
+single, bind-parameterized, read-only `SELECT`/`WITH` statement, with a row
+cap and timeout. **Data Federation** (`query.data_federation`) then executes
+it for real, against live Snowflake via the direct connector (the default
+route today; `route="trino"` is built and unit-tested but not yet the
+default — see `LIMITATIONS.md` item 3). There is no separate caching step in
+the live pipeline today: `query.caching` is a real, built, Redis-backed
+agent, but it is not currently called by the Request Orchestrator (see
+`LIMITATIONS.md` item 59).
 
-**Lineage event**: `query_generated` — records the generated SQL/Cypher text,
-the schema elements it references, and the metric definitions used (via the
-**Metric Definition Resolver**, designed).
+## 6. Insight domain: chart selection, anomalies, narrative, follow-ups
 
-## 5. Guardrail domain: validation gate
+**Chart Selection** (`insight.chart_selection`) picks an appropriate
+visualization for the result shape (e.g. a time series by region).
+**Anomaly/Outlier Highlighter** (`insight.anomaly_outlier_highlighter`)
+deterministically flags the Southwest spike. **Grounded Narrative
+Generation** (`insight.grounded_narrative_generation`) writes a
+natural-language explanation, with a citation-validation layer that drops
+any claim not backed by an actual returned value rather than shipping it.
+**Follow-up Suggestion** (`insight.follow_up_suggestion`) proposes related
+questions ("Did any single account drive the Southwest spike?").
 
-Before anything executes, the **Schema Constraint Validator**, **Policy
-Authorization** (backed by OPA), **Query Cost/Row-Limit Estimator**, and **PII
-Exposure Checker** agents (all designed) check the generated query against
-schema constraints, the tenant's authorization policy, expected cost/row
-volume, and PII exposure rules. Today, OPA enforces a placeholder allow-all
-policy (see `LIMITATIONS.md` item 4) — the gate exists structurally, but its
-real policy logic is not yet written.
+## 7. Response returned, full lineage recorded
 
-**Lineage event**: `query_validated` — records the validation outcome (pass/
-fail per check) and the specific policy decision returned by OPA.
-
-## 6. Ops domain: federated execution
-
-The **Federated Query Executor** agent (designed) submits the validated query
-to Trino, which federates execution across registered catalogs. Today, zero
-real catalogs are registered (see `LIMITATIONS.md` item 3), so this stage is
-architecturally proven but not yet connected to real data. The **Result
-Caching** agent (designed) would cache results in Redis keyed by
-tenant+query-hash.
-
-**Lineage event**: `query_executed` — records execution duration, row count
-returned, and whether the result was served from cache.
-
-## 7. Insight domain: chart selection, narrative, follow-ups
-
-The **Chart Selection** agent (designed) picks an appropriate visualization for
-the result shape (e.g. a time series by region). The **Grounded Narrative
-Generation** agent (designed) writes a natural-language explanation that cites
-the actual returned numbers (never inventing figures not present in the
-result set). The **Anomaly/Outlier Highlighter** agent (designed) flags the
-Southwest spike specifically. The **Follow-up Suggestion** agent (designed)
-proposes related questions ("Did any single account drive the Southwest
-spike?").
-
-**Lineage event**: `insight_generated` — records the chart type chosen, the
-narrative text, and which result values it grounded each claim in.
-
-## 8. Response returned, full lineage recorded
-
-The **Lineage Recorder** agent (designed) persists the full chain of lineage
-events from `request_received` through `insight_generated` against the
-request's `trace_id`, so the entire reasoning chain — from raw question to
-final chart and narrative — can be audited after the fact. The gateway returns
-the chart, narrative, and follow-up suggestions to the caller.
+Every one of the agents above emits its own `lineage_events` (keyed by its
+own registry name); the Request Orchestrator forwards each stage's events to
+**Lineage Recorder** (`ops.lineage_recorder`) immediately after that stage
+runs — one incremental Postgres append per real upstream output, not one
+bulk write at the end — so the entire reasoning chain from question to final
+chart and narrative can be retrieved later via `GET /lineage/{trace_id}` and
+audited. A lineage-recording failure is logged and swallowed; it never
+aborts the request. The gateway returns the chart, narrative, and follow-up
+suggestions to the caller.

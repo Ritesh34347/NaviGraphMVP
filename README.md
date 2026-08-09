@@ -38,10 +38,12 @@ for the end-to-end sequence.
 
 ```
 infra/          Local-first docker-compose stack + Terraform skeleton for Azure
-terraform/      Azure infrastructure-as-code (validated skeleton, never applied)
-packages/       Application services: gateway, agent_runtime, shared libraries
-                (built by a parallel workstream, not part of this scaffold)
-web/            Next.js web UI (built by a parallel workstream, not part of this scaffold)
+terraform/      Azure infrastructure-as-code (a real environment has been applied
+                to Azure as of Phase 10b; CI itself still only ever plans, never applies)
+packages/       Application services: gateway, agent_runtime (25 real agents),
+                connector_sdk, federation, knowledge_graph, lineage, metadata_catalog, shared
+web/            Next.js web UI (minimal scaffold today: landing page + NextAuth
+                wiring; no chat/BI interface calling the gateway's /ask yet)
 docs/           Architecture docs, ADRs, runbooks
 tools/          Dev scripts and templates (e.g. smoke-test.sh, agent scaffolding)
 .github/        CI workflows
@@ -79,7 +81,23 @@ joining the coordinator, OPA bundle load failures).
 
 ## Status
 
-This repository is in **Phase 1 (infra scaffolding)**. Only the Intent Understanding
-agent is real; the rest of the ~25-agent architecture is designed but not yet
-implemented. Terraform is a validated skeleton only and has never been applied — no
-real Azure resources exist. See `LIMITATIONS.md` for the full list of known gaps.
+**Updated 2026-08-09** (this section previously described Phase 1's state
+long after later phases had superseded it — see `LIMITATIONS.md` items 7,
+32, and 35).
+
+All 25 agents across the Understanding, Query, Guardrail, Insight, Ops, and
+Orchestrator domains are real and built (Phases 2-9), called end-to-end by a
+real Request Orchestrator against live Snowflake, Neo4j, Postgres, and
+Redis — see [`docs/architecture/single-stage-mvp.md`](./docs/architecture/single-stage-mvp.md)
+for the exact 19-agent call sequence. Real Azure infrastructure exists as of
+Phase 10b (resource group, VNet, ACR, a 2-node AKS cluster, Key Vault,
+Postgres Flexible Server, Entra app registration), created via a real,
+human-approved `terraform apply` — Terraform itself still never applies from
+CI.
+
+What's still genuinely deferred, not designed-but-unbuilt: OPA enforces a
+placeholder allow-all policy rather than real tenant RBAC/ABAC; only one
+Snowflake connector exists; Trino federation is built but not yet the
+default execution route; the built `query.caching` agent isn't yet wired
+into the live request pipeline; and SOC 2 controls are scaffolded, not
+audited. See `LIMITATIONS.md` for the complete, current list.

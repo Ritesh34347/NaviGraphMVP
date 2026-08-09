@@ -881,3 +881,89 @@ GitHub Actions OIDC federated-credential wiring, a real domain name, a
 real `cd-deploy.yml` run, the full eval-harness run against the cloud
 environment, and the adversarial security review -- none of these have
 started yet.
+
+## 2026-07-30 — Phase 10b continued: real AKS cluster bootstrap, two real security incidents found and fixed
+
+**Backfilled 2026-08-09**: this entry documents work that was done in the
+Phase 10b session above but was never given its own `BUILD_LOG.md` entry at
+the time -- found only because `LIMITATIONS.md` items 54-58 already
+documented it in detail while this file still said cluster bootstrap
+"[had] not started." Adding it now so this log matches what actually
+happened, per the same discipline that motivated the broader 2026-08-09
+docs-reconciliation entry below.
+
+Real ingress-nginx and cert-manager were deployed to the real Phase 10b AKS
+cluster, with real, live-discovered fixes along the way (all detail in
+`LIMITATIONS.md`): a Kustomize `ingress-patch.yaml` strategic-merge bug that
+silently deleted every Ingress's backend (item 58); missing
+`securityContext.fsGroup` on Grafana/Prometheus, which crashed on real
+Azure Disk-backed PVCs in a way `kind`'s local-path storage class never
+surfaced (item 57); AKS having no ACR pull access even though the CI
+principal had push access (item 56); and Key Vault silently ignoring its
+own RBAC role assignments because `enable_rbac_authorization` was never set
+(item 55). Real, live proof after every fix: all pods `Running`/`Ready`,
+real HTTP 200s through the real ingress controller, and a real weighted-canary
+run confirming NGINX's canary-weight annotation actually performs
+proportional traffic splitting (~13% observed against a configured 10%
+weight).
+
+Two real security incidents were found and remediated during this work, not
+just functional bugs: `terraform output -json` briefly printed a real,
+cluster-admin-equivalent AKS kubeconfig credential to this session (item
+54) -- resolved by deleting the file it was written to and rotating the
+cluster's certs via `az aks rotate-certs`; and the Key Vault RBAC gap above
+(item 55) meant a real role assignment had been silently granting nothing
+since its creation.
+
+## 2026-08-09 — Documentation reconciliation pass (LIMITATIONS.md items 7, 32, 35 resolved)
+
+A dedicated pass, not bundled into any feature phase, to close the
+long-deferred documentation-staleness gap `LIMITATIONS.md` item 32 first
+flagged. Verified the real current state directly against code
+(`registry.py`, `main.py`'s `lifespan()`, `request_orchestrator/agent.py`)
+rather than trusting any existing doc, then corrected every place that
+still described the pre-Phase-9 world:
+
+- Added `docs/architecture/single-stage-mvp.md` as the authoritative,
+  verified description of the real 19-agent Request Orchestrator sequence,
+  its outcome/failure model, and real-vs-stubbed infrastructure.
+- Rewrote `docs/architecture/overview.md`'s per-domain agent tables: all 25
+  real agents, with explicit notes on which originally-planned agents were
+  renamed (e.g. "Semantic Catalog Retrieval" → `understanding.semantic_retrieval`),
+  consolidated (e.g. "Conversation Context Tracker" → `understanding.conversation`
+  + `orchestrator.session_context_manager`), shipped under a different
+  domain than planned (Federated Query Executor/Result Caching shipped
+  under Query, not Ops), or never built as a standalone agent at all
+  (Entity Resolution, Ambiguity Detection, Cypher Generation, Metric
+  Definition Resolver, Query Plan Composer, Error/Retry Handler).
+- Rewrote `docs/architecture/data-flow.md`'s narrative to match, and
+  corrected a deeper inaccuracy found along the way: its described
+  per-phase lineage event names (`intent_extracted`, `query_generated`,
+  etc.) don't exist in the real code -- every real `LineageEvent.agent_name`
+  is that agent's own registry key, and there is no gateway-level
+  `request_received` event.
+- Fixed the one still-stale module docstring
+  (`navigraph_agents/__init__.py`); found `navigraph_gateway/main.py`'s
+  docstring (also flagged stale by item 32) was already accurate,
+  apparently corrected independently at some earlier, undocumented point.
+- Found and fixed staleness item 32 never mentioned: `README.md`'s Status
+  section and `terraform/README.md` both still claimed Terraform "has never
+  been applied," directly contradicted by Phase 10b's real `apply` (closing
+  out item 5, also marked RESOLVED here); `README.md`'s repository-layout
+  table still described `packages/`/`web/` as built by an external,
+  parallel workstream "not part of this scaffold"; and
+  `docs/runbooks/local-dev-smoke-test.md`'s "Expected output" section
+  described `postgres`/`neo4j`/`redis`/`web` checks, `/readyz` probes, and a
+  `POST /ask` round-trip that `tools/scripts/smoke-test.sh` has never
+  actually performed -- corrected to match the real script.
+- Logged one new, real finding surfaced only by reading the orchestrator
+  code line-by-line: `query.caching` is fully built and registered but
+  never called by the live Request Orchestrator sequence (new item 59).
+- Backfilled the missing Phase 10b cluster-bootstrap `BUILD_LOG.md` entry
+  above, found only because `LIMITATIONS.md` items 54-58 already documented
+  work this file never recorded.
+
+Deliberately not touched: `DECISIONS.md` (dated ADRs describing the
+reasoning live at the time a decision was made, not living status) and
+`BUILD_LOG.md`'s own prior entries (a factual, dated log; corrected by
+backfilling a missing entry above, not by rewriting history).

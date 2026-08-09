@@ -1,17 +1,29 @@
-# Terraform (Azure) — Skeleton Only
+# Terraform (Azure)
 
-**This Terraform is a validated skeleton. It is never applied.** CI
+**`terraform apply` must never run in CI.** CI
 (`.github/workflows/terraform-plan.yml`) runs `terraform fmt -check` and
 `terraform validate` on every PR touching `terraform/**`, and runs
 `terraform plan` only when Azure credentials happen to be configured as repo
-secrets — even then, `plan` is read-only. **`terraform apply` must never run
-in CI.** Applying real infrastructure changes is a deliberate, manual action
-performed by a human, outside of CI, only after explicit sign-off — see
-`DECISIONS.md` for why we chose this local-first, Azure-targeted-but-never-
-applied strategy.
+secrets — even then, `plan` is read-only. Applying real infrastructure
+changes is a deliberate, manual action performed by a human, outside of CI,
+only after explicit, separate sign-off on the exact reviewed `plan` — see
+`DECISIONS.md` for why this project chose a local-first-by-default,
+Azure-targeted design, and its Phase 10b entries for the real `apply`.
 
-As of 2026-07-28, no real Azure resources exist anywhere as a result of this
-repository.
+**Updated 2026-08-09** (was stale: this file previously said Terraform was
+"never applied" and "no real Azure resources exist"). As of Phase 10b
+(2026-07-30), real Azure infrastructure has been created and verified via
+`terraform apply` and `terraform state list`/`kubectl get nodes` against a
+real subscription: a resource group, VNet/subnet, ACR, a 2-node AKS cluster,
+Key Vault, Postgres Flexible Server + database, and an Entra app
+registration + service principal. This is genuinely billable infrastructure,
+not a plan preview — see `LIMITATIONS.md` items 5, 53, 54, 55, 56, 57, 58 for
+the full history, including real subscription-specific issues `apply`
+surfaced and fixed, and two real incidents (a briefly-exposed cluster
+credential, a Key Vault RBAC misconfiguration) found and remediated along
+the way. What's still true from this document's original framing: CI itself
+still only ever runs `fmt`/`validate`/`plan`, never `apply`, and every real
+`apply` so far has been a manual, human-approved action outside CI.
 
 ## Why this exists now
 
