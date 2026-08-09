@@ -1578,3 +1578,66 @@ proven ineffective, rather than left in place "since they're harmless."
 A non-working fix left in the codebase is worse than no fix -- it reads
 as solved when it isn't, and would mislead the next person (or agent)
 who checks whether this is handled.
+
+## 2026-08-09 — Merging a parallel MVP build's work: reuse what already exists here, land the rest as additive-only
+
+A separate, parallel build track (`Ritesh34347/NaviGraphMVP`) produced
+lineage search, an admin CLI/UI, a Semantic Model package + onboarding
+tooling, a Slack bot, and AAD-integrated K8s RBAC Terraform, starting from
+a common ancestor with this repo before the two diverged. Rather than
+importing that work wholesale, each piece was checked against what this
+repo already has, and reconciled case by case:
+
+- **MCP**: this repo already has a real MCP server mounted on the
+  gateway (`mcp_tools.py`). The other track's separate, standalone
+  `packages/mcp_server` was left out entirely rather than shipping two
+  competing MCP implementations.
+- **Auth**: this repo already has a real Azure AD JWT/JWKS verification
+  mechanism (`_verify_identity`, feature-flagged off pending a real
+  tenant). The other track had built its own, separate auth package for
+  the same purpose. The new lineage-search routes were wired through THIS
+  repo's existing mechanism instead of bringing in a second one -- one
+  auth implementation for the whole repo, not two.
+- **connector_sdk**: this repo already has its own Postgres connector
+  (plus Databricks, which the other track never built). The other track's
+  separate Postgres connector was left out as a straight duplicate.
+- **Knowledge-graph ingestion**: the other track had rewritten
+  `knowledge_graph/navigraph_kg/ontology.py` to remove
+  `RELATIONSHIP_CONCEPTS` entirely in favor of compiling from a Semantic
+  Model. This repo's live ingestion pipeline still reads
+  `RELATIONSHIP_CONCEPTS` directly and is genuinely running in production
+  -- that file was left untouched. The `navigraph_semantic_model` package
+  itself was still merged in, but strictly as new, opt-in-only tooling
+  (an onboarding CLI and a drafting agent); nothing in the live
+  request-orchestration pipeline was repointed to consume it.
+- **Homepage**: rather than replacing the existing `ChatDemo`-driven
+  homepage (a deliberate, already-designed piece of this repo) or leaving
+  the new `/chat` and `/admin/lineage` pages undiscoverable, small nav
+  links were added to the existing homepage header pointing at both,
+  leaving `ChatDemo` itself untouched.
+
+Where the two repos' code was genuinely identical (shared ancestry:
+`metadata_catalog`'s `models.py`/`api.py`, the Alembic migration chain,
+`navigraph_shared.opa`'s client), the other track's version was taken
+wholesale where it was a strict superset -- new columns/functions added on
+top of code that was byte-for-byte identical otherwise, verified by diff
+before copying, not assumed.
+
+**What we considered and rejected**: importing everything as-is and
+resolving conflicts later. Rejected because this repo has real, live
+Azure infrastructure and real production traffic -- landing a second auth
+mechanism or a second MCP server, even dormant, would be a real footgun
+for whoever wires things up next, not a harmless no-op.
+
+**Verification**: every touched or added Python package's unit test suite
+was run in a clean virtualenv against this merge's actual code (not
+assumed from the other track's own test runs) -- `shared`,
+`metadata_catalog`, `lineage`-adjacent `semantic_model`, `slack_bot`,
+`agent_runtime`, and `gateway` (28 gateway tests, including 8 new ones for
+the `/lineage` proxy routes exercising the real `_verify_identity` gate
+end-to-end) all pass. `ruff check` is clean across every new/changed file.
+Terraform's new blocks were checked with `terraform fmt` only -- `terraform
+validate`/`plan` require network access to the Terraform provider registry
+that was not available in the environment this merge was prepared in, so
+those must still be run for real (by CI or a human) before anyone applies
+this.

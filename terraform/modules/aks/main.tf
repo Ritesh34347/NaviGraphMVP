@@ -53,5 +53,29 @@ resource "azurerm_kubernetes_cluster" "this" {
     network_policy = "azure"
   }
 
+  # Real AAD-integrated Kubernetes RBAC -- closes the gap
+  # `tests/security/cloud/test_rbac_least_privilege.py` documents for
+  # HUMAN cluster access. `managed = true` is AKS-managed Azure AD
+  # integration (the only mode this azurerm provider version supports for
+  # a new cluster -- "legacy" non-managed AAD integration is deprecated).
+  # `azure_rbac_enabled = false` keeps AUTHORIZATION as native Kubernetes
+  # RBAC objects (see `azure_rbac_enabled`'s own variable docstring for the
+  # real tradeoff), with `admin_group_object_ids` granting the listed
+  # Azure AD groups cluster-admin -- everyone else's access comes from
+  # real RoleBinding/ClusterRoleBinding objects in infra/k8s/base/rbac/
+  # naming an Azure AD group's object ID as the subject.
+  #
+  # This does NOT change what the CI/deploy service principal can do --
+  # that is a separate, already-real, and still-legitimately-broad grant
+  # (`azurerm_role_assignment` for "Azure Kubernetes Service Cluster User
+  # Role", used by automation, not a human) -- see
+  # `test_rbac_least_privilege.py`'s own updated comment for why it
+  # correctly keeps passing even once this block is real and applied.
+  azure_active_directory_role_based_access_control {
+    managed                = true
+    admin_group_object_ids = var.aad_admin_group_object_ids
+    azure_rbac_enabled     = var.azure_rbac_enabled
+  }
+
   tags = var.tags
 }

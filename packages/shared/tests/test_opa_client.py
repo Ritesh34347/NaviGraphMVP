@@ -145,3 +145,61 @@ async def test_fake_opa_client_no_response_configured_defaults_to_deny() -> None
 def test_fake_opa_client_rejects_more_than_one_response_mode() -> None:
     with pytest.raises(ValueError, match="at most one"):
         FakeOpaClient(response=True, raise_exc=RuntimeError("x"))
+
+
+@pytest.mark.asyncio
+async def test_set_data_puts_the_document_verbatim_to_the_real_data_api_path() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        captured["body"] = request.content
+        return httpx.Response(204)
+
+    client = _client_with_transport(handler)
+    await client.set_data(
+        path="navigraph/tenants/navikenz-poc",
+        document={"allowed_roles": ["analyst", "admin"]},
+    )
+
+    assert captured["method"] == "PUT"
+    assert captured["url"] == "http://opa-test:8181/v1/data/navigraph/tenants/navikenz-poc"
+    assert b'"allowed_roles"' in captured["body"]
+    # Not wrapped in {"input": ...} -- unlike evaluate(), set_data() writes
+    # the document itself, not a query input.
+    assert b'"input"' not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_set_data_raises_on_non_2xx_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "internal"})
+
+    client = _client_with_transport(handler)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.set_data(path="navigraph/tenants/navikenz-poc", document={})
+
+
+@pytest.mark.asyncio
+async def test_fake_opa_client_set_data_records_calls() -> None:
+    client = FakeOpaClient()
+
+    await client.set_data(
+        path="navigraph/tenants/navikenz-poc", document={"allowed_roles": ["analyst"]}
+    )
+
+    assert client.data_calls == [
+        {"path": "navigraph/tenants/navikenz-poc", "document": {"allowed_roles": ["analyst"]}}
+    ]
+    # evaluate()'s own call log is untouched by set_data() calls.
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_fake_opa_client_set_data_raise_exc_simulates_opa_unreachable() -> None:
+    client = FakeOpaClient(set_data_raise_exc=ConnectionError("opa unreachable"))
+
+    with pytest.raises(ConnectionError, match="opa unreachable"):
+        await client.set_data(path="navigraph/tenants/navikenz-poc", document={})

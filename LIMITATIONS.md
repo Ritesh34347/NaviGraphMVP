@@ -3801,3 +3801,57 @@ annotation from the cluster (to match git) breaks canary routing before
 deciding whether to add it to `ingress-patch.yaml` (matching the live
 cluster) or remove it live (matching git) -- either resolution is fine,
 but it should be a deliberate one, not an accidental one.
+
+### 104. NEW: a batch of code merged in from a parallel MVP build track -- lineage search, admin CLI, an opt-in Semantic Model package, a Slack bot, and AAD K8s RBAC Terraform, none yet exercised against this repo's live cluster
+
+**What was merged**: real lineage search (`navigraph_lineage.api
+.list_traces`, a new agent-runtime `GET /lineage` route, and a gateway
+proxy at `GET /lineage`/`GET /lineage/{trace_id}` gated by the existing
+`_verify_identity` dependency -- the same gate `/ask` uses, not a second
+auth mechanism), an admin CLI (`tools/scripts/navigraph_admin.py`), an
+admin web UI (`web/src/app/admin/lineage`), a standalone chat page
+(`web/src/app/chat`, plus a same-origin `web/src/app/api/ask` proxy) with
+small nav links added to the existing homepage, a real Postgres
+schema-drift-detection mechanism on the metadata catalog
+(`navigraph_catalog.drift`, two new Alembic migrations adding
+`is_default`/`schema_hash`/`last_crawled_at` columns and a partial unique
+index), a new onboarding-time-only Ontology Drafting agent
+(`understanding/ontology_drafting`) plus a CLI
+(`tools/scripts/onboard_data_source.py`) that chains registration -> crawl
+-> drafting -> compile -> activation, the `navigraph_semantic_model`
+package that CLI drafts into (a versioned, per-tenant config artifact for
+entities/relationships/metrics/policy bindings), a Slack bot package
+(`packages/slack_bot`, answers `@NaviGraph` mentions by calling the
+gateway's `/ask`), and a new `terraform/modules/aks-aad-groups` module
+(two real Azure AD groups) wired into `terraform/modules/aks`'s new
+`azure_active_directory_role_based_access_control` block, plus the
+matching `infra/k8s/base/rbac/cluster-role-binding-viewers.yaml`.
+
+**What was deliberately NOT merged**: a second, standalone MCP server --
+this repo already has one mounted on the gateway (`mcp_tools.py`); a
+second Azure AD auth implementation -- the new lineage routes reuse this
+repo's existing `_verify_identity`/`AzureADSettings` mechanism instead;
+and a second Postgres connector -- this repo's `connector_sdk` already
+has one. The live `knowledge_graph/navigraph_kg/ontology.py` and its
+`RELATIONSHIP_CONCEPTS`-driven ingestion pipeline were left completely
+untouched -- `navigraph_semantic_model` lands as new, opt-in tooling only;
+no live tenant has been migrated to a Semantic Model, and nothing in the
+live request-orchestration pipeline reads from it yet.
+
+**What full version requires**: (1) a real value for
+`terraform/modules/aks`'s new `aad_admin_group_object_ids` -- adding this
+module/block changes what a future `terraform apply` against the live dev
+cluster would do (enables AKS-managed Azure AD auth); this was
+deliberately NOT applied as part of this merge, see
+`docs/runbooks/aad-k8s-rbac-rollout.md` for the full, separate rollout
+procedure a human must run; (2) the two new Alembic migrations
+(`0004_data_source_is_default.py`, `0005_schema_drift_tracking.py`) need
+to actually be run against the live catalog database before `is_default`/
+drift-tracking do anything; (3) the Slack bot needs a real Slack app's
+signing secret/tokens configured before it does anything (see
+`docs/runbooks/slack-bot-setup.md`); (4) none of `navigraph_semantic_model`,
+the onboarding CLI, or the Ontology Drafting agent have been run against a
+real tenant yet -- see `docs/runbooks/data-source-onboarding.md`; (5) the
+new lineage routes have no per-role policy yet, same caveat `/ask` already
+carries while Azure AD verification stays feature-flagged off -- see
+`_verify_identity`'s own docstring.

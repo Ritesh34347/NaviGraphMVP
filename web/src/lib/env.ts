@@ -35,6 +35,15 @@ export const env = {
   // same address from both server and browser.
   NEXT_PUBLIC_GATEWAY_URL: optional("NEXT_PUBLIC_GATEWAY_URL", "http://localhost:8000"),
 
+  // The chat UI (src/app/chat) and admin lineage UI (src/app/admin/lineage)
+  // have no real signed-in tenant to read yet -- NextAuth's Azure AD wiring
+  // verifies a user's identity, not which NaviGraph business tenant they
+  // belong to. Until that mapping exists, these pages send this fixed
+  // tenant_id with every request rather than inventing an ad hoc
+  // per-browser value. Defaults to the same demo tenant used throughout
+  // this repo's own eval/integration fixtures.
+  NEXT_PUBLIC_DEFAULT_TENANT_ID: optional("NEXT_PUBLIC_DEFAULT_TENANT_ID", "navikenz-poc"),
+
   // Azure AD (Entra ID) / NextAuth configuration. These are not real
   // credentials yet - see the note in
   // src/app/api/auth/[...nextauth]/route.ts. They are deliberately

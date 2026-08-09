@@ -48,6 +48,7 @@ resources:
   - ingress-gateway-canary.yaml
   - networkpolicy-default-deny.yaml
   - networkpolicy-allow.yaml
+  - rbac/cluster-role-binding-viewers.yaml
 
 # Every ConfigMap here is generated directly from the real, existing config
 # files under infra/ -- never a duplicated copy -- so infra/docker-compose.yml

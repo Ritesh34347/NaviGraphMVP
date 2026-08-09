@@ -14,6 +14,10 @@ Exposes:
                           capabilities (ask_navigraph, resolve_business_term,
                           list_data_sources, list_business_glossary,
                           get_lineage) to any MCP-speaking AI agent, headless.
+  - GET  /lineage             -- real proxy to agent-runtime's lineage
+                                  search route, gated by `_verify_identity`
+  - GET  /lineage/{trace_id}  -- real proxy to agent-runtime's single-trace
+                                  lineage retrieval, same gate
 
 Gateway and agent-runtime are two separate containers/services (see
 infra/docker-compose.yml) -- this call is a real HTTP hop, not an in-process
@@ -299,6 +303,76 @@ async def ask(
                 status_code=502,
                 detail="agent-runtime is unavailable or returned an error",
             ) from exc
+
+    return response.json()
+
+
+@app.get("/lineage")
+async def search_lineage_traces(
+    tenant_id: str,
+    agent_name: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    search_text: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    verified_identity: VerifiedIdentity | None = Depends(_verify_identity),
+) -> dict:
+    """Real proxy to the agent-runtime's `GET /lineage` search route -- the
+    first time lineage search has been reachable through the gateway, this
+    platform's one real public trust boundary. Gated by the same
+    `_verify_identity` dependency `/ask` uses; see that function's
+    docstring for what this does and doesn't close while Azure AD
+    verification remains feature-flagged off.
+    """
+
+    del verified_identity  # not needed to build the request; presence is the gate
+
+    params: dict[str, Any] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+    if agent_name is not None:
+        params["agent_name"] = agent_name
+    if since is not None:
+        params["since"] = since
+    if until is not None:
+        params["until"] = until
+    if search_text is not None:
+        params["search_text"] = search_text
+
+    http_client: httpx.AsyncClient = app.state.http_client
+    try:
+        response = await http_client.get("/lineage", params=params)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.error("agent-runtime call failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="agent-runtime is unavailable or returned an error"
+        ) from exc
+
+    return response.json()
+
+
+@app.get("/lineage/{trace_id}")
+async def get_lineage_trace(
+    trace_id: str,
+    tenant_id: str,
+    verified_identity: VerifiedIdentity | None = Depends(_verify_identity),
+) -> dict:
+    """Real proxy to the agent-runtime's `GET /lineage/{trace_id}` route --
+    see `search_lineage_traces` above for the same gate and its documented
+    limits.
+    """
+
+    del verified_identity
+
+    http_client: httpx.AsyncClient = app.state.http_client
+    try:
+        response = await http_client.get(f"/lineage/{trace_id}", params={"tenant_id": tenant_id})
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.error("agent-runtime call failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="agent-runtime is unavailable or returned an error"
+        ) from exc
 
     return response.json()
 
