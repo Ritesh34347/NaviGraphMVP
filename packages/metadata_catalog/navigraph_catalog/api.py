@@ -201,7 +201,7 @@ def upsert_schema_tree(
             ).scalar_one_or_none()
 
             is_new_table = catalog_table is None
-            old_hash = None if is_new_table else catalog_table.schema_hash
+            old_hash = catalog_table.schema_hash if catalog_table is not None else None
 
             if catalog_table is None:
                 catalog_table = CatalogTable(
