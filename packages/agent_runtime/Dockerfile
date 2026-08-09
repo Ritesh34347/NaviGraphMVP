@@ -32,6 +32,15 @@ RUN pip install --no-cache-dir /app/connector_sdk
 COPY metadata_catalog /app/metadata_catalog
 RUN pip install --no-cache-dir /app/metadata_catalog
 
+# Phase 1 of the configurable-platform build plan added navigraph-semantic-model
+# as a real navigraph-knowledge-graph dependency (_sync_relationship_concepts
+# reads a tenant's activated SemanticModel) -- must be installed here, before
+# knowledge_graph, or `pip install /app/knowledge_graph` below fails trying to
+# resolve it from PyPI (it isn't published there). Depends only on shared and
+# metadata_catalog, both already installed above.
+COPY semantic_model /app/semantic_model
+RUN pip install --no-cache-dir /app/semantic_model
+
 COPY knowledge_graph /app/knowledge_graph
 RUN pip install --no-cache-dir /app/knowledge_graph
 

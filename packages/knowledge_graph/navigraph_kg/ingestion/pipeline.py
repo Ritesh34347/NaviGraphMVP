@@ -14,7 +14,11 @@ stages against an already-open catalog `Session`, a `Neo4jClient`, and a
      `CustomerType`, `RiskLevel`, `InvestmentCapacityBand`) via
      `connector.execute_query` against Snowflake.
   4. `_sync_relationship_concepts` -- seed the hand-curated
-     `RelationshipConcept` nodes from `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`.
+     `RelationshipConcept` nodes from `tenant_id`'s activated
+     `navigraph_semantic_model.contracts.SemanticModel` (Phase 1 of the
+     configurable-platform build plan), falling back to the hardcoded
+     `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` seed list for any tenant
+     that hasn't onboarded one yet -- see `_load_relationship_concepts`.
 
 Every stage uses Cypher `MERGE` (never bare `CREATE`), so re-running
 `run_ingestion` for the same `data_source_id`/`tenant_id` is safe and
@@ -43,8 +47,14 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from navigraph_catalog.api import list_columns, list_glossary, list_tables
+from navigraph_catalog.api import (
+    get_active_semantic_model,
+    list_columns,
+    list_glossary,
+    list_tables,
+)
 from navigraph_connectors.base import Connector
+from navigraph_semantic_model.loader import load_semantic_model
 from sqlalchemy.orm import Session
 
 from navigraph_kg.client import Neo4jClient
@@ -118,6 +128,7 @@ def run_ingestion(
         synced_at=synced_at,
     )
     relationship_concepts_synced = _sync_relationship_concepts(
+        catalog_session,
         neo4j_client,
         tenant_id=tenant_id,
         synced_at=synced_at,
@@ -208,6 +219,7 @@ def run_ecommerce_ingestion(
         synced_at=synced_at.isoformat(),
     )
     relationship_concepts_synced = _sync_relationship_concepts(
+        catalog_session,
         neo4j_client,
         tenant_id=tenant_id,
         synced_at=synced_at,
@@ -561,13 +573,53 @@ def _sync_simple_lookup(
     return synced
 
 
+def _load_relationship_concepts(
+    catalog_session: Session, *, tenant_id: str
+) -> list[dict[str, str]]:
+    """Resolve the relationship concepts to sync for `tenant_id`.
+
+    Reads `tenant_id`'s activated `navigraph_semantic_model.contracts
+    .SemanticModel` (via `navigraph_catalog.api.get_active_semantic_model`)
+    if one has been onboarded -- Phase 1's real source of truth -- and
+    translates each `Relationship` into the same
+    `name`/`subject_label`/`predicate`/`object_label`/`realizing_table`/
+    `subject_key_column`/`object_key_column` dict shape stage 4 has always
+    consumed, so the Cypher this stage emits is unchanged either way.
+
+    Falls back to the hardcoded `ontology.RELATIONSHIP_CONCEPTS` seed list
+    for any tenant that hasn't onboarded a Semantic Model yet -- onboarding
+    one is additive, never a prerequisite for ingestion to keep working.
+    """
+
+    record = get_active_semantic_model(catalog_session, tenant_id=tenant_id)
+    if record is None:
+        return RELATIONSHIP_CONCEPTS
+
+    model = load_semantic_model(record.compiled_json)
+    return [
+        {
+            "name": relationship.name,
+            "subject_label": relationship.subject,
+            "predicate": relationship.predicate,
+            "object_label": relationship.object,
+            "realizing_table": relationship.via.table,
+            "subject_key_column": relationship.via.subject_key,
+            "object_key_column": relationship.via.object_key,
+        }
+        for relationship in model.relationships
+    ]
+
+
 def _sync_relationship_concepts(
+    catalog_session: Session,
     neo4j_client: Neo4jClient,
     *,
     tenant_id: str,
     synced_at: datetime,
 ) -> int:
-    """Stage 4: hand-curated `RelationshipConcept` nodes from `ontology.RELATIONSHIP_CONCEPTS`.
+    """Stage 4: hand-curated `RelationshipConcept` nodes from `tenant_id`'s
+    relationship concepts -- see `_load_relationship_concepts` for where
+    those come from.
 
     TRADEOFF, DELIBERATE AND NOTED: the realizing `Table`/subject-and-object
     `Column` nodes are matched by `name` alone, NOT by `catalog_table_id`/
@@ -600,7 +652,7 @@ def _sync_relationship_concepts(
     synced = 0
     synced_at_iso = synced_at.isoformat()
 
-    for concept in RELATIONSHIP_CONCEPTS:
+    for concept in _load_relationship_concepts(catalog_session, tenant_id=tenant_id):
         neo4j_client.run(
             f"""
             MERGE (rc:{NODE_RELATIONSHIP_CONCEPT} {{tenant_id: $tenant_id, name: $name}})

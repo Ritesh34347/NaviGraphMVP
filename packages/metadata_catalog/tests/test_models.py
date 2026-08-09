@@ -21,6 +21,7 @@ def test_expected_tables_exist() -> None:
         "catalog_tables",
         "catalog_columns",
         "column_glossary",
+        "semantic_models",
     }
 
 
@@ -144,6 +145,38 @@ def test_column_glossary_columns_and_fk() -> None:
         if isinstance(uc, UniqueConstraint)
     }
     assert ("column_id",) in unique_constraints
+
+
+def test_semantic_models_columns() -> None:
+    from sqlalchemy import Index
+
+    table = Base.metadata.tables["semantic_models"]
+    columns = table.columns
+
+    assert isinstance(columns["id"].type, UUID)
+    assert columns["id"].primary_key
+
+    assert not columns["tenant_id"].nullable
+    assert columns["tenant_id"].index
+
+    assert not columns["version"].nullable
+    assert isinstance(columns["compiled_json"].type, JSONB)
+    assert not columns["compiled_json"].nullable
+    assert columns["activated_at"].nullable
+    assert not columns["created_at"].nullable
+
+    unique_constraints = {
+        tuple(sorted(c.name for c in uc.columns))
+        for uc in table.constraints
+        if isinstance(uc, UniqueConstraint)
+    }
+    assert ("tenant_id", "version") in unique_constraints
+
+    active_index = next(
+        idx for idx in table.indexes if idx.name == "uq_semantic_models_tenant_active"
+    )
+    assert isinstance(active_index, Index)
+    assert active_index.unique
 
 
 def test_relationships_navigate_parent_to_child() -> None:
