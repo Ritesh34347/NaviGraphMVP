@@ -1083,3 +1083,58 @@ tenant selector, not something a generic Azure AD token has any structural
 way to express without a real, deployment-specific claim-mapping decision
 in the Entra app registration itself (see LIMITATIONS.md item 23's "still
 open" section).
+
+## 2026-08-09 — The Ontology Drafting agent never writes to the catalog, OPA, or a `SemanticModel` itself
+
+Every other agent this codebase has built so far either reads the catalog
+or (via a downstream compile step) affects real state. Ontology Drafting
+is deliberately different: it is pure proposal generation, with zero side
+effects beyond returning a `OntologyDraftingResult` for a human to look
+at. We considered having it write its proposals directly into a draft
+table in the catalog (or straight into a `SemanticModel` YAML file) and
+rejected both: either path creates an implicit "the agent's output is
+already partially trusted" state before a human has looked at a single
+proposal, which is exactly backwards for a feature whose entire premise
+(stated in its own system prompt) is "every proposal is reviewed by a
+human before it is trusted." Keeping it a pure, side-effect-free `run()`
+call also means it needs no new database table, no new OPA interaction,
+and no new failure mode beyond the ones every other read-only agent
+already has (a bad `data_source_id`, an LLM call failing, a malformed
+response) — the smallest possible surface for a genuinely new capability.
+
+## 2026-08-09 — `navigraph_semantic_model.onboarding` takes a plain dict, not an `OntologyDraftingResult` import
+
+Consistent with the same "no direct cross-agent-package contract
+imports" convention `SqlGenerationPayload.metric_aggregations` already
+established (see that entry above): `compile_draft_to_semantic_model`
+accepts a plain `dict[str, Any]` shaped like `OntologyDraftingResult`'s
+JSON serialization, not that Pydantic type itself. Two reasons, not just
+convention-following: first, `navigraph_semantic_model` has (and should
+keep) zero dependency on `navigraph_agents` — pulling one in for a single
+function's parameter type would be a real, new, unwanted package edge for
+a "pure data compiler" package that today only depends on
+`navigraph_catalog`/`navigraph_shared`/`pydantic`/`pyyaml`. Second, and
+more fundamentally, a plain dict is the CORRECT shape here regardless of
+the import question: the actual artifact a human edits between `draft`
+and `compile` is a JSON file on disk (see
+`docs/runbooks/data-source-onboarding.md`), not an in-memory Python
+object — modeling the function's input as "whatever `json.load` returns"
+matches what a real onboarding operator's hand-edited file actually is.
+
+## 2026-08-09 — A dropped proposal during compile is a warning, never a hard failure
+
+`compile_draft_to_semantic_model` drops a sensitive-column proposal with
+no matching entity binding, or a metric naming a rejected entity, rather
+than raising. We considered making either case a hard error (forcing the
+operator back to `draft`/manual editing before `compile` will produce
+anything at all) and rejected it: a human reviewer routinely deletes or
+renames an entity in step 4 of the onboarding runbook specifically
+BECAUSE the agent got something wrong, and every metric/sensitive-column
+proposal that referenced the old name is an entirely expected, harmless
+consequence of that edit — not a sign something is broken. Raising would
+punish the exact "edit what's wrong" workflow the runbook instructs the
+operator to do. `SemanticModel`'s own constructor validation (e.g.
+`entities: Field(min_length=1)`, `Metric`'s non-COUNT-needs-a-column
+check) still raises for real — those represent the document itself being
+structurally broken, not an expected side effect of a reasonable human
+edit.

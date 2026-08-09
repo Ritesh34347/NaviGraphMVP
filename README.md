@@ -42,8 +42,9 @@ for the end-to-end sequence.
 infra/          Local-first docker-compose stack + Terraform skeleton for Azure
 terraform/      Azure infrastructure-as-code (a real environment has been applied
                 to Azure as of Phase 10b; CI itself still only ever plans, never applies)
-packages/       Application services: gateway, agent_runtime (25 real agents),
-                connector_sdk, federation, knowledge_graph, lineage, metadata_catalog, shared
+packages/       Application services: gateway, agent_runtime (26 real agents),
+                connector_sdk, federation, knowledge_graph, lineage, metadata_catalog,
+                semantic_model, shared
 web/            Next.js web UI (minimal scaffold today: landing page + NextAuth
                 wiring; no chat/BI interface calling the gateway's /ask yet)
 docs/           Architecture docs, ADRs, runbooks
@@ -109,4 +110,11 @@ package (a versioned, per-tenant config artifact) now drives knowledge-graph
 ingestion and OPA's per-tenant role vocabulary, replacing hardcoded
 Python/SQL/Rego for those two consumers — but no live tenant has been
 migrated to one yet, and it isn't wired into the live Request Orchestrator.
-See `LIMITATIONS.md` for the complete, current list.
+Real onboarding tooling now exists too (Phase 13): schema-hash drift
+detection on the catalog, an onboarding-time-only Ontology Drafting agent
+(26th real agent) that proposes a first-draft Semantic Model from a
+crawled schema for a human to review, and a CLI
+(`tools/scripts/onboard_data_source.py`) chaining registration → crawl →
+drafting → compile → activation — but this pipeline has never been run
+against a real tenant either. See `LIMITATIONS.md` for the complete,
+current list.

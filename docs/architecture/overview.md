@@ -208,3 +208,17 @@ Rego for those two consumers. It is not yet wired into the live Request
 Orchestrator (no mechanism yet resolves which Semantic Model applies to a
 given request), and no live tenant has been migrated to one — see
 `LIMITATIONS.md` item 61 for the full detail.
+
+Phase 13 (item 62) built the onboarding tooling that turns "hand-write a
+`SemanticModel` YAML from scratch" into a real, if still manual, pipeline:
+`navigraph_catalog.drift`'s schema-hash comparison gives a re-crawl a real
+signal for whether anything actually changed; a 26th agent, Ontology
+Drafting (`navigraph_agents.understanding.ontology_drafting`,
+onboarding-time only, never part of the live 25-agent conversational
+pipeline), proposes candidate entities/relationships/metrics from a
+crawled catalog for a human to review; and
+`tools/scripts/onboard_data_source.py` chains registration, crawling,
+drafting, and (via `navigraph_semantic_model.onboarding
+.compile_draft_to_semantic_model`) compiling a reviewed draft into a real,
+catalog-validated, activatable `SemanticModel`. No live tenant has been
+run through this pipeline yet — see `LIMITATIONS.md` item 62.

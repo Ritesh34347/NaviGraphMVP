@@ -1710,3 +1710,84 @@ financial data pipeline.
   both are verified against `FakeOpaClient`/mocked catalog sessions (plus
   the OPA half against a real, temporarily-launched OPA server for this
   pass), never a live docker-compose stack.
+- **Update (Phase 13, item 62)**: the "real onboarding CLI" this bullet
+  named as future Phase 13 scope now exists
+  (`tools/scripts/onboard_data_source.py`) — see item 62. The other two
+  gaps above (no live tenant migrated, no request-time resolution
+  mechanism) are still open; the CLI makes migrating a live tenant
+  possible, it does not do so by itself.
+
+### 62. PARTIALLY RESOLVED (2026-08-09, Phase 13): re-crawl drift signal, LLM-assisted first draft, and a real onboarding CLI now exist — but no live tenant has actually been onboarded through them
+
+**What was deferred**: item 61 named three concrete gaps as explicitly
+Phase 13 scope: "LLM-assisted drafting, a real onboarding CLI, a
+re-validation scheduler." This phase built the first two for real and the
+data a scheduler needs (not the scheduler itself — see "still open" below).
+
+**Resolution**:
+
+- **Schema-hash drift detection** (`navigraph_catalog.drift`): a stable
+  SHA-256 over each table's column name/type/nullable/ordinal-position
+  (deliberately excluding `row_count_estimate`/`description`, which churn
+  without real structural drift). `upsert_schema_tree` now returns one
+  `SchemaDriftEvent` per table instead of `None`; `crawl_and_store`
+  returns a `CrawlResult` and stamps a new `DataSource.last_crawled_at`.
+  A new `list_stale_data_sources` gives a re-crawl scheduler the exact
+  query it needs (`last_crawled_at IS NULL OR older than a threshold`) —
+  the scheduler itself (a cron job/Routine actually calling `crawl` on a
+  timer) is NOT built; see "still open" below. Verified against a real,
+  live Postgres catalog: three sequential crawls (new table → no drift →
+  a genuine added column) correctly report `is_new`/`changed`, and
+  `last_crawled_at` genuinely advances between them.
+- **Ontology Drafting agent**
+  (`navigraph_agents.understanding.ontology_drafting`): reads a data
+  source's already-crawled catalog and proposes candidate entities,
+  relationships, sensitive columns, and metric aggregations — onboarding-
+  time only, never invoked from live conversational traffic, never writes
+  to the catalog/OPA/a `SemanticModel` itself. Follows this codebase's
+  established closed-candidate-list discipline: every LLM-returned table/
+  schema/column reference is validated against the real crawled
+  inventory, and a hallucination is dropped with a recoverable
+  `AgentError`, never trusted. Every proposal carries a `rationale`
+  specifically so a human reviewer can judge it — no proposal is ever
+  auto-applied. 15 unit tests (`FakeLLMClient`, no network) cover the
+  happy path and every hallucination-rejection/error path per category.
+- **A real onboarding CLI** (`tools/scripts/onboard_data_source.py`) and
+  its runbook (`docs/runbooks/data-source-onboarding.md`): five
+  subcommands — `register`, `crawl`, `draft`, `compile`, `activate` —
+  chaining `register_data_source` → `crawl_and_store` → the drafting
+  agent → a new `navigraph_semantic_model.onboarding
+  .compile_draft_to_semantic_model` (converts a human-reviewed draft into
+  a real `SemanticModel`, dropping anything it can't safely place — e.g.
+  a sensitive column on a table no approved entity binds, or a metric
+  naming a rejected entity — with a printed warning, never silently) →
+  `load_and_validate_semantic_model`/`compile_sensitivity`/
+  `sync_policy_bindings`. The runbook is explicit that the human-review
+  step between `draft` and `compile` is required and deliberately not
+  automated. 7 new unit tests cover `compile_draft_to_semantic_model`
+  offline; the `compile` subcommand itself was additionally run for real
+  end-to-end in this sandbox (the one fully offline step — no DB/network),
+  with its YAML output round-tripped back through `load_semantic_model` to
+  confirm it's genuinely valid, not just "didn't crash."
+
+**Still open** (all three named honestly in
+`docs/runbooks/data-source-onboarding.md` rather than glossed over):
+
+- **No re-crawl scheduler exists.** `list_stale_data_sources` gives one
+  the query it needs; no cron job/Routine/timer actually calls `crawl` on
+  a schedule yet — it's still a manually-run command.
+- **No live tenant has actually been onboarded through this pipeline.**
+  `register`/`crawl`/`draft`/`activate` each need real, reachable
+  Postgres/the real source system/`ANTHROPIC_API_KEY`/OPA — none of which
+  exist in this sandbox — so the full chain has never been run end-to-end
+  against a real tenant. `navikenz-poc` still has no `SemanticModel`
+  document. Whoever runs this for the first time against real
+  infrastructure should treat it as the genuine first proof of the full
+  chain, not assume one already happened.
+- **No request-time Semantic Model resolution still.** Activating a
+  `SemanticModel` writes real PII flags and OPA policy bindings, but the
+  live Request Orchestrator still has no mechanism to resolve "which
+  `SemanticModel` applies to this request" and feed its
+  `metrics`/`relationships` into `SqlGenerationPayload
+  .metric_aggregations` or `navigraph_kg`'s ingestion pipeline
+  automatically — unchanged from item 61's third "still open" bullet.

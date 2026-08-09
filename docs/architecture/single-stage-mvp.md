@@ -207,6 +207,7 @@ context, regardless of how this one ended.
 | Knowledge graph | **Real**, single instance | Neo4j; no HA/clustering yet (`LIMITATIONS.md` item 2) |
 | Multi-tenant / multi-source | Structurally real, narrow in practice | Every call carries `tenant_id`; Snowflake and Postgres connectors both real, but only Snowflake has a registered tenant data source and a Trino catalog entry so far (`LIMITATIONS.md` item 1, partially resolved) |
 | Semantic Model (`navigraph_semantic_model`) | **Real, not yet activated for any live tenant** | Knowledge-graph ingestion and OPA's per-tenant role vocabulary compile from it (`LIMITATIONS.md` item 61); SQL Generation's explicit `metric.aggregation` field exists and is tested but not yet wired into the live Request Orchestrator |
+| Onboarding tooling (drift detection, Ontology Drafting agent, `onboard_data_source.py`) | **Real, never run against a live tenant** | Schema-hash drift detection is verified against a real Postgres catalog; the drafting agent and the CLI's offline `compile` step are unit-tested/smoke-verified in this sandbox, but `register`/`crawl`/`draft`/`activate` each need real infra this sandbox doesn't have (`LIMITATIONS.md` item 62) |
 
 ## Deliberately out of scope for this stage
 
