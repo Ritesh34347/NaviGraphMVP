@@ -18,18 +18,23 @@ integration test in `tests/integration/metadata_catalog/`.
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 from navigraph_catalog.api import (
     find_column,
+    get_default_data_source,
     get_table,
     list_columns,
     list_data_sources,
     list_glossary,
+    list_stale_data_sources,
     list_tables,
     mark_columns_pii,
+    mark_data_source_crawled,
     register_data_source,
+    set_default_data_source,
     upsert_glossary,
     upsert_schema_tree,
 )
@@ -91,6 +96,35 @@ class TestRegisterDataSource:
         session.flush.assert_called_once()
         assert result is added
 
+    def test_is_default_defaults_to_false_when_not_passed(self) -> None:
+        session = MagicMock()
+
+        with patch("navigraph_catalog.api.get_connector_class"):
+            result = register_data_source(
+                session,
+                tenant_id="tenant-a",
+                name="snowflake-prod",
+                source_type="snowflake",
+                connection_ref={"env_prefix": "SNOWFLAKE"},
+            )
+
+        assert result.is_default is False
+
+    def test_is_default_true_is_passed_through_to_the_model(self) -> None:
+        session = MagicMock()
+
+        with patch("navigraph_catalog.api.get_connector_class"):
+            result = register_data_source(
+                session,
+                tenant_id="tenant-a",
+                name="snowflake-prod",
+                source_type="snowflake",
+                connection_ref={"env_prefix": "SNOWFLAKE"},
+                is_default=True,
+            )
+
+        assert result.is_default is True
+
 
 class TestListDataSources:
     def test_list_data_sources_builds_expected_query_and_returns_scalars(self) -> None:
@@ -102,6 +136,53 @@ class TestListDataSources:
 
         assert result == expected
         session.execute.assert_called_once()
+
+
+class TestGetDefaultDataSource:
+    def test_returns_the_default_when_one_exists(self) -> None:
+        session = MagicMock()
+        expected = MagicMock(spec=DataSource)
+        session.execute.return_value.scalar_one_or_none.return_value = expected
+
+        result = get_default_data_source(session, tenant_id="tenant-a")
+
+        assert result is expected
+        session.execute.assert_called_once()
+
+    def test_returns_none_when_no_default_is_set(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = get_default_data_source(session, tenant_id="tenant-a")
+
+        assert result is None
+
+
+class TestSetDefaultDataSource:
+    def test_unsets_any_existing_default_before_setting_the_new_one(self) -> None:
+        session = MagicMock()
+        data_source_id = uuid.uuid4()
+
+        set_default_data_source(session, tenant_id="tenant-a", data_source_id=data_source_id)
+
+        assert session.execute.call_count == 2
+        session.flush.assert_called_once()
+
+    def test_unset_update_runs_before_the_set_update(self) -> None:
+        """Order matters here: the partial unique index would reject setting
+        a new default before the old one is cleared in the same
+        transaction, so the "unset all" UPDATE must be issued first."""
+
+        session = MagicMock()
+        data_source_id = uuid.uuid4()
+
+        set_default_data_source(session, tenant_id="tenant-a", data_source_id=data_source_id)
+
+        unset_call, set_call = session.execute.call_args_list
+        unset_compiled = unset_call.args[0].compile()
+        set_compiled = set_call.args[0].compile()
+        assert unset_compiled.params["is_default"] is False
+        assert set_compiled.params["is_default"] is True
 
 
 class TestUpsertSchemaTree:
@@ -196,6 +277,199 @@ class TestUpsertSchemaTree:
         assert existing_column.data_type == "BIGINT"
         assert existing_column.nullable is True
         assert existing_column.description == "primary key"
+
+    def test_a_genuinely_new_table_reports_is_new_and_never_changed(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        data_source_id = uuid.uuid4()
+        schemas = [
+            SchemaDescriptor(
+                name="public",
+                tables=[
+                    TableDescriptor(
+                        name="orders",
+                        row_count_estimate=100,
+                        columns=[
+                            ColumnDescriptor(
+                                name="id", data_type="INTEGER", nullable=False, ordinal_position=1
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+
+        events = upsert_schema_tree(session, data_source_id=data_source_id, schemas=schemas)
+
+        assert len(events) == 1
+        assert events[0].table_name == "orders"
+        assert events[0].is_new is True
+        assert events[0].changed is False
+        assert events[0].old_hash is None
+        assert events[0].new_hash != ""
+
+    def test_an_existing_table_with_no_prior_hash_is_not_claimed_changed(self) -> None:
+        """A table crawled before schema-drift tracking existed has
+        `schema_hash IS NULL` -- there is no real baseline to compare
+        against, so this must never be reported as `changed=True`."""
+
+        session = MagicMock()
+        existing_schema = CatalogSchema(id=uuid.uuid4(), name="public")
+        existing_table = CatalogTable(
+            id=uuid.uuid4(), name="orders", row_count_estimate=1, schema_hash=None
+        )
+        existing_column = CatalogColumn(
+            id=uuid.uuid4(), name="id", data_type="INTEGER", nullable=False, ordinal_position=1
+        )
+        session.execute.return_value.scalar_one_or_none.side_effect = [
+            existing_schema,
+            existing_table,
+            existing_column,
+        ]
+
+        schemas = [
+            SchemaDescriptor(
+                name="public",
+                tables=[
+                    TableDescriptor(
+                        name="orders",
+                        row_count_estimate=1,
+                        columns=[
+                            ColumnDescriptor(
+                                name="id", data_type="INTEGER", nullable=False, ordinal_position=1
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+
+        events = upsert_schema_tree(session, data_source_id=uuid.uuid4(), schemas=schemas)
+
+        assert events[0].is_new is False
+        assert events[0].changed is False
+        assert events[0].old_hash is None
+        # The real hash is still computed and stored going forward.
+        assert existing_table.schema_hash == events[0].new_hash
+
+    def test_an_unchanged_table_reports_changed_false_with_a_real_matching_hash(self) -> None:
+        from navigraph_catalog.drift import compute_table_schema_hash
+
+        session = MagicMock()
+        table_descriptor = TableDescriptor(
+            name="orders",
+            row_count_estimate=1,
+            columns=[
+                ColumnDescriptor(
+                    name="id", data_type="INTEGER", nullable=False, ordinal_position=1
+                )
+            ],
+        )
+        real_hash = compute_table_schema_hash(table_descriptor)
+
+        existing_schema = CatalogSchema(id=uuid.uuid4(), name="public")
+        existing_table = CatalogTable(
+            id=uuid.uuid4(), name="orders", row_count_estimate=1, schema_hash=real_hash
+        )
+        existing_column = CatalogColumn(
+            id=uuid.uuid4(), name="id", data_type="INTEGER", nullable=False, ordinal_position=1
+        )
+        session.execute.return_value.scalar_one_or_none.side_effect = [
+            existing_schema,
+            existing_table,
+            existing_column,
+        ]
+
+        events = upsert_schema_tree(
+            session, data_source_id=uuid.uuid4(), schemas=[SchemaDescriptor(name="public", tables=[table_descriptor])]
+        )
+
+        assert events[0].is_new is False
+        assert events[0].changed is False
+        assert events[0].old_hash == real_hash
+        assert events[0].new_hash == real_hash
+
+    def test_a_genuinely_changed_table_reports_changed_true(self) -> None:
+        session = MagicMock()
+        existing_schema = CatalogSchema(id=uuid.uuid4(), name="public")
+        # Real prior hash for a table that had only one column.
+        existing_table = CatalogTable(
+            id=uuid.uuid4(),
+            name="orders",
+            row_count_estimate=1,
+            schema_hash="a-stale-hash-from-before-a-column-was-added",
+        )
+        existing_column = CatalogColumn(
+            id=uuid.uuid4(), name="id", data_type="INTEGER", nullable=False, ordinal_position=1
+        )
+
+        # The real crawl now sees a SECOND column that didn't exist before
+        # -- a genuine structural change.
+        schemas = [
+            SchemaDescriptor(
+                name="public",
+                tables=[
+                    TableDescriptor(
+                        name="orders",
+                        row_count_estimate=1,
+                        columns=[
+                            ColumnDescriptor(
+                                name="id",
+                                data_type="INTEGER",
+                                nullable=False,
+                                ordinal_position=1,
+                            ),
+                            ColumnDescriptor(
+                                name="total",
+                                data_type="NUMBER",
+                                nullable=True,
+                                ordinal_position=2,
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ]
+        # The second column's lookup also returns None (never seen before).
+        session.execute.return_value.scalar_one_or_none.side_effect = [
+            existing_schema,
+            existing_table,
+            existing_column,
+            None,
+        ]
+
+        events = upsert_schema_tree(session, data_source_id=uuid.uuid4(), schemas=schemas)
+
+        assert events[0].is_new is False
+        assert events[0].changed is True
+        assert events[0].old_hash == "a-stale-hash-from-before-a-column-was-added"
+
+
+class TestMarkDataSourceCrawled:
+    def test_updates_last_crawled_at_and_flushes(self) -> None:
+        session = MagicMock()
+        data_source_id = uuid.uuid4()
+
+        mark_data_source_crawled(session, data_source_id=data_source_id)
+
+        session.execute.assert_called_once()
+        session.flush.assert_called_once()
+        update_stmt = session.execute.call_args.args[0]
+        compiled = update_stmt.compile()
+        assert compiled.params["last_crawled_at"] is not None
+
+
+class TestListStaleDataSources:
+    def test_builds_expected_query_and_returns_scalars(self) -> None:
+        session = MagicMock()
+        expected = [MagicMock(spec=DataSource)]
+        session.execute.return_value.scalars.return_value = expected
+
+        result = list_stale_data_sources(session, tenant_id="tenant-a", older_than=timedelta(days=7))
+
+        assert result == expected
+        session.execute.assert_called_once()
 
 
 class TestReadHelpers:

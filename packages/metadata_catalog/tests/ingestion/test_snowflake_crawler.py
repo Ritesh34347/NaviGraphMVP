@@ -109,14 +109,53 @@ def test_crawl_and_store_passes_introspected_schemas_to_upsert() -> None:
 
     mock_upsert.assert_called_once_with(session, data_source_id=data_source_id, schemas=schemas)
     # 2 tables in "public" + 1 table in "analytics" = 3.
-    assert result == 3
+    assert result.tables_synced == 3
 
 
 def test_crawl_and_store_returns_zero_for_empty_schema() -> None:
     session = MagicMock()
     connector = FakeConnector([])
 
-    with patch("navigraph_catalog.ingestion.snowflake_crawler.upsert_schema_tree"):
+    with patch("navigraph_catalog.ingestion.snowflake_crawler.upsert_schema_tree", return_value=[]):
         result = crawl_and_store(session, data_source_id=uuid.uuid4(), connector=connector)
 
-    assert result == 0
+    assert result.tables_synced == 0
+    assert result.drift_events == []
+
+
+def test_crawl_and_store_stamps_last_crawled_at() -> None:
+    session = MagicMock()
+    data_source_id = uuid.uuid4()
+    connector = FakeConnector([])
+
+    with (
+        patch("navigraph_catalog.ingestion.snowflake_crawler.upsert_schema_tree", return_value=[]),
+        patch(
+            "navigraph_catalog.ingestion.snowflake_crawler.mark_data_source_crawled"
+        ) as mock_mark,
+    ):
+        crawl_and_store(session, data_source_id=data_source_id, connector=connector)
+
+    mock_mark.assert_called_once_with(session, data_source_id=data_source_id)
+
+
+def test_crawl_and_store_returns_the_real_drift_events_from_upsert() -> None:
+    from navigraph_catalog.drift import SchemaDriftEvent
+
+    session = MagicMock()
+    connector = FakeConnector(_make_schemas())
+    canned_events = [
+        SchemaDriftEvent(table_name="orders", is_new=False, changed=True, old_hash="a", new_hash="b")
+    ]
+
+    with (
+        patch(
+            "navigraph_catalog.ingestion.snowflake_crawler.upsert_schema_tree",
+            return_value=canned_events,
+        ),
+        patch("navigraph_catalog.ingestion.snowflake_crawler.mark_data_source_crawled"),
+    ):
+        result = crawl_and_store(session, data_source_id=uuid.uuid4(), connector=connector)
+
+    assert result.drift_events == canned_events
+    assert result.changed_table_names == ["orders"]

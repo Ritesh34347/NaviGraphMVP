@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { env } from "@/lib/env";
 
 import ChatDemo from "./ChatDemo";
@@ -48,6 +50,12 @@ export default async function HomePage() {
             {status.reachable ? "Live" : "Reconnecting"}
           </span>
           <span className="pill">Analyst view</span>
+          <Link href="/chat" className="pill" style={{ textDecoration: "none" }}>
+            Chat
+          </Link>
+          <Link href="/admin/lineage" className="pill" style={{ textDecoration: "none" }}>
+            Admin: Lineage
+          </Link>
         </div>
       </header>
 

@@ -2126,3 +2126,74 @@ never present in this repo's own `infra/k8s/overlays/dev/ingress-patch.yaml`
 -- a real, pre-existing drift between git and the cluster, logged but not
 touched as part of this fix (out of scope, and risky to "correct" without
 first understanding how/when it was applied).
+
+## 2026-08-09 — Merged in lineage search, admin CLI/UI, opt-in Semantic Model + onboarding tooling, a Slack bot, and AAD K8s RBAC Terraform from a parallel build
+
+Reconciled and merged a batch of work from a separate build track that
+shares this repo's early history. Per-piece decisions and rationale are
+in `DECISIONS.md`'s matching entry; `LIMITATIONS.md` item 104 has the full
+what-was/wasn't-merged breakdown. Summary of what landed:
+
+- `navigraph_lineage.api.list_traces` (real Postgres aggregate search
+  across a tenant's traces), a new agent-runtime `GET /lineage` route, and
+  a gateway proxy (`GET /lineage`, `GET /lineage/{trace_id}`) gated by
+  this repo's existing `_verify_identity` dependency.
+- `tools/scripts/navigraph_admin.py` (admin CLI) and
+  `web/src/app/admin/lineage` (admin web UI for lineage search).
+- A standalone `web/src/app/chat` page + same-origin `api/ask` proxy, with
+  small nav links added to the existing homepage (the existing `ChatDemo`
+  component was left untouched).
+- `navigraph_catalog.drift` (real schema-hash drift detection) and two
+  new Alembic migrations adding `is_default`/`last_crawled_at`/
+  `schema_hash` to the metadata catalog, plus the partial unique index
+  enforcing one default `DataSource` per tenant.
+- A new onboarding-time-only Ontology Drafting agent
+  (`understanding/ontology_drafting`), the `navigraph_semantic_model`
+  package it drafts into, and `tools/scripts/onboard_data_source.py`
+  chaining registration -> crawl -> drafting -> compile -> activation.
+  Landed as new, opt-in tooling only -- the live `knowledge_graph
+  /navigraph_kg/ontology.py` and its `RELATIONSHIP_CONCEPTS`-driven
+  ingestion pipeline were not touched.
+- `packages/slack_bot` (answers `@NaviGraph` Slack mentions via the
+  gateway's `/ask`; needs a real Slack app configured before it does
+  anything).
+- `terraform/modules/aks-aad-groups` (two real Azure AD groups) wired
+  into `terraform/modules/aks`'s new
+  `azure_active_directory_role_based_access_control` block, plus
+  `infra/k8s/base/rbac/cluster-role-binding-viewers.yaml`. NOT applied to
+  the live cluster as part of this merge -- see
+  `docs/runbooks/aad-k8s-rbac-rollout.md`.
+
+Deliberately left out: a second, standalone MCP server (this repo already
+has one on the gateway) and a second Azure AD auth implementation (the new
+routes reuse the existing one) -- both would have been dormant
+duplicates, not real functionality.
+
+Verified for real before merging, not assumed: every touched/added
+Python package's unit tests were run in a clean virtualenv against this
+repo's actual merged code -- `shared` (14 tests, including the new
+`OpaClient.set_data` this merge's `navigraph_semantic_model.opa_sync`
+needs), `metadata_catalog` (48), `semantic_model` (43), `slack_bot` (25),
+`agent_runtime` (18, including the new Ontology Drafting agent), and
+`gateway` (28, including 8 new tests for the `/lineage` proxy routes that
+exercise the real `_verify_identity` gate end-to-end via `TestClient` --
+not mocked out) all pass. `ruff check` is clean across every new/changed
+file. `terraform fmt` is clean on the new Terraform; `terraform validate`/
+`plan` need real network access to the provider registry this merge's
+environment didn't have, so those are still owed before anyone runs
+`apply`.
+
+## 2026-08-09 — Fixed four real CI bugs surfaced by the merge PR's first live run
+
+Full rationale for each is in `DECISIONS.md`'s matching entry. In short:
+`mypy.ini` targeted Python 3.11 against a real 3.12 CI runner (numpy's
+bundled stub needs 3.12+); `adversarial-tests.yml` never installed the
+packages `tests/security/` actually imports; `web/package.json`'s
+`brace-expansion` override was pinned to the last *vulnerable* version, not
+a fix; and `security-scan.yml`'s pip-audit job was missing five of
+`agent_runtime`'s local package dependencies from its install list, so
+pip-audit silently never ran at all -- fixing that then surfaced a real
+`setuptools` CVE, fixed by upgrading it explicitly. Two other failing
+checks (`k8s-manifests-ci.yml`'s canary-weight proof,
+`terraform-plan.yml`) were confirmed pre-existing and unrelated via
+cross-branch `gh run list` comparison and left alone.

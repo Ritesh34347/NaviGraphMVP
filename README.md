@@ -40,8 +40,11 @@ for the end-to-end sequence.
 infra/          docker-compose stack (local dev) + real infra/k8s/ Kustomize manifests
 terraform/      Azure infrastructure-as-code, applied for real to a live dev environment
 packages/       gateway, agent_runtime (25 real agents), connector_sdk, metadata_catalog,
-                knowledge_graph, federation, lineage, shared
+                knowledge_graph, federation, lineage, shared, semantic_model (opt-in),
+                slack_bot
 web/            Next.js web UI, including a real demo chat interface (src/app/ChatDemo.tsx)
+                and a standalone chat page (src/app/chat) + admin lineage-search UI
+                (src/app/admin/lineage)
 eval/           Golden-set questions + LLM-as-judge evaluation harness
 tests/          Integration pipeline chains + adversarial security suites
 docs/           Architecture docs, ADRs, runbooks, product/security/testing references
@@ -125,3 +128,15 @@ all exercised against that live environment. Trino is registered but
 entry). See `LIMITATIONS.md` for the current, honestly-scoped list of what's still
 deliberately deferred (Azure AD JWT verification, a registered domain in place of
 `nip.io`, and others) — none of them block real, live use of the platform today.
+
+**Updated 2026-08-09**: merged in real lineage search, an admin CLI/UI, a
+Slack bot, and an opt-in `navigraph_semantic_model` package + onboarding
+tooling (an Ontology Drafting agent and a CLI chaining registration ->
+crawl -> drafting -> compile -> activation) from a parallel build track,
+plus (not yet applied) Terraform for AAD-integrated Kubernetes RBAC. None
+of this changes what's actually running in production today — see
+`LIMITATIONS.md` item 104 and `DECISIONS.md`'s matching entry for exactly
+what landed, what was deliberately left out to avoid duplicating this
+repo's existing MCP/auth/connector mechanisms, and what a human still
+needs to do (run the new catalog migrations, configure a real Slack app,
+review and apply the Terraform) before any of it is live.

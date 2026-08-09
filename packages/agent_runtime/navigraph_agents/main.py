@@ -8,6 +8,9 @@ Exposes:
   - POST /agents/understanding/conversation/invoke
   - POST /agents/understanding/metadata_discovery/invoke
   - POST /agents/understanding/ontology/invoke
+  - POST /agents/understanding/ontology_drafting/invoke  -- onboarding-time
+                                          only, never called by the live
+                                          Request Orchestrator pipeline
   - POST /agents/understanding/semantic_retrieval/invoke
   - POST /agents/understanding/schema_mapping/invoke
   - POST /agents/query/data_source_discovery/invoke
@@ -29,6 +32,8 @@ Exposes:
   - POST /agents/orchestrator/session_context_manager/invoke
   - POST /agents/orchestrator/clarification_coordinator/invoke
   - POST /agents/orchestrator/request_orchestrator/invoke
+  - GET  /lineage  -- real, live search across a tenant's traces
+                       (tenant-scoped via a required `tenant_id` query param)
   - GET  /lineage/{trace_id}  -- real, live retrieval of one trace's full
                                   assembled lineage chain (tenant-scoped via
                                   a required `tenant_id` query param)
@@ -62,6 +67,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import cast
 
 # Import side effect only: registers "snowflake"/"postgres"/"databricks"
@@ -87,7 +93,7 @@ from navigraph_catalog.db import session_scope as catalog_session_scope
 from navigraph_federation.trino_client import TrinoClient
 from navigraph_kg.api import list_business_concepts
 from navigraph_kg.client import Neo4jClient
-from navigraph_lineage.api import get_trace
+from navigraph_lineage.api import get_trace, list_traces
 from navigraph_lineage.db import get_engine as get_lineage_engine
 from navigraph_lineage.db import get_session_factory as get_lineage_session_factory
 from navigraph_lineage.db import session_scope as lineage_session_scope
@@ -268,6 +274,13 @@ from navigraph_agents.understanding.ontology.agent import (
 )
 from navigraph_agents.understanding.ontology.agent import OntologyAgent
 from navigraph_agents.understanding.ontology.contracts import OntologyInput
+from navigraph_agents.understanding.ontology_drafting.agent import (
+    AGENT_NAME as ONTOLOGY_DRAFTING_AGENT_NAME,
+)
+from navigraph_agents.understanding.ontology_drafting.agent import OntologyDraftingAgent
+from navigraph_agents.understanding.ontology_drafting.contracts import (
+    OntologyDraftingInput,
+)
 from navigraph_agents.understanding.schema_mapping.agent import (
     AGENT_NAME as SCHEMA_MAPPING_AGENT_NAME,
 )
@@ -336,6 +349,14 @@ async def lifespan(app: FastAPI):
     neo4j_client = Neo4jClient()
     ontology_agent = OntologyAgent(client=neo4j_client, tracer=tracer)
     register(ONTOLOGY_AGENT_NAME, ontology_agent.run)
+
+    # Onboarding-time only -- never invoked from the live request-
+    # orchestration pipeline. Shares the same catalog session factory and
+    # LLM client every other agent here uses.
+    ontology_drafting_agent = OntologyDraftingAgent(
+        llm_client=llm_client, session_factory=catalog_session_factory, tracer=tracer
+    )
+    register(ONTOLOGY_DRAFTING_AGENT_NAME, ontology_drafting_agent.run)
 
     schema_mapping_agent = SchemaMappingAgent(tracer=tracer)
     register(SCHEMA_MAPPING_AGENT_NAME, schema_mapping_agent.run)
@@ -592,6 +613,19 @@ async def invoke_ontology(payload: dict) -> dict:
     return await _invoke_agent(ONTOLOGY_AGENT_NAME, OntologyInput, payload)
 
 
+@app.post("/agents/understanding/ontology_drafting/invoke")
+async def invoke_ontology_drafting(payload: dict) -> dict:
+    """Parse the request body into `OntologyDraftingInput`, run the real
+    Ontology Drafting agent, and return its `OntologyDraftingOutput`.
+
+    Onboarding-time only -- proposes a first-draft Semantic Model from a
+    crawled schema for a human to review; never called by the live
+    Request Orchestrator pipeline.
+    """
+
+    return await _invoke_agent(ONTOLOGY_DRAFTING_AGENT_NAME, OntologyDraftingInput, payload)
+
+
 @app.post("/agents/understanding/semantic_retrieval/invoke")
 async def invoke_semantic_retrieval(payload: dict) -> dict:
     """Parse the request body into `SemanticRetrievalInput`, run the real
@@ -813,6 +847,55 @@ async def invoke_request_orchestrator(payload: dict) -> dict:
     return await _invoke_agent(
         REQUEST_ORCHESTRATOR_AGENT_NAME, RequestOrchestratorInput, payload
     )
+
+
+@app.get("/lineage")
+async def search_lineage_traces(
+    tenant_id: str,
+    agent_name: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    search_text: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Real, live search across this tenant's traces. A plain FastAPI
+    route, same rationale as `/lineage/{trace_id}` below: reading lineage
+    isn't agent-shaped in this codebase's convention.
+
+    `tenant_id` is a REQUIRED query param -- same non-optional,
+    no-new-auth-mechanism-AT-THIS-LAYER caveat as `/lineage/{trace_id}`'s
+    own docstring; the gateway (this platform's one real public trust
+    boundary) is what gates this route behind `_verify_identity` once
+    Azure AD is enabled -- see `packages/gateway/navigraph_gateway
+    /main.py`'s `search_lineage_traces` proxy.
+    """
+
+    with lineage_session_scope(app.state.lineage_session_factory) as session:
+        summaries = list_traces(
+            session,
+            tenant_id=tenant_id,
+            agent_name=agent_name,
+            since=since,
+            until=until,
+            search_text=search_text,
+            limit=limit,
+            offset=offset,
+        )
+
+    return {
+        "tenant_id": tenant_id,
+        "traces": [
+            {
+                "trace_id": summary.trace_id,
+                "first_event_at": summary.first_event_at.isoformat(),
+                "last_event_at": summary.last_event_at.isoformat(),
+                "event_count": summary.event_count,
+                "agent_names": summary.agent_names,
+            }
+            for summary in summaries
+        ],
+    }
 
 
 @app.get("/lineage/{trace_id}")

@@ -46,6 +46,8 @@ jobs:
           pip install -e packages/lineage
           pip install -e packages/gateway
           pip install -e packages/agent_runtime
+          pip install -e packages/semantic_model
+          pip install -e packages/slack_bot
           pip install ruff mypy pytest
 
       - name: Lint (ruff)

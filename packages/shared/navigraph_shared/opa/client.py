@@ -57,6 +57,30 @@ class OpaClient(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    async def set_data(self, *, path: str, document: dict[str, Any]) -> None:
+        """Push `document` into OPA's real Data API at `path` (a real
+        `PUT /v1/data/{path}` -- overwrites whatever was previously stored
+        there in full, it is not a merge).
+
+        This is a management/onboarding-time operation (compiling a
+        `navigraph_semantic_model.SemanticModel`'s `policy_bindings` into a
+        real per-tenant OPA data document -- see
+        `navigraph_semantic_model.opa_sync`), never called on the
+        per-request hot path `evaluate()` serves. Real deployments running
+        OPA in bundle mode instead of this repo's bundle-less local config
+        (see `infra/opa/conf/config.yaml`) would push data via a bundle
+        service instead -- this method is the bundle-less equivalent, not
+        a replacement for that real production mechanism.
+
+        Args:
+            path: The `data` document path to write to, WITHOUT a leading
+                slash and WITHOUT the `/v1/data/` prefix (e.g.
+                `"navigraph/tenants/navikenz-poc"`).
+            document: The JSON-serializable document to store at `path`.
+        """
+        raise NotImplementedError
+
 
 class HttpOpaClient(OpaClient):
     """Real `OpaClient` implementation backed by `httpx.AsyncClient`.
@@ -105,6 +129,17 @@ class HttpOpaClient(OpaClient):
             deny_reasons=list(result.get("deny_reasons", [])),
         )
 
+    async def set_data(self, *, path: str, document: dict[str, Any]) -> None:
+        import httpx
+
+        url = f"{self._settings.opa_url}/v1/data/{path}"
+
+        async with httpx.AsyncClient(
+            timeout=self._timeout_seconds, transport=self._transport
+        ) as client:
+            response = await client.put(url, json=document)
+            response.raise_for_status()
+
 
 class FakeOpaClient(OpaClient):
     """No-network test double for `OpaClient`.
@@ -117,14 +152,16 @@ class FakeOpaClient(OpaClient):
         wrapped as `allow=<bool>, deny_reasons=[]`) returned on every call, or
       - `response_fn`: a callable `(package_path, input_document) ->
         OpaDecisionResponse` for tests that need per-call control, or
-      - `raise_exc`: an exception instance raised on every call, to
-        simulate OPA being unreachable (connection refused, timeout, etc.)
-        -- this is what `PolicyAuthorizationAgent`'s fail-closed behavior
-        is tested against.
+      - `raise_exc`: an exception instance raised on every `evaluate()`
+        call, to simulate OPA being unreachable (connection refused,
+        timeout, etc.) -- this is what `PolicyAuthorizationAgent`'s
+        fail-closed behavior is tested against.
 
-    Every call is recorded in `self.calls` as a dict with keys
-    `package_path` and `input_document`, so tests can assert on exactly
-    what was sent to "OPA".
+    Every `evaluate()` call is recorded in `self.calls` as a dict with keys
+    `package_path` and `input_document`; every `set_data()` call is
+    recorded separately in `self.data_calls` as a dict with keys `path`
+    and `document` -- so tests can assert on exactly what was sent to
+    "OPA" for each.
     """
 
     def __init__(
@@ -133,6 +170,7 @@ class FakeOpaClient(OpaClient):
         response_fn: Callable[[str, dict[str, Any]], OpaDecisionResponse] | None = None,
         *,
         raise_exc: Exception | None = None,
+        set_data_raise_exc: Exception | None = None,
     ) -> None:
         provided = [x is not None for x in (response, response_fn, raise_exc)]
         if sum(provided) > 1:
@@ -140,6 +178,7 @@ class FakeOpaClient(OpaClient):
 
         self._response_fn = response_fn
         self._raise_exc = raise_exc
+        self._set_data_raise_exc = set_data_raise_exc
 
         if isinstance(response, bool):
             self._fixed_response: OpaDecisionResponse | None = OpaDecisionResponse(
@@ -149,6 +188,7 @@ class FakeOpaClient(OpaClient):
             self._fixed_response = response
 
         self.calls: list[dict[str, Any]] = []
+        self.data_calls: list[dict[str, Any]] = []
 
     async def evaluate(
         self, *, package_path: str, input_document: dict[str, Any]
@@ -168,3 +208,8 @@ class FakeOpaClient(OpaClient):
         # real policy's own `default allow = false` rather than silently
         # allowing everything when a test forgets to configure a response.
         return OpaDecisionResponse(allow=False, deny_reasons=["no response configured"])
+
+    async def set_data(self, *, path: str, document: dict[str, Any]) -> None:
+        self.data_calls.append({"path": path, "document": document})
+        if self._set_data_raise_exc is not None:
+            raise self._set_data_raise_exc
