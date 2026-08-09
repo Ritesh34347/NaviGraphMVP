@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { env } from "@/lib/env";
 
 interface GatewayStatus {
@@ -39,6 +40,9 @@ export default async function HomePage() {
       </p>
       <p>Gateway status: {status.reachable ? "reachable" : "gateway unreachable"}</p>
       <p>{status.detail}</p>
+      <p>
+        <Link href="/chat">Open the chat UI</Link>
+      </p>
     </main>
   );
 }
