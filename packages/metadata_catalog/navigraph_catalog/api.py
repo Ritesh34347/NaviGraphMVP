@@ -26,6 +26,7 @@ from navigraph_catalog.models import (
     CatalogTable,
     ColumnGlossary,
     DataSource,
+    SemanticModelRecord,
 )
 
 
@@ -147,6 +148,90 @@ def list_stale_data_sources(
                 DataSource.tenant_id == tenant_id,
                 (DataSource.last_crawled_at.is_(None)) | (DataSource.last_crawled_at < cutoff),
             )
+        ).scalars()
+    )
+
+
+def save_semantic_model(
+    session: Session, *, tenant_id: str, version: int, compiled_json: dict
+) -> SemanticModelRecord:
+    """Persist a new, not-yet-activated version of `tenant_id`'s semantic
+    model. `compiled_json` is a compiled `navigraph_semantic_model.contracts
+    .SemanticModel`'s own `model_dump()` -- this function stores it opaquely
+    and does not validate its shape.
+
+    `activate_semantic_model` must be called separately to make this the
+    live version `navigraph_kg.ingestion.pipeline` reads -- persisting and
+    activating are deliberately two steps, matching the draft-review-compile
+    boundary Phase 2's onboarding flow needs to preserve.
+    """
+
+    record = SemanticModelRecord(
+        tenant_id=tenant_id,
+        version=version,
+        compiled_json=compiled_json,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def activate_semantic_model(session: Session, *, tenant_id: str, version: int) -> None:
+    """Atomically make `version` the one activated semantic model for
+    `tenant_id`, deactivating whichever version was previously active.
+
+    Two `UPDATE`s in the same transaction, not one -- same reasoning as
+    `set_default_data_source`: the partial unique index
+    (`uq_semantic_models_tenant_active`) would reject activating a new
+    version before the old one is cleared.
+    """
+
+    session.execute(
+        update(SemanticModelRecord)
+        .where(
+            SemanticModelRecord.tenant_id == tenant_id,
+            SemanticModelRecord.activated_at.is_not(None),
+        )
+        .values(activated_at=None)
+    )
+    session.execute(
+        update(SemanticModelRecord)
+        .where(
+            SemanticModelRecord.tenant_id == tenant_id,
+            SemanticModelRecord.version == version,
+        )
+        .values(activated_at=datetime.now(UTC).replace(tzinfo=None))
+    )
+    session.flush()
+
+
+def get_active_semantic_model(
+    session: Session, *, tenant_id: str
+) -> SemanticModelRecord | None:
+    """Return `tenant_id`'s one activated semantic model row, or `None` if
+    it has never activated one. Callers (e.g. `navigraph_kg.ingestion
+    .pipeline`) must treat `None` as "no Semantic Model onboarded yet", not
+    as an error -- onboarding one is additive, never a prerequisite for
+    ingestion to keep working.
+    """
+
+    return session.execute(
+        select(SemanticModelRecord).where(
+            SemanticModelRecord.tenant_id == tenant_id,
+            SemanticModelRecord.activated_at.is_not(None),
+        )
+    ).scalar_one_or_none()
+
+
+def list_semantic_models(session: Session, *, tenant_id: str) -> list[SemanticModelRecord]:
+    """List every persisted version of `tenant_id`'s semantic model, active
+    and inactive, newest version first."""
+
+    return list(
+        session.execute(
+            select(SemanticModelRecord)
+            .where(SemanticModelRecord.tenant_id == tenant_id)
+            .order_by(SemanticModelRecord.version.desc())
         ).scalars()
     )
 

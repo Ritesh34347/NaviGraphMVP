@@ -175,6 +175,9 @@ def _run_pipeline() -> tuple[MagicMock, object]:
         patch("navigraph_kg.ingestion.pipeline.list_tables", return_value=[table]),
         patch("navigraph_kg.ingestion.pipeline.list_columns", return_value=[column]),
         patch("navigraph_kg.ingestion.pipeline.list_glossary", return_value=[glossary_entry]),
+        patch(
+            "navigraph_kg.ingestion.pipeline.get_active_semantic_model", return_value=None
+        ),
     ):
         summary = run_ingestion(
             catalog_session,
@@ -356,6 +359,147 @@ class TestSyncRelationshipConcepts:
             assert "OBJECT_KEY" in call.args[0]
 
 
+class TestSyncRelationshipConceptsFromActivatedSemanticModel:
+    """Phase 1: once a tenant has an activated `SemanticModel`,
+    `_sync_relationship_concepts` must read ITS relationships, not the
+    hardcoded `ontology.RELATIONSHIP_CONCEPTS` seed list -- the fallback
+    path is only for a tenant with no activated model at all (see
+    `TestSyncRelationshipConcepts` above, and every other test in this
+    module, which all patch `get_active_semantic_model` to return `None`
+    specifically to keep exercising that fallback path unchanged)."""
+
+    def test_uses_the_activated_models_relationships_instead_of_the_hardcoded_list(
+        self,
+    ) -> None:
+        from navigraph_semantic_model.contracts import (
+            Entity,
+            EntityBinding,
+            Relationship,
+            RelationshipBinding,
+            SemanticModel,
+        )
+
+        model = SemanticModel(
+            tenant_id=_TENANT_ID,
+            version=1,
+            entities=[
+                Entity(
+                    name="Widget",
+                    bindings=[
+                        EntityBinding(data_source="test-source", table="WIDGETS", key="WIDGET_ID")
+                    ],
+                ),
+                Entity(
+                    name="Gadget",
+                    bindings=[
+                        EntityBinding(data_source="test-source", table="GADGETS", key="GADGET_ID")
+                    ],
+                ),
+            ],
+            relationships=[
+                Relationship(
+                    name="Widget contains Gadget",
+                    subject="Widget",
+                    predicate="CONTAINS",
+                    object="Gadget",
+                    via=RelationshipBinding(
+                        data_source="test-source",
+                        table="WIDGET_GADGETS",
+                        subject_key="WIDGET_ID",
+                        object_key="GADGET_ID",
+                    ),
+                ),
+            ],
+        )
+        fake_record = MagicMock(compiled_json=model.model_dump(mode="json"))
+
+        neo4j_client = MagicMock()
+        catalog_session = MagicMock()
+        connector = _make_connector()
+
+        with (
+            patch("navigraph_kg.ingestion.pipeline.list_tables", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_columns", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_glossary", return_value=[]),
+            patch(
+                "navigraph_kg.ingestion.pipeline.get_active_semantic_model",
+                return_value=fake_record,
+            ),
+        ):
+            summary = run_ingestion(
+                catalog_session,
+                neo4j_client,
+                connector,
+                data_source_id=_DATA_SOURCE_ID,
+                tenant_id=_TENANT_ID,
+            )
+
+        concept_calls = [
+            call
+            for call in neo4j_client.run.call_args_list
+            if "MERGE (rc:RelationshipConcept" in call.args[0]
+        ]
+        assert len(concept_calls) == 1
+        assert concept_calls[0].kwargs["name"] == "Widget contains Gadget"
+        assert concept_calls[0].kwargs["subject_label"] == "Widget"
+        assert concept_calls[0].kwargs["predicate"] == "CONTAINS"
+        assert concept_calls[0].kwargs["object_label"] == "Gadget"
+        assert concept_calls[0].kwargs["realizing_table"] == "WIDGET_GADGETS"
+        assert concept_calls[0].kwargs["subject_key_column"] == "WIDGET_ID"
+        assert concept_calls[0].kwargs["object_key_column"] == "GADGET_ID"
+        assert summary.relationship_concepts_synced == 1
+
+    def test_an_activated_model_with_zero_relationships_syncs_none(self) -> None:
+        from navigraph_semantic_model.contracts import (
+            Entity,
+            EntityBinding,
+            SemanticModel,
+        )
+
+        model = SemanticModel(
+            tenant_id=_TENANT_ID,
+            version=1,
+            entities=[
+                Entity(
+                    name="Widget",
+                    bindings=[
+                        EntityBinding(data_source="test-source", table="WIDGETS", key="WIDGET_ID")
+                    ],
+                ),
+            ],
+        )
+        fake_record = MagicMock(compiled_json=model.model_dump(mode="json"))
+
+        neo4j_client = MagicMock()
+        catalog_session = MagicMock()
+        connector = _make_connector()
+
+        with (
+            patch("navigraph_kg.ingestion.pipeline.list_tables", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_columns", return_value=[]),
+            patch("navigraph_kg.ingestion.pipeline.list_glossary", return_value=[]),
+            patch(
+                "navigraph_kg.ingestion.pipeline.get_active_semantic_model",
+                return_value=fake_record,
+            ),
+        ):
+            summary = run_ingestion(
+                catalog_session,
+                neo4j_client,
+                connector,
+                data_source_id=_DATA_SOURCE_ID,
+                tenant_id=_TENANT_ID,
+            )
+
+        concept_calls = [
+            call
+            for call in neo4j_client.run.call_args_list
+            if "MERGE (rc:RelationshipConcept" in call.args[0]
+        ]
+        assert concept_calls == []
+        assert summary.relationship_concepts_synced == 0
+
+
 class TestRunIngestionSummary:
     def test_returns_correct_per_stage_counts(self) -> None:
         _client, summary, *_ = _run_pipeline()
@@ -417,6 +561,9 @@ class TestRunEcommerceIngestion:
                 "navigraph_kg.ingestion.pipeline.list_glossary",
                 return_value=[glossary_entry],
             ),
+            patch(
+                "navigraph_kg.ingestion.pipeline.get_active_semantic_model", return_value=None
+            ),
         ):
             summary = run_ecommerce_ingestion(
                 catalog_session,
@@ -453,6 +600,9 @@ class TestRunEcommerceIngestion:
             patch("navigraph_kg.ingestion.pipeline.list_tables", return_value=[]),
             patch("navigraph_kg.ingestion.pipeline.list_columns", return_value=[]),
             patch("navigraph_kg.ingestion.pipeline.list_glossary", return_value=[]),
+            patch(
+                "navigraph_kg.ingestion.pipeline.get_active_semantic_model", return_value=None
+            ),
         ):
             run_ecommerce_ingestion(
                 catalog_session,

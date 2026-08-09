@@ -36,6 +36,17 @@ dependencies = [
     # dependency injection, exactly like
     # `navigraph_catalog.ingestion.snowflake_crawler.crawl_and_store` does.
     "navigraph-connector-sdk",
+    # Same local-workspace-dependency reasoning as above: install
+    #   pip install -e packages/semantic_model
+    # before this package (and, transitively, after metadata_catalog --
+    # navigraph-semantic-model itself depends on it). Phase 1 of the build
+    # plan: `_sync_relationship_concepts` reads a tenant's activated
+    # `navigraph_semantic_model.contracts.SemanticModel` via
+    # `navigraph_catalog.api.get_active_semantic_model` +
+    # `navigraph_semantic_model.loader.load_semantic_model`, falling back to
+    # the hardcoded `ontology.RELATIONSHIP_CONCEPTS` only for a tenant that
+    # hasn't onboarded one yet.
+    "navigraph-semantic-model",
 ]
 
 [project.optional-dependencies]

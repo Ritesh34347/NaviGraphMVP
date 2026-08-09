@@ -3855,3 +3855,39 @@ real tenant yet -- see `docs/runbooks/data-source-onboarding.md`; (5) the
 new lineage routes have no per-role policy yet, same caveat `/ask` already
 carries while Azure AD verification stays feature-flagged off -- see
 `_verify_identity`'s own docstring.
+
+### 105. NEW: Phase 1 of the configurable-platform build plan -- `navigraph_kg.ingestion.pipeline` now reads a tenant's activated Semantic Model, closing item 104's "nothing reads from it yet" gap for ingestion specifically
+
+**What changed**: a new `semantic_models` table in `metadata_catalog`
+(migration `0006`, `SemanticModelRecord` model, `save_semantic_model`/
+`activate_semantic_model`/`get_active_semantic_model`/`list_semantic_models`
+in `navigraph_catalog.api`, following `data_sources.is_default`'s exact
+partial-unique-index convention for "at most one activated version per
+tenant"). `navigraph_kg.ingestion.pipeline._sync_relationship_concepts` now
+resolves its relationship concepts via a new `_load_relationship_concepts`
+helper: a tenant's activated `SemanticModel` if one exists, falling back to
+the hardcoded `ontology.RELATIONSHIP_CONCEPTS` list otherwise -- onboarding
+a Semantic Model is additive, never a prerequisite for ingestion to keep
+working. Also fixed a real gap found wiring this: `onboard_data_source.py`'s
+`activate` command validated against the catalog, tagged PII, and synced
+OPA, but never persisted the model anywhere ingestion could read it back
+from -- it now calls `save_semantic_model`/`activate_semantic_model` too.
+
+**What still requires a live environment to actually run**: (1) `alembic
+upgrade head` needs to be run against the real catalog database to create
+`semantic_models`; (2) `tools/scripts/seed_semantic_model_from_ontology.py`
+(new, one-time) needs to be run for real against `navikenz-poc` and
+`ecommerce-poc` to migrate their ingestion onto a persisted Semantic Model --
+until that's done, both tenants keep using the hardcoded fallback list
+(identical output, zero regression, just not yet using the new mechanism for
+real); (3) that seed script's entity bindings are heuristically derived from
+`RELATIONSHIP_CONCEPTS` itself (first subject/object appearance's table/key),
+not independently validated against the live catalog via
+`validate_semantic_model_against_catalog` -- real entity-binding curation is
+Phase 2's onboarding-flow job.
+
+**What Phase 1 deliberately does not touch**: the request-orchestration
+pipeline (Phase 5's job), `authz.rego` (Phase 3's job), and
+`ontology.py`'s `RELATIONSHIP_CONCEPTS` list itself is left in the repo,
+unused once a tenant has an activated model -- deleting it is a separate,
+later decision, not bundled into this change.

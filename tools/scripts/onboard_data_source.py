@@ -2,7 +2,8 @@
 """Onboard a new data source end-to-end: register it, crawl its schema,
 draft a candidate Semantic Model with the Ontology Drafting agent, compile
 a human-reviewed draft into a real `SemanticModel`, and activate it
-(catalog validation, PII compilation, OPA policy sync).
+(catalog validation, PII compilation, persistence + activation in
+`metadata_catalog`'s `semantic_models` table, OPA policy sync).
 
 Five subcommands, meant to be run in this order -- see
 `docs/runbooks/data-source-onboarding.md` for the full walkthrough,
@@ -38,7 +39,12 @@ import uuid
 from pathlib import Path
 
 import yaml
-from navigraph_catalog.api import list_data_sources, register_data_source
+from navigraph_catalog.api import (
+    activate_semantic_model,
+    list_data_sources,
+    register_data_source,
+    save_semantic_model,
+)
 from navigraph_catalog.db import get_engine, get_session_factory, session_scope
 from navigraph_catalog.ingestion.snowflake_crawler import crawl_and_store
 from navigraph_catalog.settings import MetadataCatalogSettings
@@ -271,6 +277,20 @@ def cmd_activate(args: argparse.Namespace) -> int:
 
         tagged = compile_pii_flags(model, session)
         print(f"Catalog validation passed. Tagged {tagged} column(s) is_pii=true.")
+
+        # REAL GAP, found live wiring Phase 1 (navigraph_kg.ingestion.pipeline
+        # ._sync_relationship_concepts now reads this): this command used to
+        # validate + tag PII + sync OPA but never persisted the model
+        # anywhere ingestion could read it back from -- `activate` was not
+        # actually activating anything besides the OPA side. Persist this
+        # version, then mark it the one active version for this tenant.
+        save_semantic_model(
+            session,
+            tenant_id=model.tenant_id,
+            version=model.version,
+            compiled_json=model.model_dump(mode="json"),
+        )
+        activate_semantic_model(session, tenant_id=model.tenant_id, version=model.version)
 
     opa_client = HttpOpaClient()
     asyncio.run(sync_policy_bindings(opa_client, model))

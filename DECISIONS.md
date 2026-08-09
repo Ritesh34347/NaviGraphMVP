@@ -1681,3 +1681,57 @@ toolchain's bundled `setuptools==65.5.0` carries four known CVEs. Fixed by
 adding an explicit `pip install --upgrade setuptools` -- confirmed locally
 that this alone takes pip-audit from 7 findings to 0, with no other real
 vulnerabilities in this workspace.
+
+---
+
+## 2026-08-10 — Phase 1: fallback-first wiring, not a hard cutover, for the Semantic Model into live ingestion
+
+The build plan's Phase 1 goal was making `navigraph_kg.ingestion.pipeline`
+read a tenant's Semantic Model instead of the hardcoded
+`ontology.RELATIONSHIP_CONCEPTS` list. The real design decision was HOW to
+cut over: we chose fallback-first (activated model if one exists, else the
+hardcoded list), not a hard requirement that every tenant have one before
+ingestion works.
+
+**What we considered and rejected**: making a Semantic Model mandatory --
+`_sync_relationship_concepts` raising or refusing to run without one. This
+would have been a real, forced-migration moment: every existing/future
+tenant, including every test fixture, would need one before ingestion could
+run at all. Rejected because onboarding a Semantic Model is supposed to be
+Phase 2's opt-in flow, not a breaking prerequisite Phase 1 silently imposes
+on it -- and because the whole point of a zero-regression migration is that
+turning this on for real tenants is a separate, deliberate, per-tenant step
+(running the new `seed_semantic_model_from_ontology.py`), not bundled into
+the code change that makes it possible.
+
+**Why the seed script reproduces ALL 18 concepts for either tenant, not a
+partitioned subset**: `ontology.py` visually groups its 18 entries into a
+brokerage set and an e-commerce set (a comment, not enforced code), but
+`_sync_relationship_concepts` has always synced all 18 regardless of which
+`run_*_ingestion` entry point calls it. A zero-regression migration's job is
+to match today's real, if arguably-accidental, output exactly -- fixing that
+scoping question is real, separate, in-scope future work, not something to
+fold into a migration script whose only job is "don't change anything yet."
+
+**Real gap found and fixed while wiring this, not scope creep**:
+`onboard_data_source.py`'s `activate` command validated against the catalog,
+tagged PII, and synced OPA -- but never persisted the model anywhere
+ingestion could read it back from. Without `save_semantic_model`/
+`activate_semantic_model` being added there too, the entire onboarding CLI
+would keep "activating" models that Phase 1's own new fallback logic could
+never see.
+
+**Real, would-have-broken-the-build gap found and fixed**:
+`navigraph-knowledge-graph` now depends on `navigraph-semantic-model`
+directly. `packages/agent_runtime/Dockerfile` and all three CI workflows
+that install this workspace from source (`ci.yml`, `adversarial-tests.yml`,
+`security-scan.yml`) installed `knowledge_graph` before `semantic_model` --
+verified locally that this fails resolving the new dependency from PyPI (it
+isn't published there). Fixed by moving `semantic_model`'s install ahead of
+`knowledge_graph`'s in all four places, matching the install-order
+convention this repo already established for `metadata_catalog`/
+`connector_sdk`.
+
+**Verification**: full `pytest packages/` (567 passed, 8 skipped, up from
+564 pre-Phase-1), `ruff check` clean, `mypy` clean (158 files) -- all run
+locally in a clean virtualenv, not assumed from a plausible-looking diff.

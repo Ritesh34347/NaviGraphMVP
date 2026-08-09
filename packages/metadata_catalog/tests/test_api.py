@@ -23,17 +23,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from navigraph_catalog.api import (
+    activate_semantic_model,
     find_column,
+    get_active_semantic_model,
     get_default_data_source,
     get_table,
     list_columns,
     list_data_sources,
     list_glossary,
+    list_semantic_models,
     list_stale_data_sources,
     list_tables,
     mark_columns_pii,
     mark_data_source_crawled,
     register_data_source,
+    save_semantic_model,
     set_default_data_source,
     upsert_glossary,
     upsert_schema_tree,
@@ -44,6 +48,7 @@ from navigraph_catalog.models import (
     CatalogTable,
     ColumnGlossary,
     DataSource,
+    SemanticModelRecord,
 )
 from navigraph_connectors.base import (
     ColumnDescriptor,
@@ -645,3 +650,76 @@ class TestMarkColumnsPii:
         )
 
         assert first == second == 2
+
+
+class TestSaveSemanticModel:
+    def test_adds_and_flushes_a_correctly_constructed_record(self) -> None:
+        session = MagicMock()
+        compiled_json = {"tenant_id": "tenant-a", "version": 1, "entities": []}
+
+        result = save_semantic_model(
+            session, tenant_id="tenant-a", version=1, compiled_json=compiled_json
+        )
+
+        session.add.assert_called_once()
+        added = session.add.call_args.args[0]
+        assert isinstance(added, SemanticModelRecord)
+        assert added.tenant_id == "tenant-a"
+        assert added.version == 1
+        assert added.compiled_json == compiled_json
+
+        session.flush.assert_called_once()
+        assert result is added
+
+
+class TestActivateSemanticModel:
+    def test_deactivates_the_old_version_before_activating_the_new_one(self) -> None:
+        """Same reasoning as `set_default_data_source`: the partial unique
+        index would reject activating a new version before the old one is
+        cleared, so the "unset" UPDATE must run before the "set" UPDATE, in
+        the same transaction."""
+
+        session = MagicMock()
+
+        activate_semantic_model(session, tenant_id="tenant-a", version=2)
+
+        assert session.execute.call_count == 2
+        session.flush.assert_called_once()
+
+        unset_call, set_call = session.execute.call_args_list
+        unset_compiled = unset_call.args[0].compile()
+        set_compiled = set_call.args[0].compile()
+        assert unset_compiled.params["activated_at"] is None
+        assert set_compiled.params["activated_at"] is not None
+
+
+class TestGetActiveSemanticModel:
+    def test_returns_the_active_record_when_one_exists(self) -> None:
+        session = MagicMock()
+        expected = MagicMock(spec=SemanticModelRecord)
+        session.execute.return_value.scalar_one_or_none.return_value = expected
+
+        result = get_active_semantic_model(session, tenant_id="tenant-a")
+
+        assert result is expected
+        session.execute.assert_called_once()
+
+    def test_returns_none_when_no_model_has_ever_been_activated(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = get_active_semantic_model(session, tenant_id="tenant-a")
+
+        assert result is None
+
+
+class TestListSemanticModels:
+    def test_builds_expected_query_and_returns_scalars(self) -> None:
+        session = MagicMock()
+        expected = [MagicMock(spec=SemanticModelRecord), MagicMock(spec=SemanticModelRecord)]
+        session.execute.return_value.scalars.return_value = expected
+
+        result = list_semantic_models(session, tenant_id="tenant-a")
+
+        assert result == expected
+        session.execute.assert_called_once()

@@ -188,6 +188,50 @@ class CatalogColumn(Base):
     )
 
 
+class SemanticModelRecord(Base):
+    """One persisted, versioned snapshot of a tenant's compiled
+    `navigraph_semantic_model.contracts.SemanticModel`.
+
+    Named `*Record` (not `SemanticModel`) to avoid colliding with the
+    Pydantic model of that name in `packages/semantic_model` -- this is the
+    storage row; `navigraph_semantic_model.contracts.SemanticModel` is the
+    validated document it holds (`compiled_json`, that model's own
+    `model_dump()`). `navigraph_kg.ingestion.pipeline` reads the one
+    activated row per tenant as its real source of truth for which
+    relationships to sync, replacing `navigraph_kg.ontology
+    .RELATIONSHIP_CONCEPTS`'s hardcoded list for any tenant that has
+    onboarded one.
+    """
+
+    __tablename__ = "semantic_models"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "version", name="uq_semantic_models_tenant_version"),
+        # At most one ACTIVATED version per tenant at a time -- mirrors
+        # data_sources.uq_data_sources_tenant_default's partial-unique-index
+        # pattern exactly. Many inactive (draft/superseded) versions may
+        # coexist; activating a new one deactivates whichever was active.
+        Index(
+            "uq_semantic_models_tenant_active",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("activated_at IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id: Mapped[str] = mapped_column(index=True, nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False)
+    compiled_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # NULL until deliberately activated via `api.activate_semantic_model` --
+    # a freshly-saved version is a draft, not yet live for ingestion.
+    activated_at: Mapped[datetime | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class ColumnGlossary(Base):
     """A business glossary entry for a single `CatalogColumn`.
 

@@ -38,11 +38,17 @@ jobs:
         # broken, not something this PR's own changes caused. Matches
         # ci.yml's real install list/order exactly, since tests/security/
         # exercises the same packages that suite installs.
+        #
+        # Phase 1 of the configurable-platform build plan added semantic_model
+        # here too, BEFORE knowledge_graph -- knowledge_graph now depends on
+        # navigraph-semantic-model directly, so installing it after
+        # knowledge_graph fails resolving that dependency from PyPI.
         run: |
           python -m pip install --upgrade pip
           pip install -e packages/shared
           pip install -e packages/connector_sdk
           pip install -e packages/metadata_catalog
+          pip install -e packages/semantic_model
           pip install -e packages/knowledge_graph
           pip install -e packages/federation
           pip install -e packages/lineage

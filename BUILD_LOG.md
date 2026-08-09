@@ -2197,3 +2197,35 @@ pip-audit silently never ran at all -- fixing that then surfaced a real
 checks (`k8s-manifests-ci.yml`'s canary-weight proof,
 `terraform-plan.yml`) were confirmed pre-existing and unrelated via
 cross-branch `gh run list` comparison and left alone.
+
+## 2026-08-10 — Phase 1: Semantic Model wired into live ingestion
+
+`navigraph_kg.ingestion.pipeline._sync_relationship_concepts` now reads a
+tenant's activated `navigraph_semantic_model.contracts.SemanticModel` via a
+new `_load_relationship_concepts` helper, falling back to the hardcoded
+`ontology.RELATIONSHIP_CONCEPTS` list for any tenant that hasn't onboarded
+one yet. Full rationale for the fallback-first design (vs. a hard cutover)
+is in `DECISIONS.md`'s matching entry; `LIMITATIONS.md` item 105 has the
+full what-changed/what-still-needs-a-live-run breakdown.
+
+New: a `semantic_models` table in `metadata_catalog` (migration `0006`,
+`SemanticModelRecord`, and `save_semantic_model`/`activate_semantic_model`/
+`get_active_semantic_model`/`list_semantic_models` in `navigraph_catalog
+.api`, mirroring `data_sources.is_default`'s partial-unique-index pattern
+exactly), and a one-time `tools/scripts/seed_semantic_model_from_ontology.py`
+to migrate `navikenz-poc`/`ecommerce-poc` onto a persisted model matching
+today's ingestion output exactly (not yet run against a live database --
+this session had no live Postgres access).
+
+Fixed along the way: `onboard_data_source.py`'s `activate` command now
+actually persists+activates the model it validates (it previously only
+validated/tagged-PII/synced-OPA, never wiring into anything Phase 1's new
+fallback logic could read); and `packages/agent_runtime/Dockerfile` plus all
+three CI workflows that install this workspace from source now install
+`semantic_model` before `knowledge_graph` (a new real dependency,
+`knowledge_graph` -> `semantic_model`, that would otherwise fail resolving
+from PyPI).
+
+Verified for real: full `pytest packages/` (567 passed, 8 skipped, up from
+564), `ruff check` clean, `mypy` clean (158 files) -- run locally in a clean
+virtualenv against this change's actual code.
