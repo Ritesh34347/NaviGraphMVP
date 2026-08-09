@@ -1012,12 +1012,23 @@ called by any new agent's own JSON-parsing path, not reinvented.
   transactions has each customer made"): the generated `SUM`-based
   aggregate produced nonsensical per-customer totals (e.g. "1,229,737,256
   transactions"), triggering 14 `narrative_contains_unverified_number`
-  errors — `sql_generation.agent._aggregation_function`'s current rule
-  (numeric `data_type` + a measure-shaped intent → `SUM`) does not
+  errors — `sql_generation.agent._aggregation_function`'s rule at the time
+  (numeric `data_type` + a measure-shaped intent → `SUM`) did not
   distinguish "sum this quantity" from "count these rows," which a
-  "how many X" phrasing needs. Not fixed here — a real, scoped gap for
-  whichever future phase revisits SQL Generation's aggregation-choice
-  heuristic.
+  "how many X" phrasing needs. **PARTIALLY RESOLVED (2026-08-09, Phase
+  12.4)**: `_aggregation_function` now checks an explicit,
+  per-tenant-declared `metric_aggregations` map (a
+  `navigraph_semantic_model.Metric.aggregation`) before falling back to
+  this same heuristic — a tenant that declares `transaction_count`'s
+  aggregation as `COUNT` gets it right structurally, not by luck. Proven
+  with regression tests reproducing this exact bug shape. **Still open**:
+  the live Request Orchestrator has no mechanism yet to resolve which
+  Semantic Model applies to a given request (`metric_aggregations` is
+  always `{}` in the current live path — Phase 13's onboarding/activation
+  scope), so this fix is real and tested but not yet exercised end-to-end
+  against a live request; and no live Snowflake/Anthropic access exists in
+  this sandbox to re-run `eval/run_harness` and confirm `gq_002` itself
+  now scores correctly.
 - **Two real schema-resolution misses** (`gq_007`: "transaction volume" +
   "markets"; `gq_010`: "transaction pattern"): Ontology/Semantic Retrieval
   failed to resolve these real phrasings to any real column against a
@@ -1613,3 +1624,89 @@ ID/managed-identity client ID/hostname alone is not independently
 sufficient to access anything without also compromising real Azure RBAC
 (the actual access boundary) -- but that judgment call has not been made
 or recorded anywhere yet.
+
+### 61. PARTIALLY RESOLVED (2026-08-09, Phase 12): No Semantic Model artifact existed — ontology/reference-data SQL/OPA role vocabulary were all hardcoded per tenant
+
+**What was deferred**: A versioned, per-tenant configuration artifact
+turning "what this data means" from Python/SQL/Rego into data — the single
+biggest blocker (per the earlier client-usage-gap analysis) to onboarding
+a second real client without a code change each time.
+
+**Resolution**: New `navigraph_semantic_model` package: a Pydantic
+`SemanticModel` (`Entity`/`EntityBinding`, `Relationship`/
+`RelationshipBinding`, `Metric` with an explicit `aggregation` field,
+`ReferenceLookup`, `PolicyBindings`), a loader with two separate steps
+(offline structural validation, then a catalog-aware pass confirming every
+binding names a real, currently-crawled `(data_source, table, column)`
+triple), and `compile_sensitivity`/`opa_sync` helpers. Three real,
+tested consumers now compile FROM this artifact instead of hardcoded
+per-tenant code:
+
+- `navigraph_kg.ingestion.pipeline` stage 4 (`RelationshipConcept` nodes)
+  and stage 3's four simple Tier-1 lookups (`Channel`/`CustomerType`/
+  `RiskLevel`/`InvestmentCapacityBand`) — `navigraph_kg.ontology
+  .RELATIONSHIP_CONCEPTS` (hardcoded Python) and four
+  `reference_data_queries.py` SQL constants are retired. This also
+  surfaced and fixed a real, load-bearing gap it wasn't originally scoped
+  to touch: `OntologyAgent` (part of the live request pipeline) was
+  reading `RELATIONSHIP_CONCEPTS` directly as a hardcoded Python list
+  rather than querying the `RelationshipConcept` nodes stage 4 writes to
+  Neo4j — a new `navigraph_kg.api.list_relationship_concepts` closes that,
+  making the agent itself genuinely tenant-agnostic code.
+- `infra/opa/policies/authz.rego`'s `allowed_roles` (the one genuinely
+  tenant-specific fact in an otherwise generic policy file) now reads a
+  real per-tenant OPA data document (`data.navigraph.tenants[tenant_id]
+  .allowed_roles`, pushed via a new `OpaClient.set_data`/
+  `navigraph_semantic_model.opa_sync.sync_policy_bindings`), falling back
+  to the original hardcoded set when no document exists for a tenant.
+  Verified against a real, live OPA server (binary fetched for this pass):
+  fallback, override in both directions, an empty list as a genuine
+  lockout, and cross-tenant isolation — all for real, plus the full
+  pre-existing adversarial suite re-run against the same live, modified
+  policy with zero regressions.
+- `sql_generation.agent._aggregation_function` now checks an explicit
+  `metric_aggregations` map before its data-type/intent heuristic — see
+  item 38's updated entry for the full detail on this specific structural
+  fix.
+
+Every existing test/pipeline count that could be compared before/after
+stayed byte-for-byte identical, now proven from config instead of
+hardcoded Python — the real "identical output, now data-driven" proof at
+the unit tier.
+
+**Deliberately NOT generalized in this pass, named rather than rushed**:
+`Asset`/`Market`'s richer, edge-producing reference-data crawl (conditional
+`LISTED_ON`/`IN_SECTOR`/`IN_INDUSTRY` derivation) still reads dedicated,
+hardcoded `reference_data_queries.py` SQL — only the four uniform "distinct
+lookup values" queries were generalized. Forcing Asset/Market's real,
+non-uniform business logic into a generic schema without a proper design
+pass would have risked a rushed, half-correct generalization of a real
+financial data pipeline.
+
+**Still open**:
+- No live Snowflake/Neo4j/Postgres/Redis/Anthropic access exists in this
+  sandbox, so Phase 12's own stated exit criterion — re-running the real
+  10-question golden set (`eval/run_harness`) against the real
+  `FIDELITY_POC` tenant and comparing to a pre-Semantic-Model baseline —
+  could not be performed. No such baseline run is even committed in
+  `eval/results/` today (confirmed empty except `.gitkeep`) to compare
+  against. This is a real, named gap, not silently assumed passed —
+  whoever has that access should capture a baseline BEFORE activating a
+  real Semantic Model for `navikenz-poc`, then re-run and compare.
+- No live tenant has ever actually been migrated to a real Semantic
+  Model — no YAML document exists yet expressing `navikenz-poc`'s real,
+  current `RELATIONSHIP_CONCEPTS`/reference-data values as a validated,
+  catalog-checked `SemanticModel`. The compiler is real and tested against
+  fakes; a genuine first activation against the live catalog is a real
+  follow-up, not done here.
+- No mechanism exists yet for the live Request Orchestrator to resolve
+  "which Semantic Model applies to this request" — `SqlGenerationPayload
+  .metric_aggregations` is always `{}` in the live path today. This is
+  explicitly Phase 13's onboarding/activation scope (LLM-assisted
+  drafting, a real onboarding CLI, a re-validation scheduler), not
+  attempted here.
+- `AzureAdTokenVerifier`-style "verified against a live system" proof
+  does not exist for `sync_policy_bindings`/`compile_sensitivity` either —
+  both are verified against `FakeOpaClient`/mocked catalog sessions (plus
+  the OPA half against a real, temporarily-launched OPA server for this
+  pass), never a live docker-compose stack.

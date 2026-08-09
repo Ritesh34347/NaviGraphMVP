@@ -1245,3 +1245,77 @@ relative to their names, proving resolution follows the real
 `connection_ref`, not naming or insertion-order coincidence. Full
 repo-wide suite (packages + this new integration test): 322 passed, 7
 skipped, zero regressions; `ruff check` clean.
+
+## 2026-08-09 — Phase 12: the Semantic Model core (LIMITATIONS.md item 61)
+
+Four sub-passes, each committed and verified independently, turning
+"what this data means" from hardcoded Python/SQL/Rego into a versioned,
+per-tenant, validated config artifact:
+
+**12.1 — contract + loader**: new `navigraph_semantic_model` package.
+`SemanticModel` (Pydantic, `AgentInput`/`AgentOutput` discipline) with
+`Entity`/`EntityBinding`, `Relationship`/`RelationshipBinding`, `Metric`
+(explicit `aggregation`, required unless `COUNT`), `ReferenceLookup`,
+`PolicyBindings`. `load_semantic_model` does offline structural
+validation only; `validate_semantic_model_against_catalog` separately
+confirms every binding's `(data_source, table, column)` triple against
+the real, live `navigraph_catalog`; `compile_sensitivity` applies declared
+sensitive columns as real `is_pii` flags via the existing
+`mark_columns_pii`. 29 tests.
+
+**12.2 — knowledge-graph ingestion compiles from the Semantic Model**:
+`navigraph_kg.ingestion.pipeline`'s stage 4 (`RelationshipConcept` nodes)
+and stage 3's four simple Tier-1 lookups now take a `SemanticModel`
+instead of reading `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`
+(retired) or four hardcoded `reference_data_queries.py` SQL constants.
+Every existing pipeline-test count stayed identical, now proven from
+config. Found and fixed a real, load-bearing gap outside this task's
+original scope: `OntologyAgent` (live request pipeline) was reading
+`RELATIONSHIP_CONCEPTS` directly rather than querying the graph's own
+`RelationshipConcept` nodes -- added `navigraph_kg.api
+.list_relationship_concepts` and switched the agent to use it, which is
+what actually makes it tenant-agnostic code. Asset/Market's richer,
+edge-producing crawl deliberately NOT generalized this pass (named, not
+silently left half-done -- see LIMITATIONS.md item 61).
+
+**12.3 — per-tenant OPA data documents**: `authz.rego`'s `allowed_roles`
+(the one real tenant-specific fact in an otherwise generic policy) now
+reads `data.navigraph.tenants[input.tenant_id].allowed_roles`, falling
+back to the original hardcoded set when unconfigured. `OpaClient` gained
+`set_data()` (a real `PUT /v1/data/{path}`) on both `HttpOpaClient` and
+`FakeOpaClient`; `navigraph_semantic_model.opa_sync` compiles
+`policy_bindings` and pushes them. Verified against a real, live OPA
+server (binary fetched specifically for this pass, not simulated):
+fallback, override in both directions, empty-list-as-real-lockout, and
+cross-tenant isolation -- plus the full pre-existing `tests/security/`
+adversarial suite re-run against the same live, modified policy with zero
+regressions.
+
+**12.4 — SQL Generation's explicit `metric.aggregation`**:
+`SqlGenerationPayload.metric_aggregations: dict[str, str] = {}` --
+`_aggregation_function` checks it before its data-type/intent heuristic.
+Structurally closes the real Phase 8 `gq_002` bug (LIMITATIONS.md item
+38's SUM-vs-COUNT gap): a tenant that declares an aggregation gets it
+right by config, not by the heuristic guessing correctly. New regression
+tests reproduce the exact bug shape and prove the override works in both
+directions. Zero behavior change for any request that doesn't supply the
+field (every pre-existing test passes unchanged).
+
+**Full repo state after all four sub-passes**: 406 passed, 7 skipped,
+zero regressions; `ruff check` clean across every touched package.
+
+**What Phase 12's own exit criterion asked for and could NOT be done
+here**: re-running the real 10-question golden set
+(`python -m eval.run_harness`) against the real `FIDELITY_POC` tenant and
+comparing to a pre-Semantic-Model baseline. This sandbox has no live
+Snowflake, Neo4j, Postgres, Redis, or Anthropic access, and no baseline
+run is committed in `eval/results/` to compare against even if it did.
+Substituted with the best available real proof at each layer: real unit
+tests proving identical compiled output from config, a real (temporarily
+launched) OPA server proving the policy mechanism, and real regression
+tests reproducing the specific historical bug the aggregation fix
+targets. See LIMITATIONS.md item 61 for the complete, itemized list of
+what remains genuinely open -- most centrally, no live tenant has actually
+been migrated to a real Semantic Model yet, and the live Request
+Orchestrator has no mechanism yet to resolve which Semantic Model applies
+to a given request (Phase 13's onboarding/activation scope).

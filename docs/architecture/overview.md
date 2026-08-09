@@ -198,3 +198,13 @@ mid-pipeline crash recovery given the LangGraph-to-plain-function reversal
 `query.caching` is now wired into the live Request Orchestrator sequence
 (item 59, RESOLVED 2026-08-09). See `LIMITATIONS.md` for the complete,
 current list.
+
+A new package, `navigraph_semantic_model` (Phase 12, item 61), defines a
+versioned, per-tenant `SemanticModel` config artifact (entities,
+relationships, metrics with an explicit aggregation, policy bindings) that
+`navigraph_kg`'s ingestion pipeline and `infra/opa/policies/authz.rego`'s
+per-tenant role vocabulary now compile from, replacing hardcoded Python/SQL/
+Rego for those two consumers. It is not yet wired into the live Request
+Orchestrator (no mechanism yet resolves which Semantic Model applies to a
+given request), and no live tenant has been migrated to one — see
+`LIMITATIONS.md` item 61 for the full detail.

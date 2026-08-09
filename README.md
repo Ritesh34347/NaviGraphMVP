@@ -104,5 +104,9 @@ run against a live Entra tenant, and it never sees row-/column-level
 detail beyond PII; Trino federation is built but not yet the default
 execution route; and SOC 2 controls are scaffolded, not audited.
 `query.caching` is now wired into the live request pipeline (real lookup
-before, and store after, Data Federation). See `LIMITATIONS.md` for the
-complete, current list.
+before, and store after, Data Federation). A new `navigraph_semantic_model`
+package (a versioned, per-tenant config artifact) now drives knowledge-graph
+ingestion and OPA's per-tenant role vocabulary, replacing hardcoded
+Python/SQL/Rego for those two consumers — but no live tenant has been
+migrated to one yet, and it isn't wired into the live Request Orchestrator.
+See `LIMITATIONS.md` for the complete, current list.

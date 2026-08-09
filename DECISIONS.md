@@ -969,6 +969,77 @@ data_source_id=<fidelity_poc_snowflake_v2's UUID>)` once, and then
 re-verify the golden-question eval suite, since this does change which
 data source the pipeline resolves to by default going forward.
 
+## 2026-08-09 — The Semantic Model is its own package, not folded into `navigraph_kg` or `navigraph_catalog`
+
+`navigraph_semantic_model` has three real consumers (knowledge-graph
+ingestion, OPA policy sync, and — once wired — SQL Generation), and its
+catalog-validating loader depends on `navigraph_catalog`. We considered
+putting the contract inside `navigraph_kg` (its first and biggest
+consumer) and rejected it: that would make `navigraph_agents` (which
+needs the contract for a future `metric_aggregations` resolution step,
+even though it doesn't import it directly today) depend on the entire
+knowledge-graph package's Neo4j-specific machinery just to see a Pydantic
+model. A new, small, dependency-light package (only `pydantic`, `pyyaml`,
+`navigraph-metadata-catalog`, `navigraph-shared`) is what every future
+consumer can depend on without pulling in unrelated machinery — the same
+reasoning that already put `RequestContext` in `navigraph_shared` rather
+than in whichever agent used it first.
+
+## 2026-08-09 — `Relationship.subject`/`.object` are free-form labels, not required to be declared `Entity` names
+
+Initially designed requiring both sides of a `Relationship` to reference
+this same document's own declared `Entity` list (structural referential
+integrity, like `Metric.entity`). Building the real migration of
+`navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` immediately broke this: real
+relationships connect a business concept (`Customer`, `Transaction`) to a
+Tier-1 reference/dimension label (`Channel`, `RiskLevel`, `Market`,
+`Asset`) that is never a catalog-bound `Entity` in this contract's sense
+— `Customer`/`Transaction` themselves are deliberately excluded from the
+graph entirely (see `navigraph_kg.ingestion.pipeline`'s module docstring),
+so they can never legitimately be `Entity`s either. We removed the
+constraint rather than force every relationship endpoint into an artificial
+`Entity` declaration with no real table binding behind it — `Relationship`
+subject/object are exactly what `RELATIONSHIP_CONCEPTS`' original
+`subject_label`/`object_label` fields always were: free-form conceptual
+tags `OntologyAgent` matches against a question's extracted entities as
+plain strings, never dereferenced as a foreign key into this document's
+own `entities` list. `Metric.entity` keeps the stricter requirement,
+since a metric always needs to resolve to one real, catalog-bound column.
+
+## 2026-08-09 — OPA per-tenant facts pushed via the real Data API (`set_data`), not a bundle service
+
+`infra/opa/conf/config.yaml` runs OPA bundle-less (policies mounted from a
+local directory, no bundle registry) — a real production deployment would
+push tenant facts via a bundle service instead. We considered standing up
+a minimal bundle mechanism for this pass and rejected it: that's
+real, separate infrastructure work (a bundle server, a build/publish step)
+unrelated to what Phase 12.3 actually needed to prove (that per-tenant
+policy facts CAN be separated from policy logic at all). OPA's real,
+already-running server exposes a full Data API regardless of bundle
+config, so `OpaClient.set_data` (`PUT /v1/data/{path}`) is a genuine,
+supported mechanism today, not a workaround — verified against a real,
+temporarily-launched OPA binary in this pass, including the exact
+fallback/override/isolation semantics a real bundle-based deployment would
+also need to get right. Migrating to a bundle service later is additive
+(the Rego policy's own `data.navigraph.tenants[...]` lookup doesn't care
+how that data arrived), not a rewrite.
+
+## 2026-08-09 — `SqlGenerationPayload.metric_aggregations` is a plain, pre-resolved dict, not a `navigraph_semantic_model` import
+
+Consistent with `CatalogInventoryEntry`'s established "no direct
+cross-agent-package contract imports" convention (`DECISIONS.md`/contract
+docstrings elsewhere), extended here to a cross-cutting artifact package:
+`sql_generation`'s contracts do not import `navigraph_semantic_model`
+directly, even though the value flowing through `metric_aggregations`
+conceptually comes from a `Metric.aggregation`. Whichever caller has
+already resolved a real Semantic Model for a request is responsible for
+compiling it down to a plain `dict[str, str]` first. This keeps
+`agent_runtime` from gaining a new package dependency for a single field,
+and keeps SQL Generation's own contract testable and constructible with
+zero knowledge of the Semantic Model package's existence — exactly like
+every other agent-to-agent data flow in this codebase already works
+through the Coordinator, never direct imports between sibling packages.
+
 ## 2026-08-09 — Real Azure AD JWT verification lives in the gateway, with a loudly-logged fallback, not as a hard requirement everywhere
 
 Resolving LIMITATIONS.md item 23 needed a decision on where verification
