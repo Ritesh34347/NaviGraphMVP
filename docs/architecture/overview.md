@@ -131,9 +131,12 @@ executes against real data.
 All four originally-planned Guardrail agents are built, including a real
 (not placeholder) OPA policy. What's still genuinely open: the policy only
 ever sees role + tenant, never row-/column-level detail (PII specifically
-is a separate layer, the PII Exposure Checker agent); and it trusts
-caller-supplied `claims.tenant_id` since no real Azure AD JWT verification
-exists yet (`LIMITATIONS.md` item 23).
+is a separate layer, the PII Exposure Checker agent); and while the
+gateway now real-verifies an Azure AD bearer token when configured
+(`navigraph_shared.auth.AzureAdTokenVerifier`, `LIMITATIONS.md` item 23,
+RESOLVED), no live Entra tenant has verified this end-to-end, and
+`claims.tenant_id` only becomes meaningfully trustworthy once a real Entra
+app registration is configured to emit it.
 
 ### Query execution and Ops domains
 
@@ -185,10 +188,13 @@ and 35 (all marked RESOLVED as of this pass) — see those entries for the
 history of how stale this document previously was.
 
 What's genuinely still open is not "which agents exist" but specific,
-already-logged functional gaps: no Azure AD JWT verification, so OPA's real
-RBAC/ABAC policy still trusts caller-supplied claims (item 23); Trino not
-yet the default execution route (item 3); and no mid-pipeline crash
-recovery given the LangGraph-to-plain-function reversal (item 39).
+already-logged functional gaps: real Azure AD JWT verification exists and
+is wired into the gateway, but has never been exercised against a live
+Entra tenant, and OPA's real RBAC/ABAC policy's tenant-claim check isn't
+meaningfully trustworthy until one is configured (item 23, RESOLVED at the
+code level); Trino not yet the default execution route (item 3); and no
+mid-pipeline crash recovery given the LangGraph-to-plain-function reversal
+(item 39).
 `query.caching` is now wired into the live Request Orchestrator sequence
 (item 59, RESOLVED 2026-08-09). See `LIMITATIONS.md` for the complete,
 current list.

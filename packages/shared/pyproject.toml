@@ -23,6 +23,10 @@ dependencies = [
     # doesn't require to actually be usable at import time.
     "azure-identity",
     "azure-keyvault-secrets",
+    # Lazily imported inside AzureAdTokenVerifier only, same convention.
+    # The `crypto` extra pulls in `cryptography`, required for RS256
+    # signature verification (Azure AD tokens are never HS256/none).
+    "pyjwt[crypto]",
 ]
 
 [project.optional-dependencies]

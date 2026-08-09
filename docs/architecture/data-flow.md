@@ -27,11 +27,14 @@ quarter, and why did it spike in the Southwest?"*
 ## 1. Gateway receives the request
 
 The `gateway` service (`packages/gateway`) receives `POST /ask` with the
-question text and the caller's `tenant_id`/`user_id`/`roles`/`claims`
-(caller-supplied today — no real Azure AD JWT verification exists yet, see
-`LIMITATIONS.md`'s Azure AD token-verification item). It mints a `trace_id`,
-builds a `RequestContext`, and forwards the request over HTTP to the
-agent-runtime's real Request Orchestrator (`POST
+question text and `tenant_id`. When `AZURE_AD_TENANT_ID`/`AZURE_AD_AUDIENCE`
+are configured, `user_id`/`roles`/`claims` come from a real, cryptographically
+verified `Authorization: Bearer` token instead (`navigraph_shared.auth
+.AzureAdTokenVerifier` — see `LIMITATIONS.md`'s Azure AD token-verification
+item, RESOLVED at the code level but never run against a live Entra
+tenant); otherwise they remain caller-supplied, exactly as before. It mints
+a `trace_id`, builds a `RequestContext`, and forwards the request over HTTP
+to the agent-runtime's real Request Orchestrator (`POST
 /agents/orchestrator/request_orchestrator/invoke`) — a real network hop
 between two separate containers, not an in-process call.
 
@@ -82,10 +85,15 @@ naming exactly which check failed. OPA enforces a real, deny-by-default
 RBAC + tenant-ABAC policy (`infra/opa/policies/authz.rego`, hardened via
 `tests/security/`'s adversarial suite — `LIMITATIONS.md` item 4, RESOLVED),
 not a placeholder. What it doesn't do: see row-/column-level detail (PII
-specifically is the separate PII Exposure Checker agent's job), or verify
-that the caller's claims are cryptographically genuine — no real Azure AD
-JWT verification exists yet (item 23), so `claims.tenant_id` is trusted as
-given.
+specifically is the separate PII Exposure Checker agent's job). Claims
+CAN now be cryptographically verified — the gateway's `/ask` endpoint
+verifies a real Azure AD bearer token via `navigraph_shared.auth
+.AzureAdTokenVerifier` when `AZURE_AD_TENANT_ID`/`AZURE_AD_AUDIENCE` are
+configured (item 23, RESOLVED) — but no live Entra tenant has ever
+exercised this end-to-end, and `claims.tenant_id` only becomes trustworthy
+once a real Entra app registration is configured to emit NaviGraph's own
+tenant identifier as a claim. Until then (and always, when those env vars
+are unset), `claims` is trusted as given.
 
 ## 5. Query domain: optimization, planning, and real execution
 

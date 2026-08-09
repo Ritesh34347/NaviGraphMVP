@@ -1163,3 +1163,60 @@ sandbox has no connectivity to the live `navikenz-poc` metadata catalog
 call against that live system, and re-running the golden-question eval
 suite afterward to confirm the switch doesn't regress anything, are both
 real follow-up steps for whoever has that access -- not done here.
+
+## 2026-08-09 — Phase 11 part 2: real Azure AD JWT verification (LIMITATIONS.md item 23)
+
+Built the dedicated, careful pass the previous two entries in this log
+explicitly deferred to. New `navigraph_shared.auth` package (mirroring
+`navigraph_shared.opa`/`.secrets`'s exact ABC/real/fake triad):
+`TokenVerifier` (ABC), `AzureAdTokenVerifier` (real -- PyJWT-based RS256
+signature verification against a real JWKS endpoint, plus issuer/audience/
+expiry checks, `algorithms=["RS256"]` passed explicitly as an allowlist),
+`FakeTokenVerifier` (no-crypto test double). `packages/gateway
+/navigraph_gateway/main.py`'s `/ask` endpoint now requires a real
+`Authorization: Bearer <token>` header and builds `RequestContext.user_id`/
+`roles`/`claims` from the verified token -- entirely replacing, never
+merging with, whatever the caller also puts in the request body -- when
+`AZURE_AD_TENANT_ID`/`AZURE_AD_AUDIENCE` are both configured; falls back to
+the original caller-supplied trust model (loudly logged) otherwise, same
+pattern as `_build_secrets_provider`'s item-21 fallback.
+
+Verified with real cryptography, not mocks: `packages/shared/tests
+/test_auth_client.py` (19 tests) generates a real RSA keypair, signs real
+JWTs with PyJWT, and builds a real JWKS document -- only the actual
+network fetch is replaced (a `jwt.PyJWKClient` subclass overriding just
+`fetch_data()`), so signature verification, `kid` matching, and
+key-rotation refresh-on-miss are all real, unmodified PyJWT/`cryptography`
+code paths. Proves two classic JWT forgery attacks are actually defeated,
+not just assumed defended against by construction: an `alg: none`
+(unsigned) token, and an HS256 token hand-forged with raw `hmac` (not
+`jwt.encode()`, which refuses this outright) using the RSA **public**
+key's PEM bytes as the HMAC secret -- the classic "algorithm confusion"
+attack a verifier that trusted the token's own header `alg` claim would
+fall for. Also: expired tokens, wrong audience, wrong issuer, a
+missing-but-required `exp` claim, a signature forged with a different
+keypair, and a single-byte payload tampering are all proven rejected.
+
+`fastapi` (and `redis`, `prometheus-fastapi-instrumentator`,
+`opentelemetry-instrumentation-fastapi`) were not installed in this
+sandbox by default -- installed them for real this pass specifically so
+`packages/gateway/tests/test_ask.py` (5 new tests, using a real FastAPI
+`TestClient`) and the full `agent_runtime`/`gateway` suites could actually
+run rather than being written untested. `test_ask.py` proves the real
+security property this feature exists for: a caller presenting a valid
+verified token while ALSO self-declaring `roles=["admin"]` and a different
+`tenant_id` claim in the request body gets the verified identity forwarded
+to agent-runtime, not the self-declared one. Full repo-wide suite (with
+those four packages now installed) is 320 passed, 7 skipped, zero
+regressions; `ruff check` clean across all of `packages/`.
+
+**Deliberately left open, named rather than worked around**: no live Entra
+tenant exists anywhere this project runs, so none of the above has ever
+verified a real, Microsoft-issued token end-to-end -- everything is
+verified against locally-generated, real cryptography instead. Separately,
+NaviGraph's own business `tenant_id` has no established mapping to an
+Azure AD tenant ID or claim; OPA's existing `claims.tenant_id ==
+input.tenant_id` check will fail closed (safely, not insecurely) against
+any real verified token until a real Entra app registration is configured
+to emit a matching claim -- a deployment-time decision, not a code gap.
+See `LIMITATIONS.md` item 23's full "still open" section.

@@ -199,7 +199,8 @@ context, regardless of how this one ended.
 | Snowflake execution | **Real** | `route="direct_connector"` is the only assigned route; a live, read-only account with zero write privileges (`LIMITATIONS.md` item 3, `DECISIONS.md` "Execution defaults to the direct Snowflake connector, not Trino") |
 | Trino federation | Built, unused | `route="trino"` is fully implemented and unit-tested but not the default — promoting it is a one-line change in Execution Planning, gated on either a second real data source or an independent security review of Trino's own access control |
 | Guardrail SQL-injection defense | **Real, structural** | Execution Planning's parser accepts only a single read-only `SELECT`/`WITH` statement, bind-parameterized values only, plus a hard row-cap/timeout — proven against an adversarial `; DROP TABLE` test, independent of OPA |
-| OPA policy | **Real** (not a placeholder) | Deny-by-default RBAC + tenant ABAC (`infra/opa/policies/authz.rego`), hardened via adversarial tests (`LIMITATIONS.md` item 4, RESOLVED). Still narrow: no row-/column-level detail beyond PII (a separate agent's job), and trusts caller-supplied claims pending real Azure AD JWT verification (item 23) |
+| OPA policy | **Real** (not a placeholder) | Deny-by-default RBAC + tenant ABAC (`infra/opa/policies/authz.rego`), hardened via adversarial tests (`LIMITATIONS.md` item 4, RESOLVED). Still narrow: no row-/column-level detail beyond PII (a separate agent's job) |
+| Azure AD JWT verification | **Real, gated on configuration** | Gateway's `/ask` verifies a real bearer token via `navigraph_shared.auth.AzureAdTokenVerifier` (real RS256/JWKS checks, real crypto tests) when `AZURE_AD_TENANT_ID`/`AZURE_AD_AUDIENCE` are set, falling back to the caller-supplied trust model otherwise (`LIMITATIONS.md` item 23, RESOLVED). Never exercised against a live Entra tenant |
 | Query-result caching | **Real, wired in** | `query.caching` now runs in the live sequence (lookup before Data Federation, store after — `LIMITATIONS.md` item 59, RESOLVED); Redis, tenant-prefixed key, flat 300s TTL |
 | Session state | **Real** | Redis, same key/TTL pattern as the query-result cache |
 | Lineage | **Real** | Postgres, one incremental append per stage, keyed by `trace_id` |
@@ -209,10 +210,12 @@ context, regardless of how this one ended.
 ## Deliberately out of scope for this stage
 
 - A second connector (Postgres/REST) to pressure-test the source-agnostic
-  connector interface (item 1).
-- Row-/column-level ABAC beyond PII, and real Azure AD JWT verification so
-  OPA's already-real RBAC/ABAC policy can trust claims cryptographically
-  (item 23).
+  connector interface (item 1, resolved for Postgres).
+- Row-/column-level ABAC beyond PII. Real Azure AD JWT verification itself
+  is now built and gateway-wired (item 23, resolved), but has never run
+  against a live Entra tenant, and OPA's tenant-claim check isn't
+  meaningfully trustworthy until a real app registration is configured to
+  emit one.
 - Promoting the Trino route to default (item 3).
 - Mid-pipeline crash recovery / resumability — the one capability traded
   away by dropping LangGraph (item 39).

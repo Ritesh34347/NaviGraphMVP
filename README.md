@@ -98,11 +98,11 @@ human-approved `terraform apply` — Terraform itself still never applies from
 CI.
 
 What's still genuinely deferred, not designed-but-unbuilt: OPA already
-enforces a real RBAC/ABAC policy (not a placeholder), but it has no real
-Azure AD JWT verification behind it yet, so it trusts caller-supplied
-claims, and it never sees row-/column-level detail beyond PII; only one
-Snowflake connector exists; Trino federation is built but not yet the
-default execution route; and SOC 2 controls are scaffolded, not audited.
+enforces a real RBAC/ABAC policy (not a placeholder), and the gateway now
+real-verifies an Azure AD bearer token when configured, but this has never
+run against a live Entra tenant, and it never sees row-/column-level
+detail beyond PII; Trino federation is built but not yet the default
+execution route; and SOC 2 controls are scaffolded, not audited.
 `query.caching` is now wired into the live request pipeline (real lookup
 before, and store after, Data Federation). See `LIMITATIONS.md` for the
 complete, current list.

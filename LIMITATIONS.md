@@ -524,29 +524,100 @@ intent-aware or policy-aware cache TTLs to populate `policy_version` and
 vary `ttl_seconds` accordingly — not addressed here since nothing yet
 depends on it.
 
-### 23. Azure AD token verification is not implemented — `RequestContext.roles`/`claims` remain caller-supplied
+### 23. RESOLVED (2026-08-09, Phase 11): Azure AD token verification is not implemented — `RequestContext.roles`/`claims` remain caller-supplied
 
-**What's deferred**: Real JWT/OIDC validation of an Azure AD (Entra ID)
+**What was deferred**: Real JWT/OIDC validation of an Azure AD (Entra ID)
 token, extracting `roles`/`claims` from a cryptographically verified
 identity rather than trusting whatever the caller directly supplies.
 
-**Why**: Confirmed explicitly with the user before building Phase 6 (via
-`AskUserQuestion`) — the real policy engine and Guardrail agents were
-built to evaluate `RequestContext.roles`/`claims` exactly as every other
-agent already trusts that field, deliberately deferring gateway-level
-token verification rather than blocking this phase on an Azure Portal
-app-registration step. This is what makes
+**Why it was deferred**: Confirmed explicitly with the user before
+building Phase 6 (via `AskUserQuestion`) — the real policy engine and
+Guardrail agents were built to evaluate `RequestContext.roles`/`claims`
+exactly as every other agent already trusts that field, deliberately
+deferring gateway-level token verification rather than blocking that phase
+on an Azure Portal app-registration step. This is what made
 `tests/security/test_opa_policy_adversarial.py`'s
 `test_self_declared_role_escalation_with_a_matching_tenant_claim_is_allowed`
 test pass — a self-declared `roles=["admin"]` with a matching tenant claim
-IS allowed by the real policy today, because Rego has no cryptographic
-identity to check that claim's provenance against.
+was allowed by the real policy, because Rego had no cryptographic identity
+to check that claim's provenance against.
 
-**What full version requires**: Real Azure AD JWT/JWKS validation
-middleware in the gateway (or agent-runtime), populating
-`RequestContext.roles`/`claims` from a verified token rather than a
-caller-supplied field — the terraform/entra-app-registration skeleton
-(item 5) and a real dev app registration are prerequisites.
+**Resolution**: `navigraph_shared.auth` (new package, mirroring
+`navigraph_shared.opa`/`navigraph_shared.secrets`'s exact ABC/real/fake
+triad) provides `TokenVerifier` (ABC), `AzureAdTokenVerifier` (real --
+verifies a bearer token's signature via the tenant's real JWKS endpoint,
+plus issuer/audience/expiry, using PyJWT with an explicit `algorithms=
+["RS256"]` allowlist), and `FakeTokenVerifier` (a no-crypto test double).
+`packages/gateway/navigraph_gateway/main.py`'s `/ask` endpoint now, when
+`AZURE_AD_TENANT_ID`/`AZURE_AD_AUDIENCE` are both configured, REQUIRES a
+real `Authorization: Bearer <token>` header, verifies it, and builds
+`RequestContext.user_id`/`roles`/`claims` from the verified token's own
+`oid`/`sub`, `roles`, and full claim set -- any `user_id`/`roles`/`claims`
+the caller also puts in the request body are ignored outright, never
+merged with verified data (proven by a real test: a caller presenting a
+valid token for a real, verified identity while ALSO claiming
+`roles=["admin"]` and a different `tenant_id` claim in the body gets the
+verified identity forwarded, not the self-declared one).
+
+Verified with real cryptographic tests, not mocks of the crypto library --
+mirroring `navigraph_connectors.snowflake`'s established "generate a real
+RSA keypair, mock only the network call" convention (a real `PyJWKClient`
+subclass with only `fetch_data()` replaced, so `kid` matching, key-rotation
+refresh-on-miss, and every actual signature/claim check are the real,
+unmodified PyJWT/`cryptography` code paths): valid tokens verify and
+extract claims correctly; expired, wrong-audience, wrong-issuer, and
+missing-`exp` tokens are all rejected; a signature forged with an
+attacker's own keypair is rejected; a single-character payload tampering
+is rejected; and, critically, two classic JWT forgery attacks are proven
+defeated — an `alg: none` (unsigned) token, and an HS256 token
+hand-crafted (with raw `hmac`, not PyJWT's `encode()`, since PyJWT's own
+encoder already refuses this) using the RSA **public** key's PEM bytes as
+an HMAC secret (the "algorithm confusion" attack: a naive verifier that
+trusted whichever `alg` a token's own header claimed would accept this,
+since public keys are, by definition, public). 19 tests in
+`packages/shared/tests/test_auth_client.py`, 5 more in
+`packages/gateway/tests/test_ask.py` (using a real FastAPI `TestClient`,
+confirmed installable and runnable in this environment despite `fastapi`
+being absent by default here) -- all real, all passing, none mocking the
+verification logic itself.
+
+When `AZURE_AD_TENANT_ID`/`AZURE_AD_AUDIENCE` are NOT both set, `/ask`
+falls back to the original caller-supplied-roles/claims trust model
+exactly as before (with a loud startup warning logged) -- this is
+deliberate, not an oversight: it is the only way to run against
+docker-compose/CI without a live Entra tenant, mirroring
+`_build_secrets_provider`'s identical real-if-configured/fake-otherwise
+pattern for item 21. `PolicyAuthorizationAgent`/OPA's fail-closed behavior
+on empty/mismatched roles/claims is unchanged either way.
+
+**Still open**:
+- **No live Entra tenant exists to verify this end-to-end against a real
+  Azure AD-issued token** -- the terraform/entra-app-registration skeleton
+  (item 5) has never been `apply`'d for real. Everything above is verified
+  against real cryptography and a real JWKS-consuming code path, but never
+  against Microsoft's actual identity platform. Whoever provisions a real
+  app registration still needs to set `AZURE_AD_TENANT_ID`/
+  `AZURE_AD_AUDIENCE` and confirm a real Entra-issued token verifies.
+- **NaviGraph's own business `tenant_id` (e.g. `"navikenz-poc"`) is not
+  the same thing as an Azure AD tenant ID**, and this pass does not invent
+  a mapping between them. `RequestContext.tenant_id` still comes from the
+  request body either way; OPA's existing `claims.tenant_id ==
+  input.tenant_id` check (`infra/opa/policies/authz.rego`) now evaluates
+  against the FULL verified token payload once configured -- which will
+  only contain a meaningful `tenant_id` claim if the real Entra app
+  registration is configured to emit one (e.g. a custom claim / directory
+  extension mapped to NaviGraph's own tenant identifier). Until that
+  Entra-side configuration exists, that specific check will fail closed
+  (deny) for any real verified token, which is safe, not a security hole
+  -- it just means this specific feature is not yet fully USABLE end-to-end,
+  only safely and correctly built.
+- `tests/security/test_opa_policy_adversarial.py`'s
+  `test_self_declared_role_escalation_with_a_matching_tenant_claim_is_allowed`
+  test still documents real, current behavior when the gateway falls back
+  to the caller-supplied trust model (no Azure AD configured, or a request
+  reaching agent-runtime directly rather than through the gateway) -- not
+  updated or removed, since that scenario is still real and still exactly
+  as risky as documented.
 
 ### 24. Query Cost/Row-Limit Estimator's per-role limits are a hardcoded Python dict, not policy-driven
 

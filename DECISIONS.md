@@ -968,3 +968,47 @@ to run `set_default_data_source(tenant_id="navikenz-poc",
 data_source_id=<fidelity_poc_snowflake_v2's UUID>)` once, and then
 re-verify the golden-question eval suite, since this does change which
 data source the pipeline resolves to by default going forward.
+
+## 2026-08-09 — Real Azure AD JWT verification lives in the gateway, with a loudly-logged fallback, not as a hard requirement everywhere
+
+Resolving LIMITATIONS.md item 23 needed a decision on where verification
+happens and what happens when it isn't configured. We considered making a
+real Entra app registration a hard prerequisite for the gateway to boot at
+all (refuse to start without `AZURE_AD_TENANT_ID`/`AZURE_AD_AUDIENCE`) and
+rejected it: this project has no live Entra tenant in any environment it
+currently runs in (this sandbox, docker-compose, or CI), so a hard
+requirement would make the gateway simply unable to start anywhere except
+a real Azure deployment that doesn't exist yet -- blocking all of Phases
+1-10b's existing verification workflow retroactively. Instead, `/ask`
+checks for both env vars at startup: if set, a real `AzureAdTokenVerifier`
+is constructed and bearer-token verification is REQUIRED on every request
+(no silent bypass once configured); if not, it falls back to the original
+caller-supplied-roles/claims trust model with a loud startup warning --
+mirroring `_build_secrets_provider`'s identical real-if-configured/
+fake-otherwise pattern for item 21. This keeps the feature real and fully
+enforced once deployed with a real app registration, without regressing
+every existing test/eval/demo workflow that has no live Entra tenant to
+authenticate against.
+
+We also considered verifying in `agent_runtime` instead of (or in addition
+to) `gateway`, since agent-runtime has its own HTTP boundary too. Rejected
+doing it there: `gateway` is the only service this platform actually
+exposes to end users (see item 43 -- gateway/agent-runtime is a real,
+intentional internal HTTP hop, not a public one), so it is the one real
+trust boundary that matters; verifying again inside agent-runtime would
+duplicate the check against a request that already crossed the one real
+external boundary, for no additional security.
+
+Finally: once a bearer token verifies, its claims win OUTRIGHT over
+anything the caller also puts in the request body (`user_id`, `roles`,
+`claims` are all replaced, never merged). We considered merging --
+e.g. keeping the caller's own `user_id` from the body if it "matches" the
+verified token -- and rejected it: any merge logic creates a path where a
+caller-supplied field influences the trusted `RequestContext` even when a
+real, cryptographically verified alternative exists, which defeats the
+entire point of adding verification. `tenant_id` remains the one exception,
+staying caller-supplied either way, since it is NaviGraph's own business
+tenant selector, not something a generic Azure AD token has any structural
+way to express without a real, deployment-specific claim-mapping decision
+in the Entra app registration itself (see LIMITATIONS.md item 23's "still
+open" section).
