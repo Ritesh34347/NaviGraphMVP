@@ -8,6 +8,7 @@ Exposes:
   - POST /agents/understanding/conversation/invoke
   - POST /agents/understanding/metadata_discovery/invoke
   - POST /agents/understanding/ontology/invoke
+  - POST /agents/understanding/ontology_drafting/invoke
   - POST /agents/understanding/semantic_retrieval/invoke
   - POST /agents/understanding/schema_mapping/invoke
   - POST /agents/query/data_source_discovery/invoke
@@ -256,6 +257,13 @@ from navigraph_agents.understanding.ontology.agent import (
 )
 from navigraph_agents.understanding.ontology.agent import OntologyAgent
 from navigraph_agents.understanding.ontology.contracts import OntologyInput
+from navigraph_agents.understanding.ontology_drafting.agent import (
+    AGENT_NAME as ONTOLOGY_DRAFTING_AGENT_NAME,
+)
+from navigraph_agents.understanding.ontology_drafting.agent import OntologyDraftingAgent
+from navigraph_agents.understanding.ontology_drafting.contracts import (
+    OntologyDraftingInput,
+)
 from navigraph_agents.understanding.schema_mapping.agent import (
     AGENT_NAME as SCHEMA_MAPPING_AGENT_NAME,
 )
@@ -347,6 +355,15 @@ async def lifespan(app: FastAPI):
     neo4j_client = Neo4jClient()
     ontology_agent = OntologyAgent(client=neo4j_client, tracer=tracer)
     register(ONTOLOGY_AGENT_NAME, ontology_agent.run)
+
+    # Onboarding-time only (Phase 13.2) -- never invoked from the live
+    # request-orchestration pipeline, so it's absent from `/lineage`'s
+    # per-trace agent count above. Shares the same catalog session factory
+    # and LLM client every other agent here uses.
+    ontology_drafting_agent = OntologyDraftingAgent(
+        llm_client=llm_client, session_factory=catalog_session_factory, tracer=tracer
+    )
+    register(ONTOLOGY_DRAFTING_AGENT_NAME, ontology_drafting_agent.run)
 
     schema_mapping_agent = SchemaMappingAgent(tracer=tracer)
     register(SCHEMA_MAPPING_AGENT_NAME, schema_mapping_agent.run)
@@ -605,6 +622,18 @@ async def invoke_ontology(payload: dict) -> dict:
     """
 
     return await _invoke_agent(ONTOLOGY_AGENT_NAME, OntologyInput, payload)
+
+
+@app.post("/agents/understanding/ontology_drafting/invoke")
+async def invoke_ontology_drafting(payload: dict) -> dict:
+    """Parse the request body into `OntologyDraftingInput`, run the real
+    Ontology Drafting agent, and return its `OntologyDraftingOutput`.
+
+    Onboarding-time only -- see `agent.py`'s module docstring for why this
+    is never invoked from live conversational traffic.
+    """
+
+    return await _invoke_agent(ONTOLOGY_DRAFTING_AGENT_NAME, OntologyDraftingInput, payload)
 
 
 @app.post("/agents/understanding/semantic_retrieval/invoke")
