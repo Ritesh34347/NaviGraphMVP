@@ -3,7 +3,7 @@ logic -- sequencing, short-circuiting, the clarification trigger,
 `data_source_id` auto-resolution, session read/append, and lineage-failure
 swallowing.
 
-This does NOT re-test each of the ~19 sub-agents' own real behavior (each
+This does NOT re-test each of the 20 sub-agents' own real behavior (each
 already has its own real unit tests in its own directory) -- it constructs
 a real `RequestOrchestratorAgent` with fake/lightweight constructor
 dependencies (none of which are ever actually queried, since every
@@ -92,6 +92,10 @@ from navigraph_agents.orchestrator.request_orchestrator.contracts import (
 from navigraph_agents.orchestrator.session_context_manager.contracts import (
     SessionContextManagerOutput,
     SessionContextManagerResult,
+)
+from navigraph_agents.query.caching.contracts import (
+    CachingOutput,
+    CachingResult,
 )
 from navigraph_agents.query.data_federation.contracts import (
     DataFederationOutput,
@@ -429,6 +433,18 @@ def _wire_happy_path(agent: Any) -> None:
             metadata=_METADATA,
         )
     )
+    # Default: a real cache miss, so the happy path still exercises real
+    # Data Federation -- see test_cache_hit_skips_data_federation below for
+    # the hit path.
+    agent._caching_agent.run = AsyncMock(
+        return_value=CachingOutput(
+            result=CachingResult(cache_key="navigraph:v1:test:query_cache:policy=none:x"),
+            confidence=1.0,
+            lineage_events=_lineage("query.caching"),
+            errors=[],
+            metadata=_METADATA,
+        )
+    )
     agent._data_federation_agent.run = AsyncMock(
         return_value=DataFederationOutput(
             result=DataFederationResult(
@@ -654,3 +670,95 @@ async def test_lineage_recording_failure_never_aborts_the_request() -> None:
         output = await agent.run(_make_input(data_source_id="ds-1"))
 
     assert output.result.outcome == "answered"
+
+
+async def test_cache_hit_skips_data_federation() -> None:
+    """Resolves LIMITATIONS.md item 59: a real cache hit must be served
+    without calling Data Federation at all, using the cached
+    DataFederationResult's own final_columns/final_rows/final_row_count."""
+
+    agent = _make_agent()
+    _wire_happy_path(agent)
+    agent._caching_agent.run = AsyncMock(
+        return_value=CachingOutput(
+            result=CachingResult(
+                cache_key="navigraph:v1:test:query_cache:policy=none:x",
+                hit=True,
+                cached_value={
+                    "per_source_results": [],
+                    "final_columns": ["MARKETID", "UNITS_TOTAL"],
+                    "final_rows": [{"MARKETID": "CACHED", "UNITS_TOTAL": 999}],
+                    "final_row_count": 1,
+                    "federated": False,
+                },
+            ),
+            confidence=1.0,
+            lineage_events=_lineage("query.caching"),
+            errors=[],
+            metadata=_METADATA,
+        )
+    )
+
+    with patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[MagicMock(id="ds-1")]):
+        output = await agent.run(_make_input(data_source_id="ds-1"))
+
+    assert output.result.outcome == "answered"
+    assert output.result.final_rows == [{"MARKETID": "CACHED", "UNITS_TOTAL": 999}]
+    agent._data_federation_agent.run.assert_not_called()
+    # Only one real caching call (the lookup) -- no store call on a hit,
+    # since nothing new was executed.
+    assert agent._caching_agent.run.await_count == 1
+
+
+async def test_cache_miss_calls_data_federation_then_stores_the_result() -> None:
+    """The default `_wire_happy_path` case: a real cache miss must still
+    call Data Federation for real, then store its result for next time."""
+
+    agent = _make_agent()
+    _wire_happy_path(agent)
+
+    with patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[MagicMock(id="ds-1")]):
+        output = await agent.run(_make_input(data_source_id="ds-1"))
+
+    assert output.result.outcome == "answered"
+    agent._data_federation_agent.run.assert_awaited_once()
+    # Two real caching calls: the lookup (miss) and the store afterward.
+    assert agent._caching_agent.run.await_count == 2
+    lookup_call, store_call = agent._caching_agent.run.await_args_list
+    assert lookup_call.args[0].payload.operation == "lookup"
+    assert store_call.args[0].payload.operation == "store"
+    assert store_call.args[0].payload.value == {
+        "per_source_results": [],
+        "final_columns": ["MARKETID", "UNITS_TOTAL"],
+        "final_rows": [{"MARKETID": "EBB", "UNITS_TOTAL": 100}],
+        "final_row_count": 1,
+        "federated": False,
+    }
+
+
+async def test_cache_backend_error_on_lookup_is_recorded_but_never_blocks_execution() -> None:
+    """A recoverable cache error must behave exactly like a real miss --
+    Data Federation still runs, the request still answers."""
+
+    agent = _make_agent()
+    _wire_happy_path(agent)
+    agent._caching_agent.run = AsyncMock(
+        return_value=CachingOutput(
+            result=CachingResult(cache_key="navigraph:v1:test:query_cache:policy=none:x"),
+            confidence=0.5,
+            lineage_events=_lineage("query.caching"),
+            errors=[
+                AgentError(
+                    code="cache_backend_unavailable", message="redis down", recoverable=True
+                )
+            ],
+            metadata=_METADATA,
+        )
+    )
+
+    with patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[MagicMock(id="ds-1")]):
+        output = await agent.run(_make_input(data_source_id="ds-1"))
+
+    assert output.result.outcome == "answered"
+    agent._data_federation_agent.run.assert_awaited_once()
+    assert any(e.code == "cache_backend_unavailable" for e in output.errors)

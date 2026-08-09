@@ -89,7 +89,7 @@ All 25 agents across the Understanding, Query, Guardrail, Insight, Ops, and
 Orchestrator domains are real and built (Phases 2-9), called end-to-end by a
 real Request Orchestrator against live Snowflake, Neo4j, Postgres, and
 Redis — see [`docs/architecture/single-stage-mvp.md`](./docs/architecture/single-stage-mvp.md)
-for the exact 19-agent call sequence. Real Azure infrastructure exists as of
+for the exact real agent call sequence (20 agents). Real Azure infrastructure exists as of
 Phase 10b (resource group, VNet, ACR, a 2-node AKS cluster, Key Vault,
 Postgres Flexible Server, Entra app registration), created via a real,
 human-approved `terraform apply` — Terraform itself still never applies from
@@ -100,6 +100,7 @@ enforces a real RBAC/ABAC policy (not a placeholder), but it has no real
 Azure AD JWT verification behind it yet, so it trusts caller-supplied
 claims, and it never sees row-/column-level detail beyond PII; only one
 Snowflake connector exists; Trino federation is built but not yet the
-default execution route; the built `query.caching` agent isn't yet wired
-into the live request pipeline; and SOC 2 controls are scaffolded, not
-audited. See `LIMITATIONS.md` for the complete, current list.
+default execution route; and SOC 2 controls are scaffolded, not audited.
+`query.caching` is now wired into the live request pipeline (real lookup
+before, and store after, Data Federation). See `LIMITATIONS.md` for the
+complete, current list.

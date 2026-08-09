@@ -967,3 +967,60 @@ Deliberately not touched: `DECISIONS.md` (dated ADRs describing the
 reasoning live at the time a decision was made, not living status) and
 `BUILD_LOG.md`'s own prior entries (a factual, dated log; corrected by
 backfilling a missing entry above, not by rewriting history).
+
+## 2026-08-09 — Real fix: `query.caching` wired into the live Request Orchestrator sequence (LIMITATIONS.md item 59)
+
+While scoping a broader pass to address open functional gaps, found that
+`RequestOrchestratorAgent` never actually called `CachingAgent` despite it
+being fully built, tested, and registered since Phase 5 (see the docs-
+reconciliation entry above, item 59). Fixed for real:
+`RequestOrchestratorAgent` now constructs a `CachingAgent` (sharing the
+real `cache_client` already passed in for `SessionContextManagerAgent`)
+and calls it around Data Federation -- a real Redis lookup keyed on
+`(tenant_id, sql, params, data_source_id)` immediately before Data
+Federation would run, skipping Data Federation entirely on a hit; a real
+store of the executed result immediately after a successful miss-path
+execution. A cache-backend failure on either operation is recoverable and
+behaves exactly like a real miss, per `CachingAgent`'s own pre-existing
+error contract -- it never blocks the pipeline.
+
+Four new unit tests added to
+`orchestrator/request_orchestrator/tests/test_agent.py`: a real cache hit
+skips Data Federation entirely; a real cache miss calls Data Federation
+then stores its exact result; a recoverable cache-backend error on lookup
+still lets the request answer, with the error recorded; and the existing
+happy-path test was updated to wire a (miss-returning) Caching mock like
+every other real sub-agent. All 204 tests in `packages/agent_runtime/`
+pass (1 pre-existing, unrelated collection error in
+`tests/test_healthz.py` due to `fastapi` not being installed in this
+verification environment -- not something this change touches); `ruff
+check` is clean on every changed file.
+
+Also fixed a real documentation regression introduced by the same day's
+earlier docs-reconciliation pass: `LIMITATIONS.md` item 4 claimed OPA
+"runs an allow-all placeholder policy," but item 18 already documented,
+in full, that Phase 6 replaced it with a real deny-by-default RBAC +
+tenant-ABAC Rego policy (`infra/opa/policies/authz.rego`), hardened via
+`tests/security/`'s real adversarial suite -- item 4 was an unmarked
+duplicate left behind at Phase 6 and never resolved, and the earlier
+reconciliation pass trusted its text at face value instead of checking
+the actual policy file, re-propagating the stale claim into `README.md`,
+`overview.md`, `data-flow.md`, and `single-stage-mvp.md`. All corrected
+to describe the real, narrower remaining gap: no row-/column-level ABAC
+beyond PII, and no real Azure AD JWT verification behind the claims OPA
+evaluates (item 23).
+
+Every architecture doc's "19-agent"/"19-call" framing was updated to "20"
+(or "the real agent sequence," where a specific count wasn't load-bearing)
+to reflect Caching's addition to the live pipeline, without rewriting the
+historical "this exact 19-call sequence" language in `agent.py`'s module
+docstring describing `run_full_pipeline`'s original, real Phase 8 proof --
+that statement was and remains true about what it originally described.
+
+**Deliberately not attempted in this pass** (flagged, not fixed, pending
+explicit scoping): a second real connector (item 1), real Azure AD JWT
+verification (item 23), promoting Trino to the default execution route
+(item 3 -- gated by an explicit `DECISIONS.md` condition, not something to
+flip unilaterally), and mid-pipeline crash recovery (item 39 -- would mean
+reversing the Phase 9 LangGraph-removal decision). See this session's
+chat-turn plan for the full reasoning on what's in/out of scope and why.

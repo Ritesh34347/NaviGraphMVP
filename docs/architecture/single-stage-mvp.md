@@ -6,18 +6,19 @@ domain does X"). This document describes the thing that actually executes a
 request today: **one linear, in-process pipeline — the "single stage" —
 implemented by the real `RequestOrchestratorAgent`**
 (`packages/agent_runtime/navigraph_agents/orchestrator/request_orchestrator/agent.py`),
-which calls 19 real sub-agents directly, in a fixed order, with no graph,
-no branching state machine, and no cross-agent negotiation.
+which calls 20 real sub-agents directly, in a fixed order, with no graph,
+no branching state machine, and no cross-agent negotiation: a 19-step linear
+backbone, plus Caching wrapping Data Federation (a real lookup before it, a
+real store after it on a miss — see "The real agent sequence" below).
 
 This is not a simplified or hypothetical MVP sketch — it is a description of
-real, tested, currently-running code (Phase 9). It exists because
-`overview.md`'s per-domain status tables are known-stale (see
-`LIMITATIONS.md` items 32 and 35: they still mark most agents `DESIGNED`
-when ~22 are actually built) and a full reconciliation of those tables is
-explicitly deferred as its own dedicated phase, not something to do
-piecemeal. This document does not replace that reconciliation — it gives an
-accurate, narrow answer to one question: *what actually happens, in what
-order, when a request comes in today.*
+real, tested, currently-running code (Phase 9, with the Caching integration
+below added 2026-08-09 to resolve `LIMITATIONS.md` item 59).
+`docs/architecture/overview.md`'s per-domain tables were, for a long time,
+badly stale (see `LIMITATIONS.md` items 7, 32, and 35 — all RESOLVED as of
+the 2026-08-09 docs-reconciliation pass); this document gives the
+complementary, sequence-level answer to one question:
+*what actually happens, in what order, when a request comes in today.*
 
 ## What "single-stage" means here
 
@@ -49,7 +50,7 @@ So "single-stage" means:
   the request is simply lost and must be re-asked — a deliberate,
   logged trade-off (`LIMITATIONS.md` item 39), not an oversight. This is
   the one concrete capability given up by dropping LangGraph.
-- **One process, one trace.** All 19 agents run in-process in the
+- **One process, one trace.** All 20 agents run in-process in the
   `agent_runtime` service under a single OpenTelemetry span
   (`agent.request_orchestrator.run`), tagged with `tenant_id`, `trace_id`,
   and `session_id`. There is no network hop between agents on the hot path
@@ -57,7 +58,7 @@ So "single-stage" means:
   `POST /agents/{domain}/{agent_name}/invoke` per `agent-contract.md`'s
   "dual invocation" rule, but the orchestrator never uses that path itself).
 
-## The real 19-agent sequence
+## The real agent sequence
 
 Example question used below: *"What was our churn rate by region last
 quarter?"*
@@ -99,7 +100,19 @@ quarter?"*
      v
  ==================== QUERY EXECUTION (agents 14-15) ====================
  14. query.execution_planning              build the final ExecutionPlan (route, row cap, timeout)
+     |
+     v
+     query.caching (lookup)  -- keyed on (sql, params, data_source_id); Redis
+     |
+     +-- cache HIT  ------------------------------> skip straight to INSIGHT,
+     |                                               using the cached result
+     |
+     +-- cache MISS (or a recoverable cache-backend error, treated the same)
+     v
  15. query.data_federation                 execute for real (Snowflake direct connector today)
+     |
+     v
+     query.caching (store)  -- only reached on a miss; caches the real result
      |
      v
  ======================= INSIGHT (agents 16-19) =========================
@@ -115,13 +128,14 @@ quarter?"*
  outcome="answered": chart + narrative + follow-ups + full lineage trail returned to caller
 ```
 
-Every one of the 19 steps (plus the session-manager and clarification
+Every one of the steps below (plus the session-manager and clarification
 calls) emits `lineage_events`; the orchestrator forwards each stage's
 events to `ops.lineage_recorder` (Postgres) immediately after that stage
 runs — one incremental append per real upstream output, not one bulk write
 at the end. A lineage-recording failure is logged and swallowed; it never
 aborts the request, because lineage is an audit side-channel, not a
-correctness gate.
+correctness gate. Caching's own lineage events are recorded the same way,
+whether the operation was a lookup or a store.
 
 ### Step-by-step reference
 
@@ -142,11 +156,19 @@ correctness gate.
 | 12 | `query.sql_optimization` | Query | Rewrites/optimizes the guardrail-approved statement | Deterministic |
 | 13 | `guardrail.query_cost_estimator` | Guardrail | Rejects if estimated cost/row volume exceeds configured limits | Deterministic |
 | 14 | `query.execution_planning` | Query | Builds the final `ExecutionPlan`: route, bind-parameterized SQL, row cap, timeout | Deterministic (real SQL-shape validation: single read-only `SELECT`/`WITH` only) |
-| 15 | `query.data_federation` | Query | Executes the plan for real | Snowflake (direct connector, default route) |
-| 16 | `insight.chart_selection` | Insight | Picks a chart type/axes for the returned result shape | Deterministic |
+| — (lookup) | `query.caching` | Query | Real cache lookup keyed on `(sql, params, data_source_id)`, tenant-prefixed; **resolves `LIMITATIONS.md` item 59** (this agent existed, tested and registered, since Phase 5 but was never actually called until 2026-08-09) | Redis |
+| 15 | `query.data_federation` | Query | Executes the plan for real — **skipped entirely on a cache hit** | Snowflake (direct connector, default route) |
+| — (store) | `query.caching` | Query | Real cache store of step 15's result, same key as the lookup above — only reached on a miss | Redis |
+| 16 | `insight.chart_selection` | Insight | Picks a chart type/axes for the returned result shape (the cached or freshly-executed one) | Deterministic |
 | 17 | `insight.anomaly_outlier_highlighter` | Insight | Flags statistical outliers in the result set | Deterministic |
 | 18 | `insight.grounded_narrative_generation` | Insight | Writes a narrative; a citation-validation layer drops any claim not backed by a returned value | LLM |
 | 19 | `insight.follow_up_suggestion` | Insight | Proposes related next questions | LLM |
+
+A cache-backend failure (Redis unreachable, timeout, serialization error) on
+either the lookup or the store is always recoverable and never blocks the
+pipeline — it is recorded in the response's `errors` list (code
+`cache_backend_unavailable`) and otherwise behaves exactly like a real miss:
+step 15 still runs, the request still answers.
 
 ## Outcome model
 
@@ -155,7 +177,7 @@ confidence used for downstream evaluation scoring:
 
 | Outcome | Confidence | When |
 |---|---|---|
-| `answered` | 1.0 | All 19 steps completed; chart, narrative, and follow-ups are populated |
+| `answered` | 1.0 | All steps completed (via a fresh execution or a cache hit); chart, narrative, and follow-ups are populated |
 | `needs_clarification` | 0.5 | Schema Mapping (step 6) resolved zero tables; a clarifying question is returned instead of an answer |
 | `failed` | 0.0 | Any other stage reported an unrecoverable error; `failure_stage` names exactly which registry key failed and `failure_reason` carries the detail |
 
@@ -178,6 +200,7 @@ context, regardless of how this one ended.
 | Trino federation | Built, unused | `route="trino"` is fully implemented and unit-tested but not the default — promoting it is a one-line change in Execution Planning, gated on either a second real data source or an independent security review of Trino's own access control |
 | Guardrail SQL-injection defense | **Real, structural** | Execution Planning's parser accepts only a single read-only `SELECT`/`WITH` statement, bind-parameterized values only, plus a hard row-cap/timeout — proven against an adversarial `; DROP TABLE` test, independent of OPA |
 | OPA policy | **Real** (not a placeholder) | Deny-by-default RBAC + tenant ABAC (`infra/opa/policies/authz.rego`), hardened via adversarial tests (`LIMITATIONS.md` item 4, RESOLVED). Still narrow: no row-/column-level detail beyond PII (a separate agent's job), and trusts caller-supplied claims pending real Azure AD JWT verification (item 23) |
+| Query-result caching | **Real, wired in** | `query.caching` now runs in the live sequence (lookup before Data Federation, store after — `LIMITATIONS.md` item 59, RESOLVED); Redis, tenant-prefixed key, flat 300s TTL |
 | Session state | **Real** | Redis, same key/TTL pattern as the query-result cache |
 | Lineage | **Real** | Postgres, one incremental append per stage, keyed by `trace_id` |
 | Knowledge graph | **Real**, single instance | Neo4j; no HA/clustering yet (`LIMITATIONS.md` item 2) |
@@ -211,6 +234,13 @@ real, logged SQL-aggregation gap (`SUM` vs `COUNT` for "how many X"
 questions) left as a scoped follow-up rather than papered over
 (`LIMITATIONS.md` item 38).
 
+## Resolved since this document was first written
+
+- **`query.caching` wired into the live sequence** (item 59, 2026-08-09) —
+  see the step-by-step reference above.
+- **OPA's policy was already real, not a placeholder** (item 4) — this
+  document briefly and incorrectly said otherwise; corrected the same day.
+
 ## Sources
 
 - `packages/agent_runtime/navigraph_agents/orchestrator/request_orchestrator/agent.py`
@@ -219,6 +249,9 @@ questions) left as a scoped follow-up rather than papered over
   not a LangGraph graph"; "Execute real SQL against live Snowflake now,
   ahead of Guardrail"; "Execution defaults to the direct Snowflake
   connector, not Trino".
-- `LIMITATIONS.md` items 1, 2, 3, 4, 18, 28, 32, 35, 38, 39.
+- `LIMITATIONS.md` items 1, 2, 3, 4, 18, 23, 28, 32, 35, 38, 39, 59.
 - `docs/architecture/agent-contract.md` — the common `AgentInput`/
-  `AgentOutput` shape every one of the 19 agents implements.
+  `AgentOutput` shape every one of the 20 agents implements.
+- `packages/agent_runtime/navigraph_agents/query/caching/agent.py` and
+  `contracts.py` — the real Caching agent this document's Caching rows
+  describe.

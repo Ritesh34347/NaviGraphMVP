@@ -44,6 +44,19 @@ open (documented in its own module docstring and in LIMITATIONS.md):
    `outcome="needs_clarification"` with a real clarifying question,
    instead of a bare pipeline failure.
 
+**UPDATE (resolves LIMITATIONS.md item 59)**: this agent now also calls
+`CachingAgent` around Data Federation -- a real cache lookup keyed on
+`(sql, params, data_source_id)` immediately before Data Federation would
+run, and a real store immediately after a successful execution. A cache
+hit skips Data Federation entirely, reconstructing the same
+`DataFederationResult` shape from the cached value. `CachingAgent` was
+built in Phase 5, fully tested and registered, but never actually called
+by this real pipeline until now -- found live while auditing this file
+during the 2026-08-09 docs-reconciliation pass. Like lineage recording, a
+cache-backend failure is recoverable and never gates the pipeline (see
+`query.caching.agent`'s module docstring); a failure on either lookup or
+store simply behaves as a real cache miss.
+
 Also threads real session/conversation persistence through
 `SessionContextManagerAgent` (Redis-backed): reads any existing
 conversation history before Conversation Agent runs, and appends the new
@@ -197,10 +210,18 @@ from navigraph_agents.orchestrator.session_context_manager.contracts import (
     SessionContextManagerInput,
     SessionContextManagerPayload,
 )
+from navigraph_agents.query.caching.agent import CachingAgent
+from navigraph_agents.query.caching.contracts import (
+    CachingInput,
+    CachingPayload,
+)
 from navigraph_agents.query.data_federation.agent import DataFederationAgent
 from navigraph_agents.query.data_federation.contracts import (
     DataFederationInput,
     DataFederationPayload,
+)
+from navigraph_agents.query.data_federation.contracts import (
+    DataFederationResult as FederationDataFederationResult,
 )
 from navigraph_agents.query.data_federation.contracts import (
     ExecutionPlan as FederationExecutionPlan,
@@ -349,6 +370,13 @@ class RequestOrchestratorAgent:
             trino_client=trino_client,
             tracer=tracer,
         )
+        # Shares the same real cache_client as SessionContextManagerAgent
+        # below (structurally identical CacheClientProtocol, different key
+        # namespace: "...:query_cache:..." vs "...:session:...", see
+        # query.caching.agent's module docstring) -- resolves LIMITATIONS.md
+        # item 59 (this agent existed and was registered but was never
+        # actually called by this real pipeline).
+        self._caching_agent = CachingAgent(cache_client=cache_client, tracer=tracer)
 
         # Guardrail domain
         self._schema_constraint_validator_agent = SchemaConstraintValidatorAgent(
@@ -869,34 +897,81 @@ class RequestOrchestratorAgent:
                 )
             real_plan = planning_output.result.plans[0]
 
-            # ================== Data Federation ==================
+            # ================== Caching: lookup ==================
 
-            federation_output = await self._data_federation_agent.run(
-                DataFederationInput(
+            # A cache-backend failure here is always recoverable (see
+            # query.caching.agent's module docstring) -- `errors` gets the
+            # failure recorded for the audit trail, exactly like the
+            # session-read step above, but it never gates the pipeline:
+            # `hit` simply comes back `False` and execution proceeds as a
+            # real cache miss.
+            cache_lookup_output = await self._caching_agent.run(
+                CachingInput(
                     request_context=request_context,
-                    payload=DataFederationPayload(
-                        plans=[FederationExecutionPlan(**real_plan.model_dump())]
+                    payload=CachingPayload(
+                        operation="lookup",
+                        sql=real_plan.sql,
+                        params=real_plan.params,
+                        data_source_id=real_plan.data_source_id,
                     ),
                 )
             )
-            await self._record_lineage(request_context, federation_output.lineage_events)
-            if federation_output.errors:
-                await self._append_turn(request_context, session_id, new_turn)
-                return self._finish(
-                    start=start,
-                    request_context=request_context,
-                    errors=errors + federation_output.errors,
-                    result=RequestOrchestratorResult(
-                        outcome="failed",
-                        session_id=session_id,
-                        resolved_question=resolved_question,
-                        actual_intent=actual_intent,
-                        failure_stage="query.data_federation",
-                        failure_reason=str(federation_output.errors),
-                    ),
-                    span=span,
+            await self._record_lineage(request_context, cache_lookup_output.lineage_events)
+            errors.extend(cache_lookup_output.errors)
+
+            # ================== Data Federation (skipped on a real cache hit) ==================
+
+            if (
+                cache_lookup_output.result.hit
+                and cache_lookup_output.result.cached_value is not None
+            ):
+                federation_result = FederationDataFederationResult(
+                    **cache_lookup_output.result.cached_value
                 )
-            federation_result = federation_output.result
+            else:
+                federation_output = await self._data_federation_agent.run(
+                    DataFederationInput(
+                        request_context=request_context,
+                        payload=DataFederationPayload(
+                            plans=[FederationExecutionPlan(**real_plan.model_dump())]
+                        ),
+                    )
+                )
+                await self._record_lineage(request_context, federation_output.lineage_events)
+                if federation_output.errors:
+                    await self._append_turn(request_context, session_id, new_turn)
+                    return self._finish(
+                        start=start,
+                        request_context=request_context,
+                        errors=errors + federation_output.errors,
+                        result=RequestOrchestratorResult(
+                            outcome="failed",
+                            session_id=session_id,
+                            resolved_question=resolved_question,
+                            actual_intent=actual_intent,
+                            failure_stage="query.data_federation",
+                            failure_reason=str(federation_output.errors),
+                        ),
+                        span=span,
+                    )
+                federation_result = federation_output.result
+
+                # ================== Caching: store ==================
+
+                cache_store_output = await self._caching_agent.run(
+                    CachingInput(
+                        request_context=request_context,
+                        payload=CachingPayload(
+                            operation="store",
+                            sql=real_plan.sql,
+                            params=real_plan.params,
+                            data_source_id=real_plan.data_source_id,
+                            value=federation_result.model_dump(mode="json"),
+                        ),
+                    )
+                )
+                await self._record_lineage(request_context, cache_store_output.lineage_events)
+                errors.extend(cache_store_output.errors)
 
             # ================== result_alias threading ==================
 

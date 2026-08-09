@@ -1336,30 +1336,45 @@ true for `volumeClaimTemplates`, `rules`, and likely any other bare list
 in this manifest tree that isn't explicitly reviewed against this
 pattern.
 
-### 59. `query.caching` is real and registered but not called by the live Request Orchestrator sequence
+### 59. RESOLVED (2026-08-09): `query.caching` is real and registered but not called by the live Request Orchestrator sequence
 
-**What's deferred**: Wiring the real, built Caching agent
+**What was deferred**: Wiring the real, built Caching agent
 (`query.caching`, Phase 5) into the Request Orchestrator's real 19-agent
 sequence so query results are actually served from Redis on a cache hit.
 
-**Why**: found live while reconciling `docs/architecture/overview.md`
-against the real orchestrator code (`orchestrator/request_orchestrator/agent.py`)
-during the 2026-08-09 docs pass -- the orchestrator constructs and calls
-Data Federation directly on every request; it never constructs or calls
-`CachingAgent` at all, even though the agent is fully implemented, unit
-tested, and reachable standalone via `POST /agents/query/caching/invoke`.
-This was never caught before because every existing pipeline
-integration/eval-harness test exercises agents individually or via
-`eval/pipeline_chain.py`'s retired helper, neither of which asserted the
-live orchestrator actually calls every registered agent.
+**Why it was deferred**: found live while reconciling
+`docs/architecture/overview.md` against the real orchestrator code
+(`orchestrator/request_orchestrator/agent.py`) during the 2026-08-09 docs
+pass -- the orchestrator constructed and called Data Federation directly on
+every request; it never constructed or called `CachingAgent` at all, even
+though the agent was fully implemented, unit tested, and reachable
+standalone via `POST /agents/query/caching/invoke`. This was never caught
+before because every existing pipeline integration/eval-harness test
+exercises agents individually or via `eval/pipeline_chain.py`'s retired
+helper, neither of which asserted the live orchestrator actually calls
+every registered agent.
 
-**What full version requires**: Decide where in the real 19-step sequence
-a cache lookup/write belongs (most naturally: check before Data Federation
-executes, using the same `tenant_id`+SQL+params key `CachingPayload`
-already supports; write after a successful execution), wire it into
-`RequestOrchestratorAgent.run()`, and add an integration test asserting a
-second identical request is served from cache rather than re-executing
-against Snowflake.
+**Resolution**: `RequestOrchestratorAgent` now constructs a `CachingAgent`
+(sharing the same real `cache_client` as `SessionContextManagerAgent`) and
+calls it around Data Federation: a real lookup keyed on
+`(tenant_id, sql, params, data_source_id)` immediately before Data
+Federation would run, and a real store immediately after a successful
+execution. A cache hit skips Data Federation entirely, reconstructing the
+same `DataFederationResult` shape from the cached value; a cache-backend
+failure on either operation is recoverable and behaves exactly like a real
+miss, per `CachingAgent`'s own existing error contract. Four new unit tests
+in `orchestrator/request_orchestrator/tests/test_agent.py` cover the hit
+path (Data Federation never called), the miss path (Data Federation called,
+then a real store with the exact executed result), and a cache-backend
+error on lookup (execution still proceeds, the error is recorded but never
+blocks). See `docs/architecture/single-stage-mvp.md` for the updated,
+20-agent real sequence.
+
+**Still open**: no integration test yet exercises this against a real
+Redis instance end-to-end (the new tests use the same fake/mocked-agent
+pattern as the rest of this test file, per its own stated scope) -- a
+`tests/integration/` pass proving a second identical real request is
+actually served from a real Redis cache remains a reasonable follow-up.
 
 ### 60. Real Azure identifiers are committed in plaintext in `infra/k8s/overlays/dev/`
 

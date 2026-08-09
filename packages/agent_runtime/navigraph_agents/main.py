@@ -440,7 +440,9 @@ async def lifespan(app: FastAPI):
     )
     register(CLARIFICATION_COORDINATOR_AGENT_NAME, clarification_coordinator_agent.run)
 
-    # Request Orchestrator constructs all ~19 of its own sub-agents
+    # Request Orchestrator constructs all 20 of its own sub-agents
+    # (19 in the linear sequence, plus Caching around Data Federation --
+    # see agent.py's module docstring for the LIMITATIONS.md item 59 fix)
     # in __init__ (its own real, independent instances -- not the ones
     # registered above, matching every prior agent's own construct-your-
     # own-dependencies convention). It needs `catalog_session_factory` and

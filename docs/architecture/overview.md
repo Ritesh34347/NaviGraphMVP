@@ -58,7 +58,7 @@ Orchestrator agent directly calls each of the above in sequence (a plain
 Python async function, not a LangGraph graph — see `DECISIONS.md`'s Phase 9
 entry reversing Phase 1's original LangGraph decision) and is responsible for
 tenant/session context propagation, retries, and error handling across stages.
-See `single-stage-mvp.md` for the full 19-agent call order and outcome model.
+See `single-stage-mvp.md` for the full real agent call order (20 agents) and outcome model.
 
 ## Agent domains and agents
 
@@ -104,7 +104,7 @@ Generates and executes the queries that answer the question.
 | Execution Planning (`query.execution_planning`) | **BUILT** | Builds the final `ExecutionPlan`; the hard SELECT-only, bind-parameterized safety gate |
 | Data Source Discovery (`query.data_source_discovery`) | **BUILT** | Confirms each resolved table maps to a real, reachable data source |
 | Data Federation (`query.data_federation`) | **BUILT** | Executes for real (Snowflake direct connector today; `route="trino"` built and unit-tested but not the default) |
-| Caching (`query.caching`) | **BUILT, not yet wired into the live pipeline** | A real Redis-backed query-result cache, reachable via `POST /agents/query/caching/invoke`, but not called by the Request Orchestrator's live 19-agent sequence today — see `LIMITATIONS.md` item 59 |
+| Caching (`query.caching`) | **BUILT and wired in** | A real Redis-backed query-result cache; the Request Orchestrator now calls it around Data Federation (lookup before, store after on a miss) — `LIMITATIONS.md` item 59, RESOLVED 2026-08-09 |
 
 Three originally-planned agents in this domain were never built as
 standalone agents:
@@ -187,7 +187,8 @@ history of how stale this document previously was.
 What's genuinely still open is not "which agents exist" but specific,
 already-logged functional gaps: no Azure AD JWT verification, so OPA's real
 RBAC/ABAC policy still trusts caller-supplied claims (item 23); Trino not
-yet the default execution route (item 3); `query.caching` not wired into
-the live Request Orchestrator sequence (item 59); and no mid-pipeline crash
-recovery given the LangGraph-to-plain-function reversal (item 39). See
-`LIMITATIONS.md` for the complete, current list.
+yet the default execution route (item 3); and no mid-pipeline crash
+recovery given the LangGraph-to-plain-function reversal (item 39).
+`query.caching` is now wired into the live Request Orchestrator sequence
+(item 59, RESOLVED 2026-08-09). See `LIMITATIONS.md` for the complete,
+current list.

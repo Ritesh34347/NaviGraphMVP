@@ -4,7 +4,7 @@ This document walks a single request through the full NaviGraph pipeline in
 narrative form, naming the specific real agent responsible for each stage.
 See `docs/architecture/overview.md` for the full agent map and current build
 status, `docs/architecture/single-stage-mvp.md` for the exhaustive, ordered
-19-agent call sequence and outcome model, and
+real agent sequence and outcome model, and
 `docs/architecture/agent-contract.md` for the formal shape of
 `lineage_events`.
 
@@ -93,13 +93,16 @@ given.
 approved statement. **Execution Planning** (`query.execution_planning`)
 builds the final `ExecutionPlan` — the hard safety gate that only accepts a
 single, bind-parameterized, read-only `SELECT`/`WITH` statement, with a row
-cap and timeout. **Data Federation** (`query.data_federation`) then executes
-it for real, against live Snowflake via the direct connector (the default
-route today; `route="trino"` is built and unit-tested but not yet the
-default — see `LIMITATIONS.md` item 3). There is no separate caching step in
-the live pipeline today: `query.caching` is a real, built, Redis-backed
-agent, but it is not currently called by the Request Orchestrator (see
-`LIMITATIONS.md` item 59).
+cap and timeout. **Caching** (`query.caching`) then does a real Redis lookup
+keyed on `(sql, params, data_source_id)`; on a hit, **Data Federation is
+skipped entirely** and the cached result is used. On a miss (or a
+recoverable cache-backend error, treated the same), **Data Federation**
+(`query.data_federation`) executes the plan for real, against live
+Snowflake via the direct connector (the default route today; `route="trino"`
+is built and unit-tested but not yet the default — see `LIMITATIONS.md`
+item 3), and Caching stores the result for next time. `LIMITATIONS.md` item
+59 (`query.caching` built but never actually called) is RESOLVED as of
+2026-08-09.
 
 ## 6. Insight domain: chart selection, anomalies, narrative, follow-ups
 

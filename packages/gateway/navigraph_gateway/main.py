@@ -111,9 +111,10 @@ class AskRequest(BaseModel):
 @app.post("/ask")
 async def ask(request: AskRequest) -> dict:
     """Forward a question to the real Request Orchestrator agent (the full
-    ~19-stage pipeline: Understanding -> Query -> Guardrail -> Insight, with
-    lineage recorded at every stage and multi-turn session/clarification
-    handling) and return its `RequestOrchestratorOutput` verbatim.
+    pipeline: Understanding -> Query -> Guardrail -> Query execution (with a
+    real cache lookup/store around it) -> Insight, with lineage recorded at
+    every stage and multi-turn session/clarification handling) and return
+    its `RequestOrchestratorOutput` verbatim.
     """
 
     trace_id = str(uuid.uuid4())
