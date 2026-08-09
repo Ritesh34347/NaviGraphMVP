@@ -44,9 +44,9 @@ terraform/      Azure infrastructure-as-code (a real environment has been applie
                 to Azure as of Phase 10b; CI itself still only ever plans, never applies)
 packages/       Application services: gateway, agent_runtime (26 real agents),
                 connector_sdk, federation, knowledge_graph, lineage, metadata_catalog,
-                semantic_model, shared
-web/            Next.js web UI (minimal scaffold today: landing page + NextAuth
-                wiring; no chat/BI interface calling the gateway's /ask yet)
+                semantic_model, mcp_server, slack_bot, shared
+web/            Next.js web UI: landing page + NextAuth wiring + a real chat UI
+                (web/src/app/chat) calling the gateway's /ask
 docs/           Architecture docs, ADRs, runbooks
 tools/          Dev scripts and templates (e.g. smoke-test.sh, agent scaffolding)
 .github/        CI workflows
@@ -116,5 +116,13 @@ detection on the catalog, an onboarding-time-only Ontology Drafting agent
 crawled schema for a human to review, and a CLI
 (`tools/scripts/onboard_data_source.py`) chaining registration → crawl →
 drafting → compile → activation — but this pipeline has never been run
-against a real tenant either. See `LIMITATIONS.md` for the complete,
-current list.
+against a real tenant either.
+
+Phase 14 added the three client-facing surfaces: a real chat UI
+(`web/src/app/chat`), an agentic tool-surface API (`packages/mcp_server`,
+a real MCP server wrapping `/ask` for external agents like Claude
+Desktop), and a Slack bot (`packages/slack_bot`) that answers
+`@NaviGraph` mentions. All three are real and tested, but neither has a
+real per-caller tenant mapping (both use one fixed dev-mode tenant) nor
+has been exercised against a live Slack workspace/Claude Desktop install
+in this sandbox. See `LIMITATIONS.md` for the complete, current list.

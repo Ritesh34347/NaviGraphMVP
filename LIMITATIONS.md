@@ -1791,3 +1791,79 @@ data a scheduler needs (not the scheduler itself — see "still open" below).
   `metrics`/`relationships` into `SqlGenerationPayload
   .metric_aggregations` or `navigraph_kg`'s ingestion pipeline
   automatically — unchanged from item 61's third "still open" bullet.
+
+### 63. PARTIALLY RESOLVED (2026-08-09, Phase 14): no client-facing surface existed yet -- a real chat UI, an agentic tool-surface API, and a Slack bot now do
+
+**What was deferred**: through Phase 13, the only way to ask NaviGraph a
+question was a raw `POST /ask` HTTP call — no UI, no external-agent
+integration, no chat platform integration existed. Phase 14 built all
+three of the client-facing surfaces named in the original phase plan.
+
+**Resolution**:
+
+- **Chat UI** (`web/src/app/chat`): a real, interactive Next.js page —
+  question input, multi-turn `session_id` carried client-side, full
+  rendering of `RequestOrchestratorResult`'s three real outcomes
+  (`answered`: narrative + result table + follow-up-suggestion chips;
+  `needs_clarification`: the clarifying question; `failed`: the failure
+  reason/stage). A same-origin `/api/ask` proxy route keeps `GATEWAY_URL`
+  server-only and avoids needing CORS on the gateway. Verified for real:
+  `tsc`/`next lint`/`next build` all clean; 5 new Playwright tests (plus
+  the pre-existing smoke test) run against a real `next start` server,
+  intercepting the browser's own `/api/ask` request per real outcome.
+- **Agentic tool-surface API** (`packages/mcp_server`,
+  `navigraph-mcp-server`): a real MCP server exposing `ask_navigraph`
+  (wraps the gateway's `/ask`) and `check_navigraph_health` as tools, so
+  Claude Desktop or another MCP-speaking agent framework can call
+  NaviGraph like any other tool. Verified for real: 11 unit tests against
+  a faked gateway (`httpx.MockTransport`), PLUS a genuine live proof —
+  the server spawned as a real subprocess, driven over an actual stdio
+  MCP transport by the `mcp` SDK's own client, with a real
+  `initialize`/`list_tools` handshake correctly returning both tools.
+- **Slack bot** (`packages/slack_bot`, `navigraph-slack-bot`): a real
+  FastAPI service answering `@NaviGraph` mentions by calling the
+  gateway's `/ask` and posting the answer back in-thread. Real Slack
+  request-signature verification (HMAC-SHA256 per Slack's documented
+  algorithm, plus a real replay-window check), per-thread session
+  continuity, and graceful handling of gateway failures. Verified for
+  real: 25 unit tests, including adversarial signature coverage (forged
+  secret, tampered body, replayed timestamp all rejected) and the full
+  FastAPI routing layer via `TestClient`.
+
+**Real gaps found and fixed while building this, not merely designed
+around**: (1) an unbounded `mcp` PyPI dependency resolves to a different,
+unrelated `2.0.0` package today (name-squatting) — pinned to `mcp>=1.9,<2`
+instead; (2) `FastMCP.tool()`'s registration breaks outright under
+`from __future__ import annotations` (a real `TypeError` on every tool,
+caught immediately by this package's own test suite) — fixed by not using
+postponed annotation evaluation in that one module. Both are documented
+in `DECISIONS.md` and `packages/mcp_server/pyproject.toml`'s own comments.
+
+**Still open**:
+- **No real tenant resolution for either client surface.** Neither the
+  chat UI nor the Slack bot has a real mapping from "who is asking" (a
+  NextAuth session; a Slack workspace/user) to a NaviGraph `tenant_id` —
+  both send one fixed, configurable dev-mode tenant
+  (`NEXT_PUBLIC_DEFAULT_TENANT_ID`/`SlackBotSettings.default_tenant_id`)
+  rather than a per-caller-derived one. See DECISIONS.md for why an
+  invented mapping would have been worse than an honest placeholder.
+- **No live external verification of either new service.** No live
+  Slack app/workspace exists in this sandbox (network egress to
+  `api.slack.com` is blocked here), so the Slack bot's signing algorithm
+  has never processed a genuine Slack-originated signed request — see
+  `docs/runbooks/slack-bot-setup.md`. No real Claude Desktop install
+  exists in this sandbox either, so the MCP server's `claude_desktop_config
+  .json` wiring in `docs/runbooks/mcp-tool-surface-server.md` follows
+  Anthropic's documented config shape but hasn't been clicked through by
+  a human. Both are named explicitly in their own runbooks rather than
+  assumed.
+- **No re-crawl scheduler, no live-onboarded tenant, no request-time
+  Semantic Model resolution** — all three carried over unchanged from
+  item 62; Phase 14 did not touch any of them.
+- **No Dockerfile/docker-compose entry for either new service** — both
+  run today via `uvicorn <module>:app` directly per their runbooks, not
+  as a docker-compose service alongside `gateway`/`agent-runtime`/`web`.
+- **The Slack bot has no event-deduplication/idempotency store.** A slow
+  ack or a transient failure causes Slack to redeliver the same event;
+  this service would answer it twice today (in-memory session map is
+  also not shared across replicas or durable across a restart).

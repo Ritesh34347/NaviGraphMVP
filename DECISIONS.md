@@ -1138,3 +1138,75 @@ operator to do. `SemanticModel`'s own constructor validation (e.g.
 check) still raises for real — those represent the document itself being
 structurally broken, not an expected side effect of a reasonable human
 edit.
+
+## 2026-08-09 — Chat UI/Slack bot both use a fixed dev-mode `tenant_id`, not a per-caller-derived one
+
+Neither `web/src/app/chat` nor `packages/slack_bot` has any real mapping
+from "who is asking" (a NextAuth session; a Slack workspace/user) to a
+NaviGraph business `tenant_id` — that mapping is a real, deployment-
+specific decision (which Entra app registration/Slack workspace belongs
+to which tenant) this codebase has never had to make yet, since no real
+client surface existed before Phase 14. We considered inventing a
+per-browser or per-Slack-workspace ad hoc tenant derivation (e.g. hashing
+a Slack team ID) and rejected it: a made-up mapping would be actively
+misleading — it would look like real multi-tenant routing while actually
+routing everyone to whatever the hash happened to produce, which is worse
+than an honest, visible placeholder. Both surfaces instead send one fixed,
+configurable `tenant_id` (`NEXT_PUBLIC_DEFAULT_TENANT_ID` /
+`SlackBotSettings.default_tenant_id`, both defaulting to the same
+`navikenz-poc` demo tenant this repo's other fixtures already use) and
+name the gap explicitly in code comments and the new runbooks, rather
+than pretending real per-caller tenant resolution exists. `user_id`
+already flows through as a real, distinguishing value in both surfaces
+(`web-user`, or `slack:<real Slack user ID>`) — only tenant resolution is
+the open question, and it's the same open question `LIMITATIONS.md` item
+23 already named for Azure AD claim mapping generally.
+
+## 2026-08-09 — The Slack bot hand-rolls signature verification instead of depending on `slack_bolt`
+
+We considered using Slack's official `slack_bolt` SDK (which bundles
+request verification, event routing, and Web API calls) and built
+`packages/slack_bot` without it instead. The actual logic this service
+needs is small and this codebase already has a working precedent for
+hand-rolling exactly this class of security-relevant boundary check
+correctly: `navigraph_shared.auth.AzureAdTokenVerifier` hand-verifies a
+real bearer token with `PyJWT` rather than pulling in a heavier auth
+framework, and `packages/mcp_server`'s own build (see below) just
+demonstrated a real, live example of why blindly trusting a dependency's
+latest version is itself a risk worth minimizing exposure to. A single
+`hmac`/`hashlib` implementation of Slack's publicly documented signing
+algorithm, verified with real adversarial unit tests (forged secret,
+tampered body, replayed timestamp), keeps this package's dependency
+footprint to exactly `fastapi`/`httpx`/`navigraph-shared` — all three
+already depended on elsewhere in this monorepo — rather than adding a
+new, Slack-specific framework whose own event-routing/retry semantics
+this service would need to learn and audit anyway.
+
+## 2026-08-09 — The MCP tool-surface server's dependency is pinned `mcp>=1.9,<2`, and one module can't use `from __future__ import annotations`
+
+Two real, load-bearing facts discovered building `packages/mcp_server`,
+not decided in the abstract:
+
+1. An unbounded `mcp` dependency resolves to `mcp==2.0.0` on PyPI today —
+   a DIFFERENT, unrelated package (it imports a nonexistent `mcp_types`
+   module and fails at import; the real Anthropic-authored "Model Context
+   Protocol SDK" only goes up to the `1.x` series). This is a live,
+   current example of PyPI name-squatting risk that a version-unpinned
+   dependency would have silently walked into on a future
+   `pip install -U`. Pinned to `mcp>=1.9,<2` rather than trying to detect
+   this at install time (e.g. checking `importlib.metadata`'s recorded
+   `Author`) — a version range that excludes the bad major version
+   entirely is simpler and doesn't need to know anything about *why*
+   `2.0.0` is wrong, just that `1.x` is confirmed right.
+2. `server.py` does NOT `from __future__ import annotations`, unlike
+   every other module in this codebase. `FastMCP.tool()` introspects each
+   tool function's live `inspect.signature()` to build its JSON-schema
+   input spec and to detect a special `Context` parameter via a real
+   `issubclass()` call — with postponed annotation evaluation on, every
+   annotation is a plain string, and that `issubclass()` call raises
+   `TypeError` for literally every tool. This was found immediately by
+   this package's own test suite (every tool failed to register at all)
+   rather than discovered later at a live MCP client's first real call —
+   real proof that testing tool *registration* itself, not just each
+   tool's logic once registered, is worth doing for any FastMCP-based
+   service this codebase adds in the future.

@@ -222,3 +222,22 @@ drafting, and (via `navigraph_semantic_model.onboarding
 .compile_draft_to_semantic_model`) compiling a reviewed draft into a real,
 catalog-validated, activatable `SemanticModel`. No live tenant has been
 run through this pipeline yet — see `LIMITATIONS.md` item 62.
+
+Phase 14 (item 63) added the three client-facing surfaces the original
+plan named. `web/src/app/chat` is a real Next.js chat UI calling the
+gateway's `/ask` through a same-origin proxy route, rendering
+`RequestOrchestratorResult`'s three outcomes and carrying `session_id`
+client-side for multi-turn. `packages/mcp_server` is a real MCP
+(modelcontextprotocol.io) server exposing `ask_navigraph`/
+`check_navigraph_health` as tools an external agentic client (Claude
+Desktop, another agent framework) can call. `packages/slack_bot` is a
+real Slack Events API service answering `@NaviGraph` mentions by calling
+`/ask` and posting the result back in-thread, with real HMAC signature
+verification against every incoming Slack request. All three are thin
+adapters over the existing gateway/`/ask` contract — none adds new
+business logic, and none has a real mapping from "who is asking" to a
+NaviGraph `tenant_id` yet (both the chat UI and the Slack bot use one
+fixed, configurable dev-mode tenant). See `LIMITATIONS.md` item 63 for
+what's verified vs. still open, including that neither new service has
+been exercised against a live Slack workspace or Claude Desktop install
+in this sandbox.

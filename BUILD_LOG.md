@@ -1393,3 +1393,76 @@ been onboarded through this pipeline (`navikenz-poc` still has no
 `SemanticModel` document); the live Request Orchestrator still has no
 mechanism to resolve which `SemanticModel` applies to a given request.
 See LIMITATIONS.md item 62 for the complete, itemized list.
+
+## 2026-08-09 — Phase 14: the three client-facing surfaces -- a real chat UI, an agentic tool-surface API, and a Slack bot (LIMITATIONS.md item 63)
+
+Three sub-passes, closing out the original Phase 14 plan:
+
+**14.1 -- Chat UI**: new `web/src/app/chat` (a real, interactive
+Next.js page) and `web/src/app/api/ask/route.ts` (a same-origin proxy to
+the gateway's real `/ask`, keeping `GATEWAY_URL` server-only and
+sidestepping CORS). Renders `RequestOrchestratorResult`'s three real
+outcomes (narrative + result table + follow-up chips; a clarifying
+question; a failure reason/stage), carries `session_id` client-side for
+multi-turn. `tenant_id`/`user_id` are still a fixed dev-mode placeholder
+(`NEXT_PUBLIC_DEFAULT_TENANT_ID`) -- see DECISIONS.md for why an invented
+per-caller mapping would have been worse than an honest one. Verified for
+real: `tsc --noEmit`/`next lint`/`next build` clean; 5 new Playwright
+tests (6/6 total with the pre-existing smoke test) against a real
+`next start` server, intercepting `/api/ask` per outcome, a multi-turn
+session_id round-trip, and a gateway-unreachable error path.
+
+**14.2 -- Agentic tool-surface API**: new `packages/mcp_server`
+(`navigraph-mcp-server`), a real MCP server exposing `ask_navigraph`
+(wraps `POST /ask`) and `check_navigraph_health` (wraps `GET /healthz`)
+as tools for an external agentic client (Claude Desktop, another agent
+framework). Thin, stateless protocol translation -- every real piece of
+business logic still lives in the existing agent-runtime pipeline. Two
+real bugs found and fixed building it (both in DECISIONS.md): an
+unbounded `mcp` dependency resolves to an unrelated, name-squatted
+`2.0.0` package on PyPI today (pinned to `mcp>=1.9,<2` instead), and
+`FastMCP.tool()`'s registration breaks outright under `from __future__
+import annotations` (a real `TypeError` on every tool, caught immediately
+by this package's own test suite -- fixed by not postponing annotation
+evaluation in that one module). 11 new unit tests against a faked gateway
+(`httpx.MockTransport`), plus a genuine live proof: the server spawned as
+a real subprocess, driven over an actual stdio MCP transport by the `mcp`
+SDK's own client, with a real `initialize`/`list_tools` handshake
+correctly returning both tools. New
+`docs/runbooks/mcp-tool-surface-server.md`.
+
+**14.3 -- Slack bot**: new `packages/slack_bot` (`navigraph-slack-bot`),
+a real FastAPI service answering `@NaviGraph` mentions by calling the
+gateway's `/ask` and posting the answer back in-thread.
+`navigraph_slack_bot.signature` hand-implements Slack's documented
+request-signing algorithm (HMAC-SHA256 over `v0:<timestamp>:<raw-body>`,
+`hmac.compare_digest`, plus a real replay-window check) rather than
+depending on `slack_bolt` -- see DECISIONS.md for why, mirroring
+`navigraph_shared.auth`'s existing hand-rolled-verification precedent.
+`SlackBot` holds per-thread NaviGraph session continuity (in-memory,
+named as a real limitation) and never lets a gateway/network failure
+crash the handler -- it posts an apologetic message back instead. 25 new
+unit tests: adversarial signature coverage (forged secret, tampered
+body, replayed timestamp, non-numeric timestamp, empty secret all
+rejected), `SlackBot`'s own logic against faked HTTP boundaries, and the
+full FastAPI routing/signature-verification layer via `TestClient`. New
+`docs/runbooks/slack-bot-setup.md`, explicit that this sandbox's blocked
+network egress to `api.slack.com` means the signing algorithm was never
+cross-checked against Slack's own published worked example here (an
+earlier draft test with a hand-recalled "expected" constant was removed
+after computing it for real and finding the recalled value wrong --
+documented rather than silently fixed and forgotten).
+
+**Real verification performed**: full repo Python suite -- 485 passed, 7
+skipped (the same pre-existing `llm_integration`/driver-package-missing
+skips this sandbox always has), zero regressions; `ruff check` clean on
+every new/touched Python file. Web suite: `tsc`/`next lint`/`next build`
+clean, 6/6 Playwright tests passing against a real running server.
+
+**What Phase 14 named as scope and did NOT close**: no real tenant
+resolution for either client surface (both use one fixed dev-mode
+tenant); no live external verification of either new service (no real
+Slack workspace or Claude Desktop install in this sandbox); no
+Dockerfile/docker-compose entry for either new service; the Slack bot has
+no event-deduplication/idempotency store. See LIMITATIONS.md item 63 for
+the complete, itemized list.
