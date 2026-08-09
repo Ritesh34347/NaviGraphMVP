@@ -1210,3 +1210,67 @@ not decided in the abstract:
    real proof that testing tool *registration* itself, not just each
    tool's logic once registered, is worth doing for any FastMCP-based
    service this codebase adds in the future.
+
+## 2026-08-09 — Lineage search is proxied through the gateway with the SAME bearer-token gate `/ask` uses, not left open or given a new auth mechanism
+
+Before Phase 15.1, `GET /lineage/{trace_id}` existed only on agent-runtime
+(an internal-only hop, never reachable through the gateway at all — see
+item 43). Adding a real gateway proxy for it required a decision: leave
+it open (matching agent-runtime's own pre-existing, already-honestly-
+named "no new auth mechanism" stance), or gate it somehow. We chose to
+reuse `/ask`'s exact existing `_require_verified_caller` check
+(factored out of `/ask`'s inline logic) rather than either extreme.
+Rejected leaving it fully open: lineage is the most sensitive read
+surface this platform has (every real question and answer, across every
+conversation), and it becoming reachable through the ONE real public
+trust boundary for the first time was the right moment to require at
+least a valid credential, not a good moment to also inherit the old
+route's pre-auth-era permissiveness by default. Rejected inventing a new,
+lineage-specific auth mechanism: that would be new surface area to build
+and test for a phase whose real scope was "search," not "authorization
+model" — reusing `/ask`'s already-real, already-tested mechanism was
+strictly additive. Named honestly rather than oversold: this closes
+"reachable by anyone" down to "reachable by anyone holding a valid
+token for this Azure AD app," not "reachable only by whoever is
+authorized to see tenant X's lineage specifically" — that needs a real
+OPA policy decision this phase didn't design, see LIMITATIONS.md item 64.
+
+## 2026-08-09 — No separate admin web app; the admin lineage-search UI lives inside the same Next.js app as the chat UI
+
+We considered a genuinely separate admin application (its own Next.js
+project, its own deployment) and rejected it for this phase: there is
+exactly one admin surface today (lineage search), it needs no different
+runtime/hosting story than the chat UI already has, and a second whole
+app would duplicate `env.ts`'s settings, the `/api/*` proxy pattern, and
+the build/deploy pipeline for zero real benefit at this scale. A route
+under `/admin` in the existing app is honestly labeled on the page itself
+as unenforced (no real role gating exists for either `/chat` or
+`/admin` today) rather than implying a security boundary that isn't
+real — splitting into a separate app later, once real role-based access
+control exists, remains a cheap, additive move; doing it now would have
+been premature structure for a single page.
+
+## 2026-08-09 — AAD-integrated Kubernetes RBAC: real Terraform/K8s code, deliberately never applied to the live cluster
+
+Building this required deciding how far to take a change to REAL,
+already-provisioned (Phase 10b) live cloud infrastructure. We considered
+stopping at a design document (matching item 51's original "deliberate
+scope limit" framing) and rejected that as too little given this
+session's own standing discipline of shipping real, tested code rather
+than plans — the `azure_active_directory_role_based_access_control`
+Terraform block, the `aks-aad-groups` module, and the `ClusterRoleBinding`
+manifest are all real, and verified as far as this sandbox's real
+constraints allow (`terraform fmt`, a real `kustomize build`). We also
+considered going all the way to a real `terraform apply` against the live
+`dev` cluster and rejected that just as firmly: which real Azure AD
+identities belong in the new admin/viewer groups is a genuine business
+decision no amount of code can substitute for, and `terraform apply`
+against live infrastructure is this project's own established human-only,
+outside-CI action (`terraform/README.md`). Landing exactly at "real code,
+real (partial) verification, a complete rollout runbook, zero live
+changes" is the same posture this project already took for the onboarding
+CLI's `register`/`crawl`/`activate` subcommands (Phase 13.3) — build and
+verify everything short of the one step that needs a live decision or a
+live credential this sandbox doesn't have, and say so plainly rather than
+either stopping short of working code or quietly overstepping into a
+live change nobody asked for.

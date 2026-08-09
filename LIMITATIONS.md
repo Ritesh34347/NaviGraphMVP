@@ -1867,3 +1867,93 @@ in `DECISIONS.md` and `packages/mcp_server/pyproject.toml`'s own comments.
   ack or a transient failure causes Slack to redeliver the same event;
   this service would answer it twice today (in-memory session map is
   also not shared across replicas or durable across a restart).
+
+### 64. PARTIALLY RESOLVED (2026-08-09, Phase 15): admin & governance surfaces -- real lineage search, an admin CLI, an admin web UI, and AAD-integrated K8s RBAC code, none of it fully rolled out to a live system
+
+**What was deferred**: through Phase 14, there was no way to search across
+a tenant's lineage (only fetch one already-known trace_id), no admin
+tooling beyond ad hoc scripts, and Kubernetes RBAC for human cluster
+access was a named, deliberate scope limit (item 51). Phase 15 built real
+code for all three, closing item 51's code gap specifically and adding
+two new real surfaces.
+
+**Resolution**:
+
+- **Lineage search** (`navigraph_lineage.api.list_traces`): a real
+  Postgres `GROUP BY`/aggregate query returning per-trace summaries,
+  filterable by `agent_name`/time range/a real text search, paginated.
+  Exposed as a new `GET /lineage` route on agent-runtime, and — for the
+  first time — proxied through the gateway (`GET /lineage`,
+  `GET /lineage/{trace_id}`), the one real public trust boundary this
+  platform has (item 43). Both new gateway routes are gated by the same
+  real bearer-token check `/ask` already enforces when Azure AD
+  verification is configured, closing "reachable by anyone" down to
+  "reachable by anyone with a valid token" — not yet real per-tenant
+  lineage-read authorization (see "still open" below).
+- **Admin CLI** (`tools/scripts/navigraph_admin.py`): `datasource
+  list`/`set-default` and `lineage search`/`show`, direct real-database
+  access mirroring `onboard_data_source.py`'s/`tag_pii_columns.py`'s
+  established convention. Verified for real against a real local
+  Postgres: registered real `DataSource` rows, ran every subcommand
+  end-to-end including both real not-found error paths.
+- **Admin web UI** (`web/src/app/admin/lineage`): a real search form and
+  results table with click-to-expand full-trace detail, calling the
+  gateway's new lineage routes through same-origin proxy routes. Named
+  honestly on the page itself, not just in docs: no real role-based admin
+  gating exists yet.
+- **AAD-integrated Kubernetes RBAC** (item 51's own code, now real):
+  `terraform/modules/aks`'s new `azure_active_directory_role_based_access
+  _control` block, a new `terraform/modules/aks-aad-groups` module
+  creating two real (but member-empty-by-default) Azure AD groups, and a
+  real `ClusterRoleBinding` in `infra/k8s/base/rbac/` binding the viewer
+  group to Kubernetes' built-in `view` ClusterRole. Verified via
+  `terraform fmt -check` (clean) and a real `kustomize build` against
+  both the `kind` and `dev` overlays (the new manifest renders correctly,
+  genuinely cluster-scoped with no namespace stamped onto it).
+
+**Deliberately NOT done here, named rather than rushed**: this Terraform/
+K8s RBAC code was NOT applied to the live `dev` AKS cluster. Two real
+reasons: which humans belong in the new admin/viewer Azure AD groups is a
+genuine business decision this session cannot make unilaterally (same
+standing as the `navikenz-poc` default-`DataSource` decision earlier in
+this project), and `terraform apply` against live infrastructure is
+reserved for a human running it directly outside CI, per
+`terraform/README.md`'s existing policy. `docs/runbooks
+/aad-k8s-rbac-rollout.md` is the complete real rollout path for whoever
+is ready to do this for real.
+
+**Still open**:
+- **No real per-tenant lineage-read authorization.** A valid bearer token
+  (when Azure AD verification is configured) is enough to search ANY
+  tenant's lineage through the gateway today — there is no policy
+  checking that the token's holder is actually authorized to see tenant
+  X's questions/answers specifically. A real fix needs an OPA policy
+  decision analogous to `PolicyAuthorizationAgent`'s existing per-request
+  check, applied to these two new routes.
+- **No real tenant registry**, so there is no "list every tenant" admin
+  command and cannot be one yet — every admin CLI/UI command requires an
+  already-known `tenant_id`, the same limitation `navigraph_catalog.api
+  .list_data_sources` itself already has.
+- **The AAD K8s RBAC code has never been applied to a live cluster or
+  verified against a real `kubectl auth can-i` check as a real AAD
+  identity.** `terraform validate`/`plan` could not even be run in this
+  sandbox (network egress to `registry.terraform.io` is blocked by this
+  environment's policy) — see the new runbook's own "what has and hasn't
+  been verified" section for the complete, honest detail. Whoever runs
+  `terraform plan` for the first time should treat it as the genuine
+  first correctness check, not assume this phase already proved it.
+- **Neither the lineage-search nor Slack-bot surfaces have real event-
+  deduplication/multi-replica session state** — both remain in-memory,
+  single-process limitations carried over from item 63.
+- **No admin UI/CLI exists yet for managing a `SemanticModel` directly**
+  (activating, editing `policy_bindings`, etc.) — Phase 13's onboarding
+  CLI covers the compile/activate path from a fresh draft, but there is
+  no equivalent "list/inspect/deactivate an already-active Semantic
+  Model" admin surface.
+
+This closes the originally-scoped Phase 1-15 plan's last named item.
+Every phase has real, tested code for what it set out to build; the
+cumulative "still open" list across all 64 items here is the honest,
+current account of what a genuine production rollout still needs —
+treat this file, not a sense that "the plan is done," as the real state
+of this project.

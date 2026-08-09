@@ -45,10 +45,12 @@ terraform/      Azure infrastructure-as-code (a real environment has been applie
 packages/       Application services: gateway, agent_runtime (26 real agents),
                 connector_sdk, federation, knowledge_graph, lineage, metadata_catalog,
                 semantic_model, mcp_server, slack_bot, shared
-web/            Next.js web UI: landing page + NextAuth wiring + a real chat UI
-                (web/src/app/chat) calling the gateway's /ask
+web/            Next.js web UI: landing page + NextAuth wiring, a real chat UI
+                (web/src/app/chat), and an admin lineage-search UI
+                (web/src/app/admin/lineage) -- both calling the gateway
 docs/           Architecture docs, ADRs, runbooks
-tools/          Dev scripts and templates (e.g. smoke-test.sh, agent scaffolding)
+tools/          Dev scripts and templates (e.g. smoke-test.sh, agent scaffolding,
+                navigraph_admin.py, onboard_data_source.py)
 .github/        CI workflows
 ```
 
@@ -125,4 +127,19 @@ Desktop), and a Slack bot (`packages/slack_bot`) that answers
 `@NaviGraph` mentions. All three are real and tested, but neither has a
 real per-caller tenant mapping (both use one fixed dev-mode tenant) nor
 has been exercised against a live Slack workspace/Claude Desktop install
-in this sandbox. See `LIMITATIONS.md` for the complete, current list.
+in this sandbox.
+
+Phase 15 (the last phase of the originally-scoped plan) added the admin
+& governance surfaces: real lineage search (`navigraph_lineage.api
+.list_traces`, now proxied through the gateway for the first time — the
+one real public trust boundary this platform has), an admin CLI
+(`tools/scripts/navigraph_admin.py`), an admin web UI
+(`web/src/app/admin/lineage`), and real Terraform/Kubernetes code for
+AAD-integrated K8s RBAC (`terraform/modules/aks-aad-groups`,
+`infra/k8s/base/rbac/`) — the last one deliberately never applied to the
+live cluster (see `docs/runbooks/aad-k8s-rbac-rollout.md`). Every phase
+in the original Phase 1-15 plan now has real, tested code; `LIMITATIONS.md`
+(64 items) is the authoritative, honest account of what a genuine
+production rollout still needs — "the plan is complete" is not the same
+claim as "this is production-ready." See `LIMITATIONS.md` for the
+complete, current list.

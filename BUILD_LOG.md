@@ -1466,3 +1466,93 @@ Slack workspace or Claude Desktop install in this sandbox); no
 Dockerfile/docker-compose entry for either new service; the Slack bot has
 no event-deduplication/idempotency store. See LIMITATIONS.md item 63 for
 the complete, itemized list.
+
+## 2026-08-09 — Phase 15: admin & governance surfaces -- lineage search, an admin CLI, an admin web UI, and real (unapplied) AAD K8s RBAC code (LIMITATIONS.md item 64)
+
+Four sub-passes closing out the original Phase 15 plan:
+
+**15.1 -- Lineage search**: new `navigraph_lineage.api.list_traces` (a
+real Postgres `GROUP BY`/aggregate query, filterable by `agent_name`/time
+range/text search, paginated) and a new `GET /lineage` route on
+agent-runtime. New `GET /lineage`/`GET /lineage/{trace_id}` PROXY routes
+on the gateway -- the first time lineage has been reachable through the
+one real public trust boundary this platform has (item 43) -- gated by
+the same real bearer-token check `/ask` already enforces
+(`_require_verified_caller`, factored out of `/ask`'s inline logic; see
+DECISIONS.md for why this partial improvement, not a new auth model, was
+the right scope). Verified against a real local Postgres 16 instance: a
+real `list_traces` proof (grouping, filtering, pagination, cross-tenant
+isolation) plus a real live `TestClient` run proving the new agent-runtime
+routes work against real seeded data. 3 new DB-free unit tests, 1 real-
+Postgres integration test, 8 new gateway proxy tests.
+
+**15.2 -- Admin CLI**: new `tools/scripts/navigraph_admin.py`
+(`datasource list`/`set-default`, `lineage search`/`show`), direct
+real-database access mirroring `onboard_data_source.py`'s/
+`tag_pii_columns.py`'s established convention -- no tenant registry
+exists in this codebase, so no "list every tenant" command exists or
+could. Verified for real: ran a real Postgres through both the
+metadata_catalog and lineage migration chains, registered real
+`DataSource` rows, and exercised all four subcommands end to end
+including both real not-found error paths.
+
+**15.3 -- Admin web UI**: new `web/src/app/admin/lineage` -- a real
+search form and results table with click-to-expand full-trace detail,
+calling the gateway's new lineage routes through two new same-origin
+proxy routes. Named honestly on the page itself: no real role-based admin
+gating exists yet. Real bug found and fixed while verifying this: a
+newer installed `@playwright/test` changed `page.route()`'s return type
+to `Promise<Disposable>`, breaking the *existing* Phase 14.1
+`chat.spec.ts` helper's `Promise<void>` annotation -- caught by a full,
+non-incremental-cached `tsc --noEmit` run; fixed by awaiting internally
+instead of returning `page.route()`'s own promise. `tsc`/`next lint`/
+`next build`/`prettier` all clean; 3 new Playwright tests, 9/9 total
+passing across the whole web test suite.
+
+**15.4 -- AAD-integrated Kubernetes RBAC**: real Terraform code closing
+LIMITATIONS.md item 51's own gap -- `terraform/modules/aks`'s new
+`azure_active_directory_role_based_access_control` block, a new
+`terraform/modules/aks-aad-groups` module creating two real (member-
+empty-by-default) Azure AD groups, and a real `ClusterRoleBinding` in
+`infra/k8s/base/rbac/` binding the viewer group to Kubernetes' built-in
+`view` ClusterRole. Verified as far as this sandbox's real constraints
+allow: `terraform fmt -check -recursive` clean, and a real `kustomize
+build` against both the `kind` and `dev` overlays (the new manifest
+renders correctly, genuinely cluster-scoped with no namespace stamped
+onto it). Deliberately NOT applied to the live `dev` cluster -- see
+DECISIONS.md for the two real reasons (a genuine human decision on group
+membership, and this project's own established human-only,
+outside-CI `terraform apply` policy) -- and NOT independently verified
+via `terraform validate`/`plan` (network egress to
+`registry.terraform.io` is blocked by this sandbox's policy, reported
+rather than routed around) or a full `kind`-cluster smoke test
+(`kind.sigs.k8s.io` also unreachable here). New
+`docs/runbooks/aad-k8s-rbac-rollout.md` is the complete real rollout path.
+`tests/security/cloud/test_rbac_least_privilege.py`'s docstring/assertion
+messages updated to clarify it tests the CI/deploy identity's own
+(separate, still-legitimately-broad) permissions, correctly expected to
+keep passing after a real rollout.
+
+**Real verification performed**: full Python repo suite -- 493 passed, 7
+skipped (the same pre-existing skips this sandbox always has), zero
+regressions; `ruff check` clean on every new/touched Python file. Web
+suite: 9/9 Playwright tests passing. Terraform: `fmt` clean, `kustomize
+build` real and passing for both overlays; `validate`/`plan`/`apply`
+honestly not performed, named in the runbook rather than assumed.
+
+**What Phase 15 named as scope and did NOT fully close**: no real
+per-tenant lineage-read authorization (a valid token can search ANY
+tenant's lineage, not just ones its holder is authorized for); no real
+tenant registry (so no "list every tenant" admin command); the AAD K8s
+RBAC code has never been applied to or verified against a live cluster;
+neither the lineage-search nor Slack-bot surfaces have real
+multi-replica session state; no admin surface for managing an already-
+active `SemanticModel`. See LIMITATIONS.md item 64 for the complete,
+itemized list.
+
+This closes the originally-scoped Phase 1-15 plan. Every phase shipped
+real, tested code for what it set out to build, with every genuine gap
+named in `LIMITATIONS.md` rather than glossed over -- that file, now 64
+items, is the authoritative account of what a real production rollout
+still needs, not a claim that the plan being "complete" means the system
+is production-ready.

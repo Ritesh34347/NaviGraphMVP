@@ -241,3 +241,24 @@ fixed, configurable dev-mode tenant). See `LIMITATIONS.md` item 63 for
 what's verified vs. still open, including that neither new service has
 been exercised against a live Slack workspace or Claude Desktop install
 in this sandbox.
+
+Phase 15 (item 64), the last phase of the originally-scoped plan, added
+the admin & governance surfaces. `navigraph_lineage.api.list_traces` is a
+real Postgres aggregate/search query over every recorded trace,
+filterable by agent/time/text; new `GET /lineage`/`GET /lineage/{trace_id}`
+routes on the gateway proxy it through — the first time lineage has ever
+been reachable through this platform's one real public trust boundary
+(item 43) — gated by the same bearer-token check `/ask` already
+enforces. `tools/scripts/navigraph_admin.py` (an operator CLI) and
+`web/src/app/admin/lineage` (a real search-and-drill-in UI) both consume
+this. `terraform/modules/aks` gained a real
+`azure_active_directory_role_based_access_control` block and a new
+`aks-aad-groups` module, paired with a real `ClusterRoleBinding` in
+`infra/k8s/base/rbac/` — closing item 51's Terraform-code gap, though
+deliberately never applied to the live cluster (a real human decision on
+group membership, and this project's own human-only `terraform apply`
+policy, both stand in the way on purpose — see `docs/runbooks
+/aad-k8s-rbac-rollout.md`). See `LIMITATIONS.md` item 64 for the complete
+still-open list, including that no per-tenant lineage-read authorization
+exists yet (a valid token can search any tenant's lineage) and this
+phase's RBAC code has never touched a live cluster.
