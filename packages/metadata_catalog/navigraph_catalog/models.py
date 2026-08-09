@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, UniqueConstraint, func, text
+from sqlalchemy import ForeignKey, Index, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -34,7 +34,22 @@ class DataSource(Base):
     """
 
     __tablename__ = "data_sources"
-    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_data_sources_tenant_name"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_data_sources_tenant_name"),
+        # Enforces "at most one default per tenant" at the DB level, not
+        # just in application code -- a partial unique index (only rows
+        # where is_default is true) rather than a plain unique constraint,
+        # since a plain one would also forbid more than one NON-default row
+        # per tenant, which is the normal case. Resolves LIMITATIONS.md
+        # items 26/42: real DataSource duplication for one tenant with no
+        # resolution order, and no `is_default` concept at all.
+        Index(
+            "uq_data_sources_tenant_default",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("is_default"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -44,11 +59,21 @@ class DataSource(Base):
     tenant_id: Mapped[str] = mapped_column(index=True, nullable=False)
     name: Mapped[str] = mapped_column(nullable=False)
     source_type: Mapped[str] = mapped_column(nullable=False)
-    # Opaque pointer to where real connection details live (e.g. a secrets
-    # manager path or an env-var prefix like {"env_prefix": "SNOWFLAKE"}) --
-    # NEVER raw credentials. This column must never contain a password,
-    # private key, token, or any other secret material.
+    # Opaque pointer to where real connection details live (e.g.
+    # {"secret_scope": "navikenz_poc_snowflake"}, resolved via a real
+    # navigraph_shared.secrets.SecretsProvider -- see
+    # navigraph_connectors.registry.build_connector) -- NEVER raw
+    # credentials. This column must never contain a password, private key,
+    # token, or any other secret material.
     connection_ref: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Which of this tenant's (possibly several) registered DataSource rows
+    # the Request Orchestrator should resolve to when a caller omits an
+    # explicit data_source_id and more than one is registered. Defaults
+    # false; at most one row per tenant may be true (see the partial unique
+    # index above). Resolves LIMITATIONS.md items 26/42.
+    is_default: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     schemas: Mapped[list[CatalogSchema]] = relationship(

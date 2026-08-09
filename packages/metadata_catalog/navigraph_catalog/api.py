@@ -34,6 +34,7 @@ def register_data_source(
     name: str,
     source_type: str,
     connection_ref: dict,
+    is_default: bool = False,
 ) -> DataSource:
     """Register a new data source after validating `source_type`.
 
@@ -42,6 +43,13 @@ def register_data_source(
     unregistered `source_type` raises `ValueError`, which is allowed to
     propagate to the caller unchanged rather than being caught and
     re-wrapped.
+
+    `is_default=True` here only makes sense when this is the FIRST
+    `DataSource` registered for `tenant_id` -- registering a second
+    `is_default=True` row raises a real `IntegrityError` from the partial
+    unique index (`uq_data_sources_tenant_default`), by design: use
+    `set_default_data_source` instead, which atomically unsets any
+    existing default first.
     """
 
     get_connector_class(source_type)
@@ -51,6 +59,7 @@ def register_data_source(
         name=name,
         source_type=source_type,
         connection_ref=connection_ref,
+        is_default=is_default,
     )
     session.add(data_source)
     session.flush()
@@ -63,6 +72,41 @@ def list_data_sources(session: Session, *, tenant_id: str) -> list[DataSource]:
     return list(
         session.execute(select(DataSource).where(DataSource.tenant_id == tenant_id)).scalars()
     )
+
+
+def get_default_data_source(session: Session, *, tenant_id: str) -> DataSource | None:
+    """Return `tenant_id`'s one default `DataSource`, or `None` if it has
+    none marked (either zero registered, or several with no default set).
+    """
+
+    return session.execute(
+        select(DataSource).where(DataSource.tenant_id == tenant_id, DataSource.is_default)
+    ).scalar_one_or_none()
+
+
+def set_default_data_source(
+    session: Session, *, tenant_id: str, data_source_id: uuid.UUID
+) -> None:
+    """Atomically mark `data_source_id` as `tenant_id`'s one default
+    `DataSource`, unsetting any previous default first.
+
+    Two `UPDATE`s in the same transaction, not one -- the partial unique
+    index (`uq_data_sources_tenant_default`, at most one `is_default=true`
+    row per tenant) would reject setting a new default before the old one
+    is cleared. Resolves LIMITATIONS.md items 26/42.
+    """
+
+    session.execute(
+        update(DataSource)
+        .where(DataSource.tenant_id == tenant_id, DataSource.is_default)
+        .values(is_default=False)
+    )
+    session.execute(
+        update(DataSource)
+        .where(DataSource.id == data_source_id, DataSource.tenant_id == tenant_id)
+        .values(is_default=True)
+    )
+    session.flush()
 
 
 def upsert_schema_tree(

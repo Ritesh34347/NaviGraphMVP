@@ -1075,3 +1075,63 @@ row for any tenant, or a metadata-catalog crawl against this connector
 (item 1's remaining "still open" list) -- this pass proved the connector
 itself is real and correct, not that it's wired into a live tenant's
 request pipeline yet.
+
+## 2026-08-09 — Phase 11 part 1: per-`DataSource` credential routing + a real default-`DataSource` concept (LIMITATIONS.md items 21, 26, 42)
+
+Built a real `navigraph_shared.secrets.SecretsProvider` abstraction
+(`EnvVarSecretsProvider`, `AzureKeyVaultSecretsProvider`, and a
+`FakeSecretsProvider` for tests) and extended
+`navigraph_connectors.registry` with a settings-factory mechanism
+(`register_connector(..., settings_factory=...)`, a new
+`build_connector(source_type, *, connection_ref, secrets)`) so both real
+connectors resolve their full settings from a `DataSource.connection_ref`
++ `SecretsProvider`, keyed by a per-row `secret_scope`, instead of reading
+process env vars directly (`navigraph_connectors.snowflake.settings_factory
+.build_snowflake_settings`, `navigraph_connectors.postgres.settings_factory
+.build_postgres_settings`). `DataSourceDiscoveryAgent`, `DataFederationAgent`,
+and `RequestOrchestratorAgent` were all updated to accept and forward a
+`secrets: SecretsProvider`; `main.py`'s `lifespan()` now wires a real
+`AzureKeyVaultSecretsProvider` when `SECRETS_KEY_VAULT_URL` is set, falling
+back to `EnvVarSecretsProvider` (with a logged warning) otherwise. This
+closes item 21: two `DataSource` rows sharing the same `source_type` now
+genuinely resolve to distinct credentials -- proven with unit tests
+including an adversarial assertion that an unrelated global env var never
+leaks into a scoped lookup.
+
+Also added `DataSource.is_default` (migration `0004_data_source_is_default`)
+with a partial unique index (`uq_data_sources_tenant_default`) enforcing
+"at most one default per tenant" at the DB level, plus
+`navigraph_catalog.api.get_default_data_source`/`set_default_data_source`
+(an atomic unset-then-set swap, since a plain single `UPDATE` would
+transiently violate the index). `RequestOrchestratorAgent
+._resolve_data_source_id` now falls back to a tenant's marked default when
+more than one `DataSource` is registered, instead of unconditionally
+failing -- closing item 42. Verified for real, not just at the model/API
+layer: stood up a fresh local Postgres role/database, ran
+`alembic upgrade head` for real, and proved the partial unique index
+genuinely raises `IntegrityError` on a second `is_default=true` row per
+tenant and that `set_default_data_source`'s swap genuinely works, before
+tearing the test database down (`tests/integration/metadata_catalog
+/test_migrations.py`, new `postgres_integration`-marked test). New
+orchestrator unit tests cover both the resolved-to-default path (two
+data sources, one marked default, `data_source_id` omitted -> answers) and
+the still-ambiguous path (two data sources, neither marked default ->
+still fails, unchanged). Full suite across `agent_runtime`,
+`metadata_catalog`, `connector_sdk`, and `shared` (298 tests, DB/network-free
+tier) passes with zero regressions; `ruff check` is clean on every changed
+file.
+
+**Item 26 is only partially resolved by this pass**: the mechanism to
+designate a default now exists, but nobody has actually called
+`set_default_data_source` against the real, live `navikenz-poc` catalog to
+pick `fidelity_poc_snowflake` or `_v2` as canonical -- that is a real
+business decision for whoever owns that tenant's data, not something this
+pass makes unilaterally. See `LIMITATIONS.md` items 21, 26, 42 for the full
+detail, including what's still open on each.
+
+**Deliberately not attempted in this pass**: real Azure AD JWT verification
+(item 23) -- security-critical code that needs its own careful pass with
+real cryptographic tests, not bundled into a credential-routing change.
+Also not attempted: verifying `AzureKeyVaultSecretsProvider` against the
+real, live `navigraph-dev-kv` Key Vault from Phase 10b -- this sandbox has
+no live Azure credentials to do so.

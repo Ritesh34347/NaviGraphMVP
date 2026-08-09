@@ -51,10 +51,11 @@ against this connector.
   conditions for promoting Trino to the default route) is a real judgment
   call, not a mechanical fact -- flagged there rather than resolved
   unilaterally.
-- Per-`DataSource` credential routing (item 21) still applies equally to
-  this connector: it reads its own global env-var-backed settings
-  (`CUSTOMER_POSTGRES_*`), not anything specific to a resolved `DataSource`
-  row, exactly like `SnowflakeConnector` today.
+- Per-`DataSource` credential routing (item 21, resolved 2026-08-09) now
+  applies to this connector too: `navigraph_connectors.postgres
+  .settings_factory.build_postgres_settings` resolves its settings from a
+  `DataSource.connection_ref["secret_scope"]` + `SecretsProvider`, not
+  global `CUSTOMER_POSTGRES_*` env vars directly.
 
 ### 2. Neo4j runs as a single local instance
 
@@ -466,23 +467,45 @@ a real `ExecutionPlan` field naming the intended join key(s) explicitly
 which is a documented heuristic, not a real join predicate — see
 `agent.py`'s `_combine_results` docstring).
 
-### 21. Connector credential routing is global-env-var-based, not per-`DataSource`
+### 21. RESOLVED (2026-08-09, Phase 11): Connector credential routing is global-env-var-based, not per-`DataSource`
 
-**What's deferred**: Resolving distinct credentials for two `DataSource`
+**What was deferred**: Resolving distinct credentials for two `DataSource`
 rows that share the same `source_type`.
 
-**Why**: `DataSource.connection_ref` is only an opaque pointer (e.g.
-`{"env_prefix": "SNOWFLAKE"}`); every connector this phase constructs is
-built with no arguments (`get_connector_class(source_type)()`), which
-reads that connector class's own global env-var-backed settings. Two
-`DataSource` rows of the same `source_type` are therefore indistinguishable
-to Data Source Discovery and Data Federation — both resolve to a connector
-reading the identical global env vars. Harmless today (exactly one
-Snowflake data source is registered), but a real gap.
+**Why it was deferred**: `DataSource.connection_ref` was only an opaque
+pointer (e.g. `{"env_prefix": "SNOWFLAKE"}`); every connector was
+constructed with no arguments (`get_connector_class(source_type)()`), which
+read that connector class's own global env-var-backed settings. Two
+`DataSource` rows of the same `source_type` were therefore indistinguishable
+to Data Source Discovery and Data Federation — both resolved to a connector
+reading the identical global env vars.
 
-**What full version requires**: A per-`DataSource` credential-routing
-layer (e.g. resolving `connection_ref.env_prefix` to a distinct settings
-instance per row) that doesn't exist anywhere in this codebase yet.
+**Resolution**: a new `navigraph_shared.secrets.SecretsProvider` ABC
+(`EnvVarSecretsProvider`, `AzureKeyVaultSecretsProvider`, and a
+`FakeSecretsProvider` for tests) resolves `get(scope, field)` per
+`DataSource`, keyed by `connection_ref["secret_scope"]` — a distinct scope
+per row, not a shared global namespace. `navigraph_connectors.registry`
+gained a settings-factory mechanism (`register_connector(..., settings_factory=...)`
+and a new `build_connector(source_type, *, connection_ref, secrets)`) so
+both real connectors (`navigraph_connectors.snowflake.settings_factory
+.build_snowflake_settings`, `navigraph_connectors.postgres.settings_factory
+.build_postgres_settings`) resolve their full settings from `connection_ref`
++ `SecretsProvider` instead of reading process env vars directly.
+`DataSourceDiscoveryAgent`, `DataFederationAgent`, and
+`RequestOrchestratorAgent` all now accept a `secrets: SecretsProvider`
+and call `build_connector` with the resolved `DataSource.connection_ref`;
+`main.py`'s `lifespan()` wires a real `AzureKeyVaultSecretsProvider` when
+`SECRETS_KEY_VAULT_URL` is set, falling back to `EnvVarSecretsProvider`
+(with a logged warning) otherwise. Proven with unit tests that construct
+two `DataSource` rows of the same `source_type` and assert they resolve to
+genuinely distinct settings, including an adversarial assertion that an
+unrelated global env var never leaks into a scoped lookup.
+
+**Still open**: `AzureKeyVaultSecretsProvider` is only verified against a
+mocked Azure SDK client in this sandbox — it has never been run against
+the real, live `navigraph-dev-kv` Key Vault from Phase 10b, since this
+environment has no live Azure credentials. A real end-to-end run against
+that Key Vault is a reasonable follow-up whenever someone has that access.
 
 ### 22. Caching TTL is a flat, conservative default, not a per-intent policy
 
@@ -570,9 +593,9 @@ call involved.
 column-tagging integration, if/when this dataset (or a future real
 tenant's dataset) has richer PII surface than a bare identifier column.
 
-### 26. Two registered data sources exist for one tenant, with divergent PII tagging risk
+### 26. PARTIALLY RESOLVED (2026-08-09, Phase 11): Two registered data sources exist for one tenant, with divergent PII tagging risk
 
-**What's deferred**: Reconciling why `navikenz-poc` has two registered
+**What was deferred**: Reconciling why `navikenz-poc` has two registered
 `DataSource` rows for the same underlying Snowflake account
 (`fidelity_poc_snowflake` and `fidelity_poc_snowflake_v2`, both created
 during Phase 2/3 crawls) — a real, pre-existing condition Phase 6's PII
@@ -586,10 +609,26 @@ a real, silent security gap (tagging only `_v2` while the pipeline
 actually resolves the other one — a real mistake caught live via
 `tests/integration/guardrail_pipeline/` before this fix).
 
-**What full version requires**: A decision on which of the two data
-source registrations is canonical (or a real de-duplication pass), so
-future catalog-derived decisions (PII tagging, glossary curation, business
-concept mapping) don't need to be applied twice defensively.
+**Resolution (mechanism only)**: `DataSource` gained a real `is_default`
+column plus a partial unique index (`uq_data_sources_tenant_default`,
+migration `0004_data_source_is_default`) enforcing "at most one default per
+tenant" at the DB level — verified for real against a live Postgres
+instance, including a genuine `IntegrityError` on a second default and a
+genuine atomic swap via the new `navigraph_catalog.api.set_default_data_source`.
+The Request Orchestrator's `_resolve_data_source_id` now falls back to a
+tenant's marked default when more than one `DataSource` is registered
+(see item 42).
+
+**Still open — a real data decision, not a code gap**: the mechanism now
+exists, but nobody has actually called `set_default_data_source` against
+the real, live `navikenz-poc` catalog to designate `fidelity_poc_snowflake`
+or `_v2` as canonical. That is a deliberate business decision (which
+registration is authoritative going forward, and whether the other should
+eventually be de-duplicated away entirely) this phase does not make
+unilaterally — it requires a human decision from whoever owns the
+`navikenz-poc` tenant's data, then a one-time
+`set_default_data_source(tenant_id="navikenz-poc", data_source_id=...)`
+call against the live catalog.
 
 ### 27. Rego policy hardening found live, during adversarial testing, not before
 
@@ -952,25 +991,35 @@ low-confidence gate that could reject otherwise-answerable questions.
 "technically resolved, but probably wrong" partial answer actually
 confuses users, before broadening the trigger condition is justified.
 
-### 42. `data_source_id` auto-resolution requires exactly one match, with no "default" concept
+### 42. RESOLVED (2026-08-09, Phase 11): `data_source_id` auto-resolution requires exactly one match, with no "default" concept
 
-**What's deferred**: a real `is_default` flag (or equivalent) on
+**What was deferred**: a real `is_default` flag (or equivalent) on
 `navigraph_catalog.DataSource`.
 
-**Why**: the Request Orchestrator resolves `data_source_id` from
-`tenant_id` via `list_data_sources` only when the caller omits one —
-exactly one match is used automatically; zero or more than one is a
+**Why it was deferred**: the Request Orchestrator resolved `data_source_id`
+from `tenant_id` via `list_data_sources` only when the caller omitted one —
+exactly one match was used automatically; zero or more than one was a
 structured `outcome="failed"` (`failure_stage="orchestrator.data_source_resolution"`).
-`navikenz-poc` is a real, concrete case of the "more than one" branch
+`navikenz-poc` was a real, concrete case of the "more than one" branch
 (`fidelity_poc_snowflake` and `fidelity_poc_snowflake_v2`, see item 26) —
-every real call in this phase's own verification had to supply
-`data_source_id` explicitly to get past this. A real "default data
-source" flag would be a new migration and a bigger surface change, out of
-scope for this phase.
+every real call in earlier phases' own verification had to supply
+`data_source_id` explicitly to get past this.
 
-**What full version requires**: either resolve item 26 (reconcile the two
-`navikenz-poc` registrations down to one) or add a real default-designation
-field to `DataSource` — not yet decided.
+**Resolution**: `DataSource.is_default` (migration `0004`) plus
+`navigraph_catalog.api.get_default_data_source`/`set_default_data_source`.
+`RequestOrchestratorAgent._resolve_data_source_id` now checks, in order:
+(1) the caller-supplied `data_source_id`, (2) exactly one registered
+`DataSource` for the tenant, (3) exactly one marked `is_default` among
+several — only falling through to the existing `outcome="failed"` when
+none of those three apply. Covered by new orchestrator unit tests
+(two data sources, one marked default, `data_source_id` omitted →
+resolves and answers; two data sources, neither marked default →
+still fails, unchanged from before) and by the real-Postgres integration
+test proving the underlying partial unique index and atomic swap.
+
+**Still open**: see item 26 — the mechanism exists, but `navikenz-poc`'s
+real two-registration ambiguity has not itself been resolved by actually
+designating one of them default in the live catalog.
 
 ### 43. Gateway → agent-runtime remains a real, un-collapsed HTTP hop
 

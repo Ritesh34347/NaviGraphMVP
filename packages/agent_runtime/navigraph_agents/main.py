@@ -78,6 +78,11 @@ from navigraph_shared.config import get_settings
 from navigraph_shared.contracts import AgentInput
 from navigraph_shared.llm import AnthropicLLMClient, FakeLLMClient, LLMClient
 from navigraph_shared.opa import HttpOpaClient
+from navigraph_shared.secrets import (
+    AzureKeyVaultSecretsProvider,
+    EnvVarSecretsProvider,
+    SecretsProvider,
+)
 from navigraph_shared.telemetry import (
     bind_request_context,
     configure_logging,
@@ -292,9 +297,32 @@ def _redis_url() -> str:
     return os.environ.get("REDIS_URL", "redis://redis:6379")
 
 
+def _build_secrets_provider() -> SecretsProvider:
+    """Real per-`DataSource` credential resolution (LIMITATIONS.md item
+    21). Uses a real `AzureKeyVaultSecretsProvider` when `SECRETS_KEY_VAULT_URL`
+    is set (the real Phase 10b Key Vault, e.g.
+    `https://navigraph-dev-kv.vault.azure.net`), falling back to
+    `EnvVarSecretsProvider` for local dev/CI -- mirrors `_build_llm_client`'s
+    identical real-if-configured/fake-otherwise pattern, logging which one
+    was chosen rather than silently degrading."""
+
+    vault_url = os.environ.get("SECRETS_KEY_VAULT_URL")
+    if vault_url:
+        return AzureKeyVaultSecretsProvider(vault_url)
+
+    logger.warning(
+        "SECRETS_KEY_VAULT_URL is not set -- falling back to EnvVarSecretsProvider. "
+        "Per-DataSource credentials will be read from scoped environment variables "
+        "rather than a real secrets manager. Set SECRETS_KEY_VAULT_URL to use a "
+        "real Azure Key Vault."
+    )
+    return EnvVarSecretsProvider()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     llm_client = _build_llm_client()
+    secrets_provider = _build_secrets_provider()
 
     intent_understanding_agent = IntentUnderstandingAgent(llm_client=llm_client, tracer=tracer)
     register(INTENT_UNDERSTANDING_AGENT_NAME, intent_understanding_agent.run)
@@ -325,7 +353,7 @@ async def lifespan(app: FastAPI):
 
     # Query-domain agents (Phase 5).
     data_source_discovery_agent = DataSourceDiscoveryAgent(
-        session_factory=catalog_session_factory, tracer=tracer
+        session_factory=catalog_session_factory, secrets=secrets_provider, tracer=tracer
     )
     register(DATA_SOURCE_DISCOVERY_AGENT_NAME, data_source_discovery_agent.run)
 
@@ -373,6 +401,7 @@ async def lifespan(app: FastAPI):
     data_federation_agent = DataFederationAgent(
         catalog_session_factory=catalog_session_factory,
         trino_client=trino_client,
+        secrets=secrets_provider,
         tracer=tracer,
     )
     register(DATA_FEDERATION_AGENT_NAME, data_federation_agent.run)
@@ -457,6 +486,7 @@ async def lifespan(app: FastAPI):
         opa_client=opa_client,
         cache_client=cast(SessionCacheClientProtocol, redis_client),
         trino_client=trino_client,
+        secrets=secrets_provider,
         tracer=tracer,
     )
     register(REQUEST_ORCHESTRATOR_AGENT_NAME, request_orchestrator_agent.run)

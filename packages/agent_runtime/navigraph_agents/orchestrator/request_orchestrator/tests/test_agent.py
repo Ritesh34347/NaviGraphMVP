@@ -629,6 +629,45 @@ async def test_data_source_id_ambiguous_returns_failed_without_calling_any_agent
     agent._conversation_agent.run.assert_not_called()
 
 
+async def test_data_source_id_ambiguous_when_no_default_is_marked() -> None:
+    """Two registered data sources, neither marked `is_default` -- still
+    ambiguous, same failure as zero registered. Only an EXACT single
+    default resolves it (LIMITATIONS.md items 26/42)."""
+
+    agent = _make_agent()
+    _wire_happy_path(agent)
+
+    data_sources = [
+        MagicMock(id="ds-1", is_default=False),
+        MagicMock(id="ds-2", is_default=False),
+    ]
+    with patch(f"{_AGENT_MODULE}.list_data_sources", return_value=data_sources):
+        output = await agent.run(_make_input())
+
+    assert output.result.outcome == "failed"
+    assert output.result.failure_stage == "orchestrator.data_source_resolution"
+    agent._conversation_agent.run.assert_not_called()
+
+
+async def test_data_source_id_resolves_to_the_tenant_default_when_omitted() -> None:
+    """Two registered data sources, exactly one marked `is_default` -- the
+    caller omitting `data_source_id` now resolves to that default instead
+    of failing (LIMITATIONS.md items 26/42, resolved 2026-08-09)."""
+
+    agent = _make_agent()
+    _wire_happy_path(agent)
+
+    data_sources = [
+        MagicMock(id="ds-1", is_default=False),
+        MagicMock(id="ds-2", is_default=True),
+    ]
+    with patch(f"{_AGENT_MODULE}.list_data_sources", return_value=data_sources):
+        output = await agent.run(_make_input())
+
+    assert output.result.outcome == "answered"
+    agent._data_source_discovery_agent.run.assert_awaited_once()
+
+
 async def test_data_source_id_supplied_by_caller_skips_resolution() -> None:
     agent = _make_agent()
     _wire_happy_path(agent)

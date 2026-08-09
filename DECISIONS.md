@@ -886,3 +886,64 @@ source (Snowflake) executes for every real request, with no live-verified
 Postgres-via-Trino path to justify that change. Left as
 `"direct_connector"`; see `LIMITATIONS.md` item 3 for exactly what
 promoting it for real still requires.
+
+## 2026-08-09 — `SecretsProvider` is a new ABC, not an extension of `Connector`'s existing settings pattern
+
+Resolving LIMITATIONS.md item 21 (per-`DataSource` credential routing)
+needed a way to resolve real credentials scoped to one `DataSource` row
+rather than one process's global env vars. We considered giving each
+`*Settings` class (`SnowflakeSettings`, `PostgresSettings`) its own
+per-instance "resolve from this connection_ref" constructor instead of
+introducing a new abstraction, and rejected it: that would mean every
+current and future connector re-implements its own Key-Vault/env-var
+resolution logic, with no single place to swap the backend (env vars in
+dev, a real secrets manager in production) without touching every
+connector. Instead, `navigraph_shared.secrets.SecretsProvider` is a small,
+connector-agnostic ABC (`get(*, scope, field) -> str | None`) that mirrors
+`Connector`'s own ABC/real/fake triad convention exactly
+(`EnvVarSecretsProvider`, `AzureKeyVaultSecretsProvider`,
+`FakeSecretsProvider`). Its `get()` contract deliberately mirrors
+`Connector.introspect_schema()`/`execute_query()` ("MAY raise" on backend
+failure), not `test_connection()`'s "never raise" contract -- returning
+`None` means "not configured," which is a real, distinct outcome from a
+Key Vault being unreachable.
+
+## 2026-08-09 — A registry-level settings-factory function, not a required constructor signature on every `Connector`
+
+To make `build_connector(source_type, *, connection_ref, secrets)` work
+generically across connectors with different settings shapes, we
+considered requiring every `Connector` subclass to implement a uniform
+`from_connection_ref(connection_ref, secrets)` classmethod instead.
+Rejected: that would force the `Connector` ABC itself to know about
+`SecretsProvider`, coupling the connector-SDK's core abstraction (which
+`Connector` implementations far outside this repo could someday
+implement) to one specific credential-resolution mechanism. Instead,
+`register_connector()` gained an optional `settings_factory` parameter --
+a plain function `(connection_ref, secrets) -> Settings` registered
+alongside the connector class, looked up by `build_connector()` and
+defaulting to "construct the connector with no arguments" when a
+connector has no settings factory registered (preserving old behavior for
+any connector that doesn't opt in). This keeps `Connector` itself
+unchanged and makes credential resolution an opt-in registry concern, not
+a new requirement on every implementation.
+
+## 2026-08-09 — `is_default` is a partial unique index, not application-level enforcement
+
+Resolving LIMITATIONS.md items 26/42 needed "at most one default
+`DataSource` per tenant" to be a real, unbreakable invariant, not a
+convention application code merely tries to maintain. We considered
+enforcing it only in `navigraph_catalog.api.set_default_data_source`
+(unset-then-set, with no DB constraint backing it) and rejected relying on
+that alone: any other code path that inserts or updates a `DataSource`
+row directly (a future migration, a manual fix, a bug) could silently
+create two defaults for one tenant with nothing to stop it. A plain
+`UniqueConstraint("tenant_id", "is_default")` was also rejected -- it
+would incorrectly forbid more than one *non*-default row per tenant too,
+which is the normal, common case. A partial unique index
+(`postgresql_where=text("is_default")`) is the correct shape: it only
+constrains rows where `is_default` is true, so the DB itself rejects a
+second default per tenant regardless of which code path attempts it --
+verified for real against a live Postgres, not just asserted in a
+docstring (a genuine `IntegrityError` on a direct second-default insert,
+and a genuine successful atomic swap via the two-`UPDATE` unset-then-set
+pattern the index requires).

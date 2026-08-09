@@ -7,8 +7,8 @@ list_data_sources` / `list_tables` and `navigraph_catalog.db.session_scope`
 are patched at the point they're imported into `agent.py`, fed plain
 `SimpleNamespace` stand-ins for `DataSource` / `CatalogTable` rows (the
 agent only ever reads `.id`, `.source_type`, `.name` off them -- a real ORM
-instance isn't needed). `get_connector_class` is patched the same way,
-returning a fake `Connector` subclass whose `test_connection()` call count
+instance isn't needed). `build_connector` is patched the same way,
+returning a fake `Connector` instance whose `test_connection()` call count
 is asserted directly, so "one real connectivity probe per distinct data
 source, not per resolved table" is provably exercised rather than merely
 believed.
@@ -50,7 +50,12 @@ def _make_input(tables: list[str]) -> DataSourceDiscoveryInput:
 
 
 def _data_source(source_id: uuid.UUID, source_type: str = "snowflake") -> SimpleNamespace:
-    return SimpleNamespace(id=source_id, source_type=source_type, tenant_id="tenant-acme")
+    return SimpleNamespace(
+        id=source_id,
+        source_type=source_type,
+        tenant_id="tenant-acme",
+        connection_ref={"secret_scope": f"tenant-acme-{source_id}"},
+    )
 
 
 def _table(name: str) -> SimpleNamespace:
@@ -105,7 +110,7 @@ async def test_single_table_resolves_to_single_reachable_source() -> None:
         patch(f"{_AGENT_MODULE}.session_scope", _fake_session_scope),
         patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[data_source]),
         patch(f"{_AGENT_MODULE}.list_tables", return_value=[_table("STAGING_TRANSACTIONS")]),
-        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=connector_cls),
+        patch(f"{_AGENT_MODULE}.build_connector", return_value=connector_cls()),
     ):
         # Deliberately lowercase input vs. the uppercase crawled table name,
         # to exercise the case-insensitive match at the same time.
@@ -151,7 +156,7 @@ async def test_unresolved_table_lands_in_unresolved_tables() -> None:
         patch(f"{_AGENT_MODULE}.session_scope", _fake_session_scope),
         patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[data_source]),
         patch(f"{_AGENT_MODULE}.list_tables", return_value=[_table("ORDERS")]),
-        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=connector_cls),
+        patch(f"{_AGENT_MODULE}.build_connector", return_value=connector_cls()),
     ):
         output = await agent.run(_make_input(["orders", "ghost_table"]))
 
@@ -180,7 +185,7 @@ async def test_unreachable_data_source_is_non_recoverable_error() -> None:
         patch(f"{_AGENT_MODULE}.session_scope", _fake_session_scope),
         patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[data_source]),
         patch(f"{_AGENT_MODULE}.list_tables", return_value=[_table("ORDERS")]),
-        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=connector_cls),
+        patch(f"{_AGENT_MODULE}.build_connector", return_value=connector_cls()),
     ):
         output = await agent.run(_make_input(["orders"]))
 
@@ -218,7 +223,7 @@ async def test_two_tables_two_sources_is_multi_source_with_one_check_each() -> N
             f"{_AGENT_MODULE}.list_tables",
             side_effect=lambda session, *, data_source_id: tables_by_source[data_source_id],
         ),
-        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=connector_cls),
+        patch(f"{_AGENT_MODULE}.build_connector", return_value=connector_cls()),
     ):
         output = await agent.run(_make_input(["orders", "customers"]))
 
@@ -287,7 +292,7 @@ async def test_tie_break_picks_first_data_source_when_table_name_collides() -> N
             f"{_AGENT_MODULE}.list_tables",
             side_effect=lambda session, *, data_source_id: tables_by_source[data_source_id],
         ),
-        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=connector_cls),
+        patch(f"{_AGENT_MODULE}.build_connector", return_value=connector_cls()),
     ):
         output = await agent.run(_make_input(["shared_table"]))
 

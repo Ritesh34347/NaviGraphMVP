@@ -6,14 +6,20 @@ Side effect: importing this module registers `SnowflakeConnector` under the
 once anyone (a startup script, a test, another package) has imported
 `navigraph_connectors.snowflake`. Nothing about the interface in
 `navigraph_connectors.base` requires this -- it's purely how this specific
-connector implementation makes itself discoverable at runtime.
+connector implementation makes itself discoverable at runtime. Also
+registers `build_snowflake_settings` as this `source_type`'s settings
+factory, so `navigraph_connectors.registry.build_connector("snowflake", ...)`
+resolves a real, per-`DataSource` `SnowflakeSettings` (LIMITATIONS.md item 21)
+instead of every Snowflake `DataSource` sharing one global env-var-backed
+credential set.
 """
 
 from __future__ import annotations
 
 from navigraph_connectors.registry import register_connector
 from navigraph_connectors.snowflake.connector import SnowflakeConnector
+from navigraph_connectors.snowflake.settings_factory import build_snowflake_settings
 
-register_connector("snowflake", SnowflakeConnector)
+register_connector("snowflake", SnowflakeConnector, build_snowflake_settings)
 
-__all__ = ["SnowflakeConnector"]
+__all__ = ["SnowflakeConnector", "build_snowflake_settings"]

@@ -93,6 +93,7 @@ from navigraph_shared.contracts import (
 )
 from navigraph_shared.llm import LLMClient
 from navigraph_shared.opa import OpaClient
+from navigraph_shared.secrets import EnvVarSecretsProvider, SecretsProvider
 from navigraph_shared.telemetry import (
     configure_logging,
     get_tracer,
@@ -341,9 +342,14 @@ class RequestOrchestratorAgent:
         opa_client: OpaClient,
         cache_client: CacheClientProtocol,
         trino_client: TrinoClient | None = None,
+        secrets: SecretsProvider | None = None,
         tracer: Tracer | None = None,
     ) -> None:
         self._catalog_session_factory = catalog_session_factory
+        # Real per-DataSource credential resolution (LIMITATIONS.md item
+        # 21) -- shared by Data Source Discovery and Data Federation below,
+        # the two agents that actually construct connectors.
+        secrets = secrets or EnvVarSecretsProvider()
         self._tracer = tracer or get_tracer("navigraph-agent-runtime")
 
         # Understanding domain
@@ -360,7 +366,7 @@ class RequestOrchestratorAgent:
 
         # Query domain
         self._data_source_discovery_agent = DataSourceDiscoveryAgent(
-            session_factory=catalog_session_factory, tracer=tracer
+            session_factory=catalog_session_factory, secrets=secrets, tracer=tracer
         )
         self._sql_generation_agent = SqlGenerationAgent(llm_client=llm_client, tracer=tracer)
         self._sql_optimization_agent = SqlOptimizationAgent(tracer=tracer)
@@ -368,6 +374,7 @@ class RequestOrchestratorAgent:
         self._data_federation_agent = DataFederationAgent(
             catalog_session_factory=catalog_session_factory,
             trino_client=trino_client,
+            secrets=secrets,
             tracer=tracer,
         )
         # Shares the same real cache_client as SessionContextManagerAgent
@@ -439,9 +446,17 @@ class RequestOrchestratorAgent:
     def _resolve_data_source_id(self, *, tenant_id: str, requested: str | None) -> str | None:
         """Real `data_source_id` resolution: use the caller-supplied one if
         given; otherwise resolve from `tenant_id` via
-        `navigraph_catalog.api.list_data_sources` -- exactly one match is
-        used, zero or more than one returns `None` (the caller turns this
-        into a structured failure). Never guesses."""
+        `navigraph_catalog.api.list_data_sources`.
+
+        Exactly one registered match is used as before. When a tenant has
+        MORE than one, this no longer unconditionally fails (LIMITATIONS.md
+        items 26/42, resolved 2026-08-09): if exactly one of them is marked
+        `is_default`, that one is used. Zero registered, or several with no
+        (or more than one -- prevented at the DB level by a partial unique
+        index, but checked defensively here too) marked default, still
+        returns `None`, which the caller turns into a structured failure.
+        Never guesses beyond that one explicit signal.
+        """
 
         if requested is not None:
             return requested
@@ -451,6 +466,11 @@ class RequestOrchestratorAgent:
 
         if len(data_sources) == 1:
             return str(data_sources[0].id)
+
+        defaults = [ds for ds in data_sources if ds.is_default]
+        if len(defaults) == 1:
+            return str(defaults[0].id)
+
         return None
 
     async def run(self, input: RequestOrchestratorInput) -> RequestOrchestratorOutput:

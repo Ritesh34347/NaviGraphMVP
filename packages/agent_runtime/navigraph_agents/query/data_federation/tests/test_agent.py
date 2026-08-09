@@ -4,7 +4,7 @@ Mirrors `navigraph_agents.understanding.metadata_discovery.tests.test_agent`'s
 "mock the session/lookup layer, assert on shape" convention:
 `navigraph_catalog.api.list_data_sources` and `navigraph_catalog.db
 .session_scope` are patched at the point they're imported into `agent.py`,
-and `DataFederationAgent._get_data_source` / `get_connector_class` are
+and `DataFederationAgent._get_data_source` / `build_connector` are
 patched directly so tests never need a real Postgres row or a real
 connector.
 
@@ -91,7 +91,6 @@ async def test_single_source_direct_connector_success() -> None:
         rows=[{"customer_id": 1, "amount": 100}, {"customer_id": 2, "amount": 200}],
         row_count=2,
     )
-    fake_connector_cls = MagicMock(return_value=_FakeConnector(query_result=query_result))
 
     agent = _agent()
     input_ = DataFederationInput(
@@ -105,10 +104,13 @@ async def test_single_source_direct_connector_success() -> None:
             DataFederationAgent,
             "_get_data_source",
             staticmethod(lambda session, *, data_source_id, tenant_id: SimpleNamespace(
-                source_type="fake_source"
+                source_type="fake_source", connection_ref={"secret_scope": "fake"}
             )),
         ),
-        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=fake_connector_cls),
+        patch(
+            f"{_AGENT_MODULE}.build_connector",
+            return_value=_FakeConnector(query_result=query_result),
+        ),
     ):
         output = await agent.run(input_)
 
@@ -141,10 +143,6 @@ async def test_execute_query_failure_becomes_non_recoverable_error_not_a_crash()
     Python exception out of `run()`; instead a non-recoverable `AgentError`
     is recorded and the result is empty."""
 
-    fake_connector_cls = MagicMock(
-        return_value=_FakeConnector(error=RuntimeError("warehouse suspended"))
-    )
-
     agent = _agent()
     input_ = DataFederationInput(
         request_context=_request_context(),
@@ -157,10 +155,13 @@ async def test_execute_query_failure_becomes_non_recoverable_error_not_a_crash()
             DataFederationAgent,
             "_get_data_source",
             staticmethod(lambda session, *, data_source_id, tenant_id: SimpleNamespace(
-                source_type="fake_source"
+                source_type="fake_source", connection_ref={"secret_scope": "fake"}
             )),
         ),
-        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=fake_connector_cls),
+        patch(
+            f"{_AGENT_MODULE}.build_connector",
+            return_value=_FakeConnector(error=RuntimeError("warehouse suspended")),
+        ),
     ):
         output = await agent.run(input_)
 
@@ -183,14 +184,16 @@ async def test_execute_query_failure_becomes_non_recoverable_error_not_a_crash()
 async def test_partial_failure_across_multiple_plans_yields_confidence_half() -> None:
     ok_result = QueryResult(columns=["id"], rows=[{"id": 1}], row_count=1)
 
-    def _connector_cls_for(source_type: str) -> type:
+    def _connector_for(source_type: str, *, connection_ref, secrets):
         if source_type == "fake_ok":
-            return MagicMock(return_value=_FakeConnector(query_result=ok_result))
-        return MagicMock(return_value=_FakeConnector(error=RuntimeError("network unreachable")))
+            return _FakeConnector(query_result=ok_result)
+        return _FakeConnector(error=RuntimeError("network unreachable"))
 
     def _fake_get_data_source(session, *, data_source_id, tenant_id):
         source_type = "fake_ok" if data_source_id == _SOURCE_A else "fake_broken"
-        return SimpleNamespace(source_type=source_type)
+        return SimpleNamespace(
+            source_type=source_type, connection_ref={"secret_scope": source_type}
+        )
 
     agent = _agent()
     input_ = DataFederationInput(
@@ -203,7 +206,7 @@ async def test_partial_failure_across_multiple_plans_yields_confidence_half() ->
         patch.object(
             DataFederationAgent, "_get_data_source", staticmethod(_fake_get_data_source)
         ),
-        patch(f"{_AGENT_MODULE}.get_connector_class", side_effect=_connector_cls_for),
+        patch(f"{_AGENT_MODULE}.build_connector", side_effect=_connector_for),
     ):
         output = await agent.run(input_)
 
@@ -235,14 +238,16 @@ async def test_multiple_sources_combined_via_shared_join_key() -> None:
         row_count=2,
     )
 
-    def _connector_cls_for(source_type: str) -> type:
+    def _connector_for(source_type: str, *, connection_ref, secrets):
         if source_type == "fake_a":
-            return MagicMock(return_value=_FakeConnector(query_result=result_a))
-        return MagicMock(return_value=_FakeConnector(query_result=result_b))
+            return _FakeConnector(query_result=result_a)
+        return _FakeConnector(query_result=result_b)
 
     def _fake_get_data_source(session, *, data_source_id, tenant_id):
         source_type = "fake_a" if data_source_id == _SOURCE_A else "fake_b"
-        return SimpleNamespace(source_type=source_type)
+        return SimpleNamespace(
+            source_type=source_type, connection_ref={"secret_scope": source_type}
+        )
 
     agent = _agent()
     input_ = DataFederationInput(
@@ -255,7 +260,7 @@ async def test_multiple_sources_combined_via_shared_join_key() -> None:
         patch.object(
             DataFederationAgent, "_get_data_source", staticmethod(_fake_get_data_source)
         ),
-        patch(f"{_AGENT_MODULE}.get_connector_class", side_effect=_connector_cls_for),
+        patch(f"{_AGENT_MODULE}.build_connector", side_effect=_connector_for),
     ):
         output = await agent.run(input_)
 
@@ -284,14 +289,16 @@ async def test_combine_results_falls_back_to_union_when_no_shared_columns() -> N
     result_a = QueryResult(columns=["a_col"], rows=[{"a_col": 1}], row_count=1)
     result_b = QueryResult(columns=["b_col"], rows=[{"b_col": 2}], row_count=1)
 
-    def _connector_cls_for(source_type: str) -> type:
+    def _connector_for(source_type: str, *, connection_ref, secrets):
         if source_type == "fake_a":
-            return MagicMock(return_value=_FakeConnector(query_result=result_a))
-        return MagicMock(return_value=_FakeConnector(query_result=result_b))
+            return _FakeConnector(query_result=result_a)
+        return _FakeConnector(query_result=result_b)
 
     def _fake_get_data_source(session, *, data_source_id, tenant_id):
         source_type = "fake_a" if data_source_id == _SOURCE_A else "fake_b"
-        return SimpleNamespace(source_type=source_type)
+        return SimpleNamespace(
+            source_type=source_type, connection_ref={"secret_scope": source_type}
+        )
 
     agent = _agent()
     input_ = DataFederationInput(
@@ -304,7 +311,7 @@ async def test_combine_results_falls_back_to_union_when_no_shared_columns() -> N
         patch.object(
             DataFederationAgent, "_get_data_source", staticmethod(_fake_get_data_source)
         ),
-        patch(f"{_AGENT_MODULE}.get_connector_class", side_effect=_connector_cls_for),
+        patch(f"{_AGENT_MODULE}.build_connector", side_effect=_connector_for),
     ):
         output = await agent.run(input_)
 

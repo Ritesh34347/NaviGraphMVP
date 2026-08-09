@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from navigraph_catalog.api import (
     find_column,
+    get_default_data_source,
     get_table,
     list_columns,
     list_data_sources,
@@ -30,6 +31,7 @@ from navigraph_catalog.api import (
     list_tables,
     mark_columns_pii,
     register_data_source,
+    set_default_data_source,
     upsert_glossary,
     upsert_schema_tree,
 )
@@ -91,6 +93,35 @@ class TestRegisterDataSource:
         session.flush.assert_called_once()
         assert result is added
 
+    def test_is_default_defaults_to_false_when_not_passed(self) -> None:
+        session = MagicMock()
+
+        with patch("navigraph_catalog.api.get_connector_class"):
+            result = register_data_source(
+                session,
+                tenant_id="tenant-a",
+                name="snowflake-prod",
+                source_type="snowflake",
+                connection_ref={"env_prefix": "SNOWFLAKE"},
+            )
+
+        assert result.is_default is False
+
+    def test_is_default_true_is_passed_through_to_the_model(self) -> None:
+        session = MagicMock()
+
+        with patch("navigraph_catalog.api.get_connector_class"):
+            result = register_data_source(
+                session,
+                tenant_id="tenant-a",
+                name="snowflake-prod",
+                source_type="snowflake",
+                connection_ref={"env_prefix": "SNOWFLAKE"},
+                is_default=True,
+            )
+
+        assert result.is_default is True
+
 
 class TestListDataSources:
     def test_list_data_sources_builds_expected_query_and_returns_scalars(self) -> None:
@@ -102,6 +133,53 @@ class TestListDataSources:
 
         assert result == expected
         session.execute.assert_called_once()
+
+
+class TestGetDefaultDataSource:
+    def test_returns_the_default_when_one_exists(self) -> None:
+        session = MagicMock()
+        expected = MagicMock(spec=DataSource)
+        session.execute.return_value.scalar_one_or_none.return_value = expected
+
+        result = get_default_data_source(session, tenant_id="tenant-a")
+
+        assert result is expected
+        session.execute.assert_called_once()
+
+    def test_returns_none_when_no_default_is_set(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = get_default_data_source(session, tenant_id="tenant-a")
+
+        assert result is None
+
+
+class TestSetDefaultDataSource:
+    def test_unsets_any_existing_default_before_setting_the_new_one(self) -> None:
+        session = MagicMock()
+        data_source_id = uuid.uuid4()
+
+        set_default_data_source(session, tenant_id="tenant-a", data_source_id=data_source_id)
+
+        assert session.execute.call_count == 2
+        session.flush.assert_called_once()
+
+    def test_unset_update_runs_before_the_set_update(self) -> None:
+        """Order matters here: the partial unique index would reject setting
+        a new default before the old one is cleared in the same
+        transaction, so the "unset all" UPDATE must be issued first."""
+
+        session = MagicMock()
+        data_source_id = uuid.uuid4()
+
+        set_default_data_source(session, tenant_id="tenant-a", data_source_id=data_source_id)
+
+        unset_call, set_call = session.execute.call_args_list
+        unset_compiled = unset_call.args[0].compile()
+        set_compiled = set_call.args[0].compile()
+        assert unset_compiled.params["is_default"] is False
+        assert set_compiled.params["is_default"] is True
 
 
 class TestUpsertSchemaTree:

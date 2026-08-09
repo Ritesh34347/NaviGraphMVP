@@ -16,19 +16,14 @@ factory"), `run()` opens one `session_scope` per invocation, and every
 `navigraph_catalog.api` call within that `with` block receives an
 already-open `Session`.
 
-Connector-credential gap (documented, not solved here): `DataSource.
-connection_ref` is an opaque pointer to where real per-source connection
-details live (e.g. `{"env_prefix": "SNOWFLAKE"}`), but this project does not
-yet have per-`DataSource` credential resolution beyond "the connector class
-reads its own global env vars" -- see e.g. `SnowflakeConnector.__init__`,
-which defaults to a real env-var-backed `SnowflakeSettings()` when
-constructed with no arguments. This agent therefore constructs every
-connector with no arguments (`get_connector_class(source_type)()`), which
-means two `DataSource` rows of the same `source_type` are indistinguishable
-to it -- both would resolve to a connector reading the SAME global env vars.
-That is a real limitation, out of scope to fix here (it needs a
-per-`DataSource` credential-routing layer that doesn't exist yet anywhere in
-this codebase).
+Connector-credential resolution (LIMITATIONS.md item 21, RESOLVED
+2026-08-09): this agent constructs each resolved `DataSource`'s connector via
+`navigraph_connectors.registry.build_connector`, passing that `DataSource`'s
+own `connection_ref` and an injected `SecretsProvider` -- so two `DataSource`
+rows of the same `source_type` now resolve to genuinely distinct real
+credentials instead of both reading the same global env vars. `secrets`
+defaults to a real `EnvVarSecretsProvider()` (this project's local/dev
+default) if the caller doesn't inject one.
 
 SAFETY-RELEVANT DEVIATION FROM THE USUAL AGENT CONTRACT: every other agent
 built so far treats every `AgentError` as a soft, recoverable-by-default
@@ -55,8 +50,9 @@ from navigraph_catalog.api import list_data_sources, list_tables
 from navigraph_catalog.db import session_scope
 from navigraph_catalog.models import DataSource
 from navigraph_connectors.base import ConnectionTestResult
-from navigraph_connectors.registry import get_connector_class
+from navigraph_connectors.registry import build_connector
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
+from navigraph_shared.secrets import EnvVarSecretsProvider, SecretsProvider
 from navigraph_shared.telemetry import (
     get_tracer,
     record_agent_error,
@@ -82,9 +78,11 @@ class DataSourceDiscoveryAgent:
     def __init__(
         self,
         session_factory: sessionmaker[Session],
+        secrets: SecretsProvider | None = None,
         tracer: Tracer | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._secrets = secrets or EnvVarSecretsProvider()
         self._tracer = tracer or get_tracer("navigraph-agent-runtime")
 
     async def run(self, input: DataSourceDiscoveryInput) -> DataSourceDiscoveryOutput:
@@ -256,24 +254,27 @@ class DataSourceDiscoveryAgent:
 
         return matched, unresolved_tables
 
-    @staticmethod
-    def _check_connectivity(data_source: DataSource) -> ConnectionTestResult:
-        """Construct a real connector for `data_source` and probe it for real.
+    def _check_connectivity(self, data_source: DataSource) -> ConnectionTestResult:
+        """Construct a real, per-`DataSource` connector for `data_source`
+        and probe it for real.
 
-        `get_connector_class` raises `ValueError` for an unregistered
-        `source_type`, and constructing the resolved connector class could
-        in principle raise too (e.g. a future connector's `__init__` doing
-        eager validation). `Connector.test_connection()` itself is
-        documented to never raise, but everything upstream of it is still
-        fallible -- both are caught here and folded into the same
-        "unreachable" `ConnectionTestResult` shape the rest of this agent
-        already treats as ordinary data, not as an exception to handle
-        specially.
+        `build_connector` raises `ValueError` for an unregistered
+        `source_type` or a `connection_ref` missing a required field, and
+        constructing the resolved connector class could in principle raise
+        too (e.g. a future connector's `__init__` doing eager validation).
+        `Connector.test_connection()` itself is documented to never raise,
+        but everything upstream of it is still fallible -- both are caught
+        here and folded into the same "unreachable" `ConnectionTestResult`
+        shape the rest of this agent already treats as ordinary data, not
+        as an exception to handle specially.
         """
 
         try:
-            connector_cls = get_connector_class(data_source.source_type)
-            connector = connector_cls()
+            connector = build_connector(
+                data_source.source_type,
+                connection_ref=data_source.connection_ref,
+                secrets=self._secrets,
+            )
             return connector.test_connection()
         except Exception as exc:  # noqa: BLE001 - fold any construction failure into "unreachable"
             return ConnectionTestResult(

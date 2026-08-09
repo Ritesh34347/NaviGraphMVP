@@ -13,13 +13,18 @@ This is the second real `Connector` implementation in this SDK (LIMITATIONS.md
 item 1) -- see `connector.py`'s module docstring for what pressure-testing
 the source-agnostic `Connector` interface against a genuinely different
 driver/dialect actually found.
+
+Also registers `build_postgres_settings` as this `source_type`'s settings
+factory (LIMITATIONS.md item 21), mirroring
+`navigraph_connectors.snowflake`'s identical registration.
 """
 
 from __future__ import annotations
 
 from navigraph_connectors.postgres.connector import PostgresConnector
+from navigraph_connectors.postgres.settings_factory import build_postgres_settings
 from navigraph_connectors.registry import register_connector
 
-register_connector("postgres", PostgresConnector)
+register_connector("postgres", PostgresConnector, build_postgres_settings)
 
-__all__ = ["PostgresConnector"]
+__all__ = ["PostgresConnector", "build_postgres_settings"]

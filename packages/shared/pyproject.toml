@@ -17,6 +17,12 @@ dependencies = [
     "prometheus-client",
     "anthropic",
     "httpx",
+    # Lazily imported inside AzureKeyVaultSecretsProvider.get() only --
+    # mirrors snowflake-connector-python/psycopg2-binary's established
+    # pattern of a real, declared dependency that importing this package
+    # doesn't require to actually be usable at import time.
+    "azure-identity",
+    "azure-keyvault-secrets",
 ]
 
 [project.optional-dependencies]

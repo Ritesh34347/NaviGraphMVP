@@ -27,13 +27,14 @@ identical constructor pattern -- needed here to resolve a `direct_connector`
 plan's `data_source_id` to the real `DataSource` row that tells this agent
 which connector class to construct (`DataSource.source_type`).
 
-Connector-credential gap (documented, not solved here -- same gap
-`DataSourceDiscoveryAgent`'s module docstring already calls out): every
-connector is constructed with no arguments
-(`get_connector_class(source_type)()`), which means it reads its own global
-env-var-backed settings rather than anything specific to the resolved
-`DataSource` row. That is a real, pre-existing limitation of this codebase,
-not something introduced here.
+Connector-credential resolution (LIMITATIONS.md item 21, RESOLVED
+2026-08-09 -- same fix `DataSourceDiscoveryAgent`'s module docstring
+describes): connectors are constructed via
+`navigraph_connectors.registry.build_connector`, passing the resolved
+`DataSource`'s own `connection_ref` and an injected `SecretsProvider`, so
+this agent now resolves genuinely per-`DataSource` credentials rather than
+every connector of a `source_type` sharing one global env-var-backed
+settings object.
 
 Catalog-lookup gap (documented, not solved here): `navigraph_catalog.api`
 has no direct "get `DataSource` by id" function, only
@@ -67,10 +68,11 @@ from navigraph_catalog.api import list_data_sources
 from navigraph_catalog.db import session_scope
 from navigraph_catalog.models import DataSource
 from navigraph_connectors.base import QueryResult
-from navigraph_connectors.registry import get_connector_class
+from navigraph_connectors.registry import build_connector
 from navigraph_federation.dialect import rewrite_sql_for_trino
 from navigraph_federation.trino_client import TrinoClient
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
+from navigraph_shared.secrets import EnvVarSecretsProvider, SecretsProvider
 from navigraph_shared.telemetry import (
     get_tracer,
     record_agent_error,
@@ -97,6 +99,7 @@ class DataFederationAgent:
         self,
         catalog_session_factory: sessionmaker[Session],
         trino_client: TrinoClient | None = None,
+        secrets: SecretsProvider | None = None,
         tracer: Tracer | None = None,
     ) -> None:
         self._session_factory = catalog_session_factory
@@ -107,6 +110,7 @@ class DataFederationAgent:
         # (and thus reading `FederationSettings()` from the environment) for
         # a run whose plans never actually use the `"trino"` route.
         self._trino_client = trino_client
+        self._secrets = secrets or EnvVarSecretsProvider()
         self._tracer = tracer or get_tracer("navigraph-agent-runtime")
 
     def _get_trino_client(self) -> TrinoClient:
@@ -235,9 +239,11 @@ class DataFederationAgent:
                 session, data_source_id=plan.data_source_id, tenant_id=tenant_id
             )
             source_type = data_source.source_type
+            connection_ref = data_source.connection_ref
 
-        connector_cls = get_connector_class(source_type)
-        connector = connector_cls()
+        connector = build_connector(
+            source_type, connection_ref=connection_ref, secrets=self._secrets
+        )
         return connector.execute_query(plan.sql, plan.params or None)
 
     def _execute_via_trino(self, plan: ExecutionPlan) -> QueryResult:
