@@ -16,7 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from navigraph_lineage.api import get_trace, record_events
+from navigraph_lineage.api import get_trace, list_traces, record_events
 from navigraph_shared.contracts import LineageEvent
 
 
@@ -87,6 +87,64 @@ class TestRecordEvents:
 
         assert result.recorded_count == 0
         assert result.duplicate_count == 2
+
+
+class TestListTraces:
+    """`list_traces` compiles a real GROUP BY/aggregate statement --
+    without a live Postgres, these tests can't meaningfully assert on the
+    compiled SQL shape (mirrors `TestGetTrace`'s identical scoping), but
+    DO exercise the real, non-trivial mapping from a DB row to a
+    `TraceSummary` (sorted `agent_names`, field-for-field correctness) --
+    the one piece of this function's logic that isn't just "ask the
+    database." The real filter/aggregation behavior itself is proven by
+    `tests/integration/lineage_pipeline/test_lineage_search.py` against a
+    live Postgres.
+    """
+
+    def test_maps_rows_to_trace_summaries_with_sorted_agent_names(self) -> None:
+        from types import SimpleNamespace
+
+        session = MagicMock()
+        row = SimpleNamespace(
+            trace_id="trace-1",
+            tenant_id="navikenz-poc",
+            first_event_at=datetime(2026, 7, 29, 10, 0, tzinfo=timezone.utc),
+            last_event_at=datetime(2026, 7, 29, 10, 5, tzinfo=timezone.utc),
+            event_count=4,
+            agent_names=["understanding.conversation", "query.sql_generation", "insight.chart_selection"],
+        )
+        session.execute.return_value.all.return_value = [row]
+
+        result = list_traces(session, tenant_id="navikenz-poc")
+
+        assert len(result) == 1
+        summary = result[0]
+        assert summary.trace_id == "trace-1"
+        assert summary.tenant_id == "navikenz-poc"
+        assert summary.event_count == 4
+        # Sorted, not whatever order Postgres's array_agg happened to return.
+        assert summary.agent_names == [
+            "insight.chart_selection",
+            "query.sql_generation",
+            "understanding.conversation",
+        ]
+
+    def test_no_matching_traces_returns_an_empty_list(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.all.return_value = []
+
+        result = list_traces(session, tenant_id="navikenz-poc", agent_name="nonexistent.agent")
+
+        assert result == []
+        session.execute.assert_called_once()
+
+    def test_default_limit_and_offset_are_passed_through(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.all.return_value = []
+
+        list_traces(session, tenant_id="navikenz-poc", limit=10, offset=20)
+
+        session.execute.assert_called_once()
 
 
 class TestGetTrace:

@@ -30,6 +30,9 @@ Exposes:
   - POST /agents/orchestrator/session_context_manager/invoke
   - POST /agents/orchestrator/clarification_coordinator/invoke
   - POST /agents/orchestrator/request_orchestrator/invoke
+  - GET  /lineage             -- real, live search across a tenant's traces
+                                  (Phase 15.1), filterable by agent_name/
+                                  time range/text, paginated
   - GET  /lineage/{trace_id}  -- real, live retrieval of one trace's full
                                   assembled lineage chain (tenant-scoped via
                                   a required `tenant_id` query param)
@@ -51,6 +54,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import cast
 
 # Import side effect only: registers "snowflake" and "postgres" in
@@ -71,7 +75,7 @@ from fastapi import FastAPI, HTTPException
 from navigraph_catalog.db import get_engine, get_session_factory
 from navigraph_federation.trino_client import TrinoClient
 from navigraph_kg.client import Neo4jClient
-from navigraph_lineage.api import get_trace
+from navigraph_lineage.api import get_trace, list_traces
 from navigraph_lineage.db import get_engine as get_lineage_engine
 from navigraph_lineage.db import get_session_factory as get_lineage_session_factory
 from navigraph_lineage.db import session_scope as lineage_session_scope
@@ -857,6 +861,54 @@ async def invoke_request_orchestrator(payload: dict) -> dict:
     return await _invoke_agent(
         REQUEST_ORCHESTRATOR_AGENT_NAME, RequestOrchestratorInput, payload
     )
+
+
+@app.get("/lineage")
+async def search_lineage_traces(
+    tenant_id: str,
+    agent_name: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    search_text: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Real, live search across this tenant's traces (Phase 15.1,
+    LIMITATIONS.md item 63). A plain FastAPI route, same rationale as
+    `/lineage/{trace_id}` below: reading lineage isn't agent-shaped in
+    this codebase's convention.
+
+    `tenant_id` is a REQUIRED query param -- same non-optional,
+    no-new-auth-mechanism caveat as `/lineage/{trace_id}`'s own docstring;
+    this is acceptable for an internal debugging/audit route today, not a
+    full access-control boundary.
+    """
+
+    with lineage_session_scope(app.state.lineage_session_factory) as session:
+        summaries = list_traces(
+            session,
+            tenant_id=tenant_id,
+            agent_name=agent_name,
+            since=since,
+            until=until,
+            search_text=search_text,
+            limit=limit,
+            offset=offset,
+        )
+
+    return {
+        "tenant_id": tenant_id,
+        "traces": [
+            {
+                "trace_id": summary.trace_id,
+                "first_event_at": summary.first_event_at.isoformat(),
+                "last_event_at": summary.last_event_at.isoformat(),
+                "event_count": summary.event_count,
+                "agent_names": summary.agent_names,
+            }
+            for summary in summaries
+        ],
+    }
 
 
 @app.get("/lineage/{trace_id}")

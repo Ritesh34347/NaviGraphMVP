@@ -1,4 +1,5 @@
-"""Real lineage-store operations: record events, read a trace back.
+"""Real lineage-store operations: record events, read a trace back, search
+across traces.
 
 Every function here takes an already-open `Session` (dependency injection --
 see `navigraph_lineage.db.session_scope` for how callers obtain one) rather
@@ -10,9 +11,10 @@ caller's `session_scope`'s job.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from navigraph_shared.contracts import LineageEvent
-from sqlalchemy import select
+from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -106,3 +108,93 @@ def get_trace(
             .order_by(LineageEventRecord.timestamp, LineageEventRecord.event_id)
         ).scalars()
     )
+
+
+@dataclass(frozen=True)
+class TraceSummary:
+    """One trace's aggregate shape -- what a search RESULT LIST shows,
+    before a caller drills into the full chain with `get_trace`. Real
+    aggregates computed by the database (`MIN`/`MAX`/`COUNT`/`ARRAY_AGG`),
+    not assembled in Python from a full row fetch -- `list_traces` never
+    loads a whole trace's events just to summarize it."""
+
+    trace_id: str
+    tenant_id: str
+    first_event_at: datetime
+    last_event_at: datetime
+    event_count: int
+    agent_names: list[str]
+
+
+def list_traces(
+    session: Session,
+    *,
+    tenant_id: str,
+    agent_name: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    search_text: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[TraceSummary]:
+    """Search this tenant's traces, most-recently-active first.
+
+    Every filter narrows which individual EVENTS are considered before
+    grouping into per-trace summaries -- e.g. `agent_name="query.sql_generation"`
+    returns every trace that has at least one event from that agent (not
+    every event of that trace), matching how a real operator investigating
+    "which conversations touched SQL Generation" actually wants this to
+    behave. `search_text` does a real substring match (case-insensitive)
+    against `input_summary`/`output_summary`, the same free-text fields
+    every agent already writes a real, human-readable summary into.
+
+    `tenant_id` is required, not optional -- see `get_trace`'s identical
+    rationale; a global, tenant-unscoped search would be a real isolation
+    violation for what is otherwise this codebase's most sensitive read
+    surface (every question asked, across every conversation).
+    """
+
+    conditions = [LineageEventRecord.tenant_id == tenant_id]
+    if agent_name is not None:
+        conditions.append(LineageEventRecord.agent_name == agent_name)
+    if since is not None:
+        conditions.append(LineageEventRecord.timestamp >= since)
+    if until is not None:
+        conditions.append(LineageEventRecord.timestamp <= until)
+    if search_text is not None:
+        pattern = f"%{search_text}%"
+        conditions.append(
+            or_(
+                LineageEventRecord.input_summary.ilike(pattern),
+                LineageEventRecord.output_summary.ilike(pattern),
+            )
+        )
+
+    statement = (
+        select(
+            LineageEventRecord.trace_id,
+            LineageEventRecord.tenant_id,
+            func.min(LineageEventRecord.timestamp).label("first_event_at"),
+            func.max(LineageEventRecord.timestamp).label("last_event_at"),
+            func.count().label("event_count"),
+            func.array_agg(distinct(LineageEventRecord.agent_name)).label("agent_names"),
+        )
+        .where(*conditions)
+        .group_by(LineageEventRecord.trace_id, LineageEventRecord.tenant_id)
+        .order_by(func.max(LineageEventRecord.timestamp).desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    rows = session.execute(statement).all()
+    return [
+        TraceSummary(
+            trace_id=row.trace_id,
+            tenant_id=row.tenant_id,
+            first_event_at=row.first_event_at,
+            last_event_at=row.last_event_at,
+            event_count=row.event_count,
+            agent_names=sorted(row.agent_names),
+        )
+        for row in rows
+    ]

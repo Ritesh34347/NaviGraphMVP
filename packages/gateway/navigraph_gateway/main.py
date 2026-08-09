@@ -9,6 +9,10 @@ Exposes:
                           RequestContext, calls the agent-runtime's real
                           Request Orchestrator agent over HTTP, and returns
                           its `RequestOrchestratorOutput` verbatim.
+  - GET  /lineage             -- real proxy to agent-runtime's lineage
+                                  search (Phase 15.1)
+  - GET  /lineage/{trace_id}  -- real proxy to agent-runtime's single-trace
+                                  lineage retrieval
 
 Gateway and agent-runtime are two separate containers/services (see
 infra/docker-compose.yml) -- this call is a real HTTP hop, not an in-process
@@ -85,6 +89,37 @@ def _build_token_verifier() -> TokenVerifier | None:
         "Azure AD bearer-token verification."
     )
     return None
+
+
+def _require_verified_caller(
+    token_verifier: TokenVerifier | None, authorization: str | None
+) -> None:
+    """Shared gate for the `/lineage` routes below, factored out of `/ask`'s
+    identical inline check (LIMITATIONS.md item 63): when real Azure AD
+    verification is configured, require and verify a real bearer token,
+    raising the same 401s `/ask` does; a no-op otherwise, matching `/ask`'s
+    own fallback. Unlike `/ask`, these routes don't need the verified
+    identity for anything (no `RequestContext` to build) -- lineage
+    read-access has no per-role policy yet (see this function's callers'
+    own docstrings), so this is a real, but partial, improvement: it
+    closes "reachable by anyone with no credentials at all" down to
+    "reachable by anyone holding a valid token for this Azure AD app",
+    not yet "reachable only by callers authorized to read tenant X's
+    lineage specifically."
+    """
+
+    if token_verifier is None:
+        return
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401, detail="Authorization: Bearer <token> header is required"
+        )
+    token = authorization.removeprefix("Bearer ").strip()
+    try:
+        token_verifier.verify(token)
+    except TokenVerificationError as exc:
+        logger.warning("bearer token verification failed: %s", exc)
+        raise HTTPException(status_code=401, detail="invalid or expired bearer token") from exc
 
 
 @asynccontextmanager
@@ -227,5 +262,74 @@ async def ask(request: AskRequest, authorization: str | None = Header(default=No
                 status_code=502,
                 detail="agent-runtime is unavailable or returned an error",
             ) from exc
+
+    return response.json()
+
+
+@app.get("/lineage")
+async def search_lineage_traces(
+    tenant_id: str,
+    agent_name: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    search_text: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Real proxy to the agent-runtime's `GET /lineage` search route
+    (Phase 15.1, LIMITATIONS.md item 63) -- the first time lineage has
+    been reachable through the gateway, the one real public trust
+    boundary this platform has (item 43). Gated by the same real bearer-
+    token check `/ask` enforces when Azure AD verification is configured
+    (`_require_verified_caller`); see that function's docstring for what
+    this does and doesn't close.
+    """
+
+    _require_verified_caller(app.state.token_verifier, authorization)
+
+    params: dict[str, Any] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
+    if agent_name is not None:
+        params["agent_name"] = agent_name
+    if since is not None:
+        params["since"] = since
+    if until is not None:
+        params["until"] = until
+    if search_text is not None:
+        params["search_text"] = search_text
+
+    http_client: httpx.AsyncClient = app.state.http_client
+    try:
+        response = await http_client.get("/lineage", params=params)
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.error("agent-runtime call failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="agent-runtime is unavailable or returned an error"
+        ) from exc
+
+    return response.json()
+
+
+@app.get("/lineage/{trace_id}")
+async def get_lineage_trace(
+    trace_id: str, tenant_id: str, authorization: str | None = Header(default=None)
+) -> dict:
+    """Real proxy to the agent-runtime's `GET /lineage/{trace_id}` route --
+    see `search_lineage_traces` above for the same real-bearer-token gate
+    and its documented limits.
+    """
+
+    _require_verified_caller(app.state.token_verifier, authorization)
+
+    http_client: httpx.AsyncClient = app.state.http_client
+    try:
+        response = await http_client.get(f"/lineage/{trace_id}", params={"tenant_id": tenant_id})
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.error("agent-runtime call failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="agent-runtime is unavailable or returned an error"
+        ) from exc
 
     return response.json()
