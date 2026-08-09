@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-semantic-model"
+version = "0.1.0"
+description = "NaviGraph Semantic Model: the versioned, per-tenant, Pydantic-validated configuration artifact (entities, relationships, metrics, policy bindings) that replaces hardcoded per-tenant ontology/SQL/Rego -- the config-not-code layer between the physical catalog and its consumers (knowledge-graph ingestion, SQL Generation, OPA)."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "pydantic>=2",
+    "pyyaml",
+    # Local workspace dependency -- see packages/knowledge_graph/pyproject.toml's
+    # identical comment for the install-order rationale. The catalog-
+    # validating loader (`navigraph_semantic_model.loader`) reads
+    # `navigraph_catalog.api`'s `list_data_sources`/`get_table`/`find_column`
+    # to confirm every entity/relationship binding names a real, currently-
+    # crawled `(data_source, table, column)` triple before a Semantic Model
+    # is trusted by anything downstream.
+    "navigraph-metadata-catalog",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+include = ["navigraph_semantic_model*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
