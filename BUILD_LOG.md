@@ -1220,3 +1220,28 @@ input.tenant_id` check will fail closed (safely, not insecurely) against
 any real verified token until a real Entra app registration is configured
 to emit a matching claim -- a deployment-time decision, not a code gap.
 See `LIMITATIONS.md` item 23's full "still open" section.
+
+## 2026-08-09 — Phase 11's own exit criterion, proven for real
+
+Phase 11 was scoped with an explicit exit criterion (from this session's
+own phased build plan): register a second, synthetic `DataSource` under
+different fake credentials, in the same running service, and prove both
+resolve and execute independently. Part 1 and part 2 above closed the
+underlying mechanisms (per-`DataSource` credentials, JWT verification) but
+never actually ran this specific end-to-end proof, so this pass closed
+that gap directly: `tests/integration/multi_client_isolation
+/test_two_data_sources_execute_independently.py`, against two real,
+independently-provisioned local Postgres databases (no live second
+Snowflake account exists to prove this against literally, so substituted
+Postgres, mirroring item 1's own precedent). Registers two real
+`DataSource` rows (same `source_type`, same tenant, different
+`secret_scope`s), hands both their `ExecutionPlan`s to ONE
+`DataFederationAgent.run()` call, and asserts each source's real returned
+rows contain only that source's own distinguishing marker -- proving
+genuine, simultaneous, non-cross-contaminated credential resolution and
+execution, not just distinct settings objects in isolation. A second,
+adversarial test registers the same two rows with their scopes swapped
+relative to their names, proving resolution follows the real
+`connection_ref`, not naming or insertion-order coincidence. Full
+repo-wide suite (packages + this new integration test): 322 passed, 7
+skipped, zero regressions; `ruff check` clean.

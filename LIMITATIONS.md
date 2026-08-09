@@ -501,6 +501,23 @@ two `DataSource` rows of the same `source_type` and assert they resolve to
 genuinely distinct settings, including an adversarial assertion that an
 unrelated global env var never leaks into a scoped lookup.
 
+Also proven against Phase 11's own stated exit criterion, for real, not
+just at the settings-object level:
+`tests/integration/multi_client_isolation/test_two_data_sources_execute_independently.py`
+registers two real `DataSource` rows (same `source_type="postgres"`, same
+tenant, different `secret_scope`s) against two independently-provisioned
+real local Postgres databases, and proves ONE running `DataFederationAgent`
+instance executes both plans in a single call against their own genuinely
+distinct backends — each returning only its own database's real,
+distinguishing marker row, never the other's. A second, adversarial test
+in the same file registers the two rows with their scopes deliberately
+swapped relative to their names, proving resolution genuinely follows
+`connection_ref.secret_scope`, not registration order or naming
+coincidence. No live second Snowflake account exists to run this against
+literally as originally scoped ("the same Snowflake account, different
+fake credentials") — substituted with real Postgres instead, the same
+substitution already established for item 1's second-connector work.
+
 **Still open**: `AzureKeyVaultSecretsProvider` is only verified against a
 mocked Azure SDK client in this sandbox — it has never been run against
 the real, live `navigraph-dev-kv` Key Vault from Phase 10b, since this
