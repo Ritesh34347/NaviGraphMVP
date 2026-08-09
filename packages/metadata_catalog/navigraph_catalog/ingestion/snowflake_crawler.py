@@ -15,7 +15,8 @@ import uuid
 from navigraph_connectors.base import Connector
 from sqlalchemy.orm import Session
 
-from navigraph_catalog.api import upsert_schema_tree
+from navigraph_catalog.api import mark_data_source_crawled, upsert_schema_tree
+from navigraph_catalog.drift import CrawlResult
 
 
 def crawl_and_store(
@@ -23,13 +24,18 @@ def crawl_and_store(
     *,
     data_source_id: uuid.UUID,
     connector: Connector,
-) -> int:
-    """Introspect `connector`'s schema and upsert it into the catalog.
+) -> CrawlResult:
+    """Introspect `connector`'s schema, upsert it into the catalog, and
+    stamp `data_source_id.last_crawled_at` with the real current time.
 
     Returns the number of tables upserted across every schema returned by
-    `connector.introspect_schema()`.
+    `connector.introspect_schema()`, plus a real, per-table `SchemaDriftEvent`
+    (see `navigraph_catalog.drift`'s module docstring) -- the "did anything
+    actually change since last time" signal a re-crawl scheduler needs.
     """
 
     schemas = connector.introspect_schema()
-    upsert_schema_tree(session, data_source_id=data_source_id, schemas=schemas)
-    return sum(len(schema.tables) for schema in schemas)
+    drift_events = upsert_schema_tree(session, data_source_id=data_source_id, schemas=schemas)
+    mark_data_source_crawled(session, data_source_id=data_source_id)
+    tables_synced = sum(len(schema.tables) for schema in schemas)
+    return CrawlResult(tables_synced=tables_synced, drift_events=drift_events)

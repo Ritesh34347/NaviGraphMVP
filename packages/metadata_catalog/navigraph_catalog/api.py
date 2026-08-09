@@ -10,6 +10,7 @@ that is the caller's `session_scope`'s job.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 from navigraph_connectors.base import SchemaDescriptor
@@ -18,6 +19,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from navigraph_catalog.drift import SchemaDriftEvent, compute_table_schema_hash
 from navigraph_catalog.models import (
     CatalogColumn,
     CatalogSchema,
@@ -109,12 +111,52 @@ def set_default_data_source(
     session.flush()
 
 
+def mark_data_source_crawled(session: Session, *, data_source_id: uuid.UUID) -> None:
+    """Stamp `data_source_id.last_crawled_at` with the current real time --
+    called once per successful crawl (see `navigraph_catalog.ingestion
+    .snowflake_crawler.crawl_and_store`), never inferred or backfilled.
+
+    Stored as a naive UTC value (`data_sources.last_crawled_at` is a plain
+    `TIMESTAMP WITHOUT TIME ZONE`, matching `created_at`'s existing
+    convention in this table) -- always UTC by convention, the same as
+    every other "when did this happen" timestamp in this codebase.
+    """
+
+    session.execute(
+        update(DataSource)
+        .where(DataSource.id == data_source_id)
+        .values(last_crawled_at=datetime.now(UTC).replace(tzinfo=None))
+    )
+    session.flush()
+
+
+def list_stale_data_sources(
+    session: Session, *, tenant_id: str, older_than: timedelta
+) -> list[DataSource]:
+    """List every `DataSource` for `tenant_id` that either has never been
+    crawled at all (`last_crawled_at IS NULL`) or was last crawled more
+    than `older_than` ago -- the real query a re-crawl scheduler needs to
+    decide what to re-crawl next, rather than blindly re-crawling
+    everything on a fixed schedule regardless of actual staleness.
+    """
+
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - older_than
+    return list(
+        session.execute(
+            select(DataSource).where(
+                DataSource.tenant_id == tenant_id,
+                (DataSource.last_crawled_at.is_(None)) | (DataSource.last_crawled_at < cutoff),
+            )
+        ).scalars()
+    )
+
+
 def upsert_schema_tree(
     session: Session,
     *,
     data_source_id: uuid.UUID,
     schemas: list[SchemaDescriptor],
-) -> None:
+) -> list[SchemaDriftEvent]:
     """Idempotently upsert a connector's `introspect_schema()` output.
 
     Matches existing rows by their unique-constraint fields (schema name
@@ -123,7 +165,16 @@ def upsert_schema_tree(
     Safe to call repeatedly for the same data source -- e.g. on every crawl
     -- without duplicating rows or leaving stale ones from a previous
     revision of a table/column untouched within this call's schemas.
+
+    Returns one `SchemaDriftEvent` per table processed -- see
+    `navigraph_catalog.drift`'s module docstring for what this closes. A
+    table with no prior `schema_hash` (either genuinely new, or crawled
+    before this drift-tracking mechanism existed) is never reported as
+    `changed=True`: there is no real prior baseline to compare against, so
+    claiming a change would be a guess, not a fact.
     """
+
+    drift_events: list[SchemaDriftEvent] = []
 
     for schema_descriptor in schemas:
         catalog_schema = session.execute(
@@ -148,6 +199,9 @@ def upsert_schema_tree(
                     CatalogTable.name == table_descriptor.name,
                 )
             ).scalar_one_or_none()
+
+            is_new_table = catalog_table is None
+            old_hash = None if is_new_table else catalog_table.schema_hash
 
             if catalog_table is None:
                 catalog_table = CatalogTable(
@@ -179,7 +233,21 @@ def upsert_schema_tree(
                 catalog_column.ordinal_position = column_descriptor.ordinal_position
                 catalog_column.description = column_descriptor.description
 
+            new_hash = compute_table_schema_hash(table_descriptor)
+            catalog_table.schema_hash = new_hash
+            drift_events.append(
+                SchemaDriftEvent(
+                    table_name=table_descriptor.name,
+                    is_new=is_new_table,
+                    changed=(old_hash is not None and old_hash != new_hash),
+                    old_hash=old_hash,
+                    new_hash=new_hash,
+                )
+            )
+
             session.flush()
+
+    return drift_events
 
 
 def list_tables(session: Session, *, data_source_id: uuid.UUID) -> list[CatalogTable]:

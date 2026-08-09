@@ -12,6 +12,7 @@ dependencies = [
     "sqlalchemy>=2",
     "alembic",
     "psycopg[binary]",
+    "pydantic>=2",
     # Local workspace dependency. This is a bare, unpinned PEP 508 name --
     # it is intentionally NOT a file:// path reference (those require
     # absolute paths and behave inconsistently across pip versions for

@@ -74,6 +74,14 @@ class DataSource(Base):
     is_default: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default=text("false")
     )
+    # When this DataSource's schema structure was last successfully
+    # crawled (`navigraph_catalog.ingestion.snowflake_crawler
+    # .crawl_and_store` -> `mark_data_source_crawled`) -- `NULL` for a
+    # freshly-registered DataSource that has never been crawled at all.
+    # This is the real signal a re-crawl scheduler needs to answer "how
+    # stale is this" (Phase 13, LIMITATIONS.md item 61's "still open"
+    # re-validation-scheduler bullet).
+    last_crawled_at: Mapped[datetime | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     schemas: Mapped[list[CatalogSchema]] = relationship(
@@ -128,6 +136,13 @@ class CatalogTable(Base):
     name: Mapped[str] = mapped_column(nullable=False)
     description: Mapped[str | None] = mapped_column(default=None)
     row_count_estimate: Mapped[int | None] = mapped_column(default=None)
+    # A stable structural hash of this table's real shape (see
+    # `navigraph_catalog.drift.compute_table_schema_hash`) -- `NULL` for a
+    # table that predates schema-drift tracking and hasn't been re-crawled
+    # since. Compared against the newly-computed hash on every
+    # `upsert_schema_tree` call to produce a real `SchemaDriftEvent`,
+    # rather than upserting blindly with no signal of what changed.
+    schema_hash: Mapped[str | None] = mapped_column(default=None)
 
     schema: Mapped[CatalogSchema] = relationship(back_populates="tables")
     columns: Mapped[list[CatalogColumn]] = relationship(
