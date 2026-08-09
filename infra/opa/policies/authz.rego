@@ -21,7 +21,29 @@ import rego.v1
 default allow := false
 
 # RBAC: which application-level roles may query at all.
-allowed_roles := {"analyst", "pii_viewer", "admin"}
+#
+# TENANT-SPECIFIC FACT, NOT POLICY LOGIC (LIMITATIONS.md item 38's
+# structural fix, Phase 12.3): a tenant's own allowed-role vocabulary is
+# real per-tenant config, not something every client should be forced to
+# share. Real per-tenant facts are pushed into OPA's own Data API at
+# onboarding/activation time (a real `PUT /v1/data/navigraph/tenants/
+# <tenant_id>`, compiled from that tenant's `navigraph_semantic_model
+# .SemanticModel.policy_bindings` -- see `navigraph_semantic_model
+# .opa_sync.sync_policy_bindings`), not hardcoded here. `default_allowed_roles`
+# below is the fallback used when no data document has been pushed for a
+# given tenant yet -- this is what keeps every existing test/eval run (and
+# any tenant that simply hasn't been migrated to a real Semantic Model)
+# working unchanged, exactly like `RequestContext.roles`/`claims`' own
+# caller-supplied fallback when Azure AD verification isn't configured
+# (item 23).
+default_allowed_roles := {"analyst", "pii_viewer", "admin"}
+
+tenant_facts := data.navigraph.tenants[input.tenant_id]
+
+allowed_roles := tenant_facts.allowed_roles if {
+	is_object(tenant_facts)
+	tenant_facts.allowed_roles
+} else := default_allowed_roles
 
 # `input.roles` may be missing, null, or not an array on a malformed
 # request -- default to an empty set rather than letting `some role in

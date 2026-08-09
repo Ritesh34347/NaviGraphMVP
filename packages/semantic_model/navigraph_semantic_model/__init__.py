@@ -22,6 +22,10 @@ from navigraph_semantic_model.loader import (
     load_semantic_model,
     validate_semantic_model_against_catalog,
 )
+from navigraph_semantic_model.opa_sync import (
+    compile_policy_bindings_document,
+    sync_policy_bindings,
+)
 
 __all__ = [
     "Aggregation",
@@ -35,8 +39,10 @@ __all__ = [
     "RelationshipBinding",
     "SemanticModel",
     "SemanticModelValidationError",
+    "compile_policy_bindings_document",
     "compile_sensitivity",
     "load_and_validate_semantic_model",
     "load_semantic_model",
+    "sync_policy_bindings",
     "validate_semantic_model_against_catalog",
 ]

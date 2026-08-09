@@ -19,11 +19,18 @@ dependencies = [
     # crawled `(data_source, table, column)` triple before a Semantic Model
     # is trusted by anything downstream.
     "navigraph-metadata-catalog",
+    # Same local-workspace-dependency reasoning as above: install
+    #   pip install -e packages/shared
+    # before this package. `opa_sync.py` compiles a SemanticModel's
+    # policy_bindings into a real per-tenant OPA data document via
+    # navigraph_shared.opa.OpaClient.set_data.
+    "navigraph-shared",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-asyncio",
     "ruff",
     "mypy",
 ]
@@ -32,6 +39,7 @@ dev = [
 include = ["navigraph_semantic_model*"]
 
 [tool.pytest.ini_options]
+asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.ruff]
