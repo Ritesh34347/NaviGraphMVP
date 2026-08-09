@@ -1617,7 +1617,7 @@ finding, the same reasoning already used for items 38/44.
 **What full version requires**: nothing further -- all six are real,
 fixed bugs, not deferred scope, and the fix is now proven for real:
 `gh run view` on commit `099650c`'s `CI` run
-(`https://github.com/Ritesh34347/NaviGraphMVP/actions/runs/30560655356`)
+(`https://github.com/navigraph-owner/NaviGraphMVP/actions/runs/30560655356`)
 shows both jobs (`Python lint, type-check, and test`,
 `Node lint, type-check, and test`) as real `success` -- the first fully
 green CI run in this repository's history. `terraform-plan.yml` and
@@ -1653,7 +1653,7 @@ go-ahead rather than being assumed as in-scope for "confirm CI passes."
 distinct from `terraform.tfvars`'s `ci_service_principal_object_id`, which
 is the *object* ID -- `azure/login@v2` needs the `appId`/client ID
 instead) via a fresh `az ad app list` lookup, confirmed the existing
-federated credential's subject (`repo:Ritesh34347/NaviGraphMVP:ref:refs/heads/main`)
+federated credential's subject (`repo:navigraph-owner/NaviGraphMVP:ref:refs/heads/main`)
 was already correctly scoped for `cd-deploy.yml`'s `push: main` trigger,
 then set all three secrets. This also surfaced two real PAT-scope gaps in
 the process (the fine-grained token used for `gh` this session lacked
@@ -1717,13 +1717,13 @@ mismatched OIDC subject format) before it could succeed -- see item 68.
 `cd-deploy.yml` run got all the way to a real token exchange attempt and
 failed with a new, different error: `AADSTS700213: No matching federated
 identity record found for presented assertion subject
-'repo:Ritesh34347@19557415/NaviGraphMVP@1317223914:ref:refs/heads/main'`.
+'repo:navigraph-owner@19557415/NaviGraphMVP@1317223914:ref:refs/heads/main'`.
 The actual OIDC token GitHub issued for this repo embeds immutable
 numeric owner/repo IDs in the subject claim
 (`repo:OWNER@ownerId/REPO@repoId:...`), but the `navigraph-cd` app
 registration's two federated credentials (`navigraph-github-push-main`,
 `navigraph-github-pull-request`) were both created with the plain
-`repo:Ritesh34347/NaviGraphMVP:...` name-based subject -- confirmed via
+`repo:navigraph-owner/NaviGraphMVP:...` name-based subject -- confirmed via
 `az ad app federated-credential list`, which showed exactly that
 mismatch.
 
@@ -1738,14 +1738,14 @@ really present.
 
 **Resolution**: `az ad app federated-credential update` on both
 credentials, changing `subject` to the real, ID-based format
-(`repo:Ritesh34347@19557415/NaviGraphMVP@1317223914:ref:refs/heads/main`
+(`repo:navigraph-owner@19557415/NaviGraphMVP@1317223914:ref:refs/heads/main`
 and `...:pull_request` respectively) -- `workflow_dispatch` runs on
 `main` present the identical `ref:refs/heads/main` subject as a real
 push, confirmed by the fact this fix immediately unblocked the manually
 re-dispatched run too, with no third federated credential needed.
 
 **Verified**: the next re-dispatch of `cd-deploy.yml`
-(`https://github.com/Ritesh34347/NaviGraphMVP/actions/runs/30562940216`)
+(`https://github.com/navigraph-owner/NaviGraphMVP/actions/runs/30562940216`)
 completed with every job `success` -- real image builds/pushes for all 3
 services, a real canary deploy at 0% weight, real bake windows at
 10%/50%/100% (each polling the real live ingress-nginx Prometheus
@@ -1799,7 +1799,7 @@ the next real `cd-deploy.yml` run should be checked to confirm
 stuck on `:unreleased`).
 
 **Verified, with a real complication**: the next re-dispatched run
-(`https://github.com/Ritesh34347/NaviGraphMVP/actions/runs/30564905124`)
+(`https://github.com/navigraph-owner/NaviGraphMVP/actions/runs/30564905124`)
 confirmed the fix -- `deployment.apps/agent-runtime image updated` fired
 this time, unlike before -- but the rollout itself then hung and the job
 failed on the 180s timeout. Investigated live: `kubectl describe pod`
@@ -1853,7 +1853,7 @@ rather than an assumption that the fixes "should" work.
 **What was found**: pushing item 70's fix (`e101524`, which touches
 `infra/k8s/**`, one of `cd-deploy.yml`'s `push` path filters)
 auto-triggered a real `push`-event CD run
-(`https://github.com/Ritesh34347/NaviGraphMVP/actions/runs/30565723435`)
+(`https://github.com/navigraph-owner/NaviGraphMVP/actions/runs/30565723435`)
 moments before a manual `workflow_dispatch` re-verification run was also
 started on the same commit. Both share the `cd-deploy-dev` concurrency
 group (correctly serialized, never running jobs in parallel), but since
