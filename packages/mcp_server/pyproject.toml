@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "navigraph-mcp-server"
+version = "0.1.0"
+description = "NaviGraph's agentic tool-surface API: an MCP server wrapping the gateway's /ask so external agentic clients (Claude Desktop, other agents) can call NaviGraph as a tool."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    # Pinned to a 1.x range deliberately, not "latest" -- see this
+    # package's own README/DECISIONS.md entry: the real Anthropic-authored
+    # "Model Context Protocol SDK" (Home-page author "Anthropic, PBC.") is
+    # what versions 0.9-1.29 are. A LATER, higher-numbered `mcp==2.0.0`
+    # exists on PyPI but is an entirely different, unrelated package (it
+    # imports a nonexistent `mcp_types` module and is not this SDK at all)
+    # -- a real, live example of exactly the kind of PyPI name-squatting
+    # supply-chain risk this project's own security posture should guard
+    # against. An unbounded `mcp` dependency would silently pull that
+    # package in on a future `pip install -U` and break (or worse, silently
+    # misbehave) at import time.
+    "mcp>=1.9,<2",
+    "httpx",
+    "navigraph-shared",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+navigraph-mcp-server = "navigraph_mcp_server.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["navigraph_mcp_server*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

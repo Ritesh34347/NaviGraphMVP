@@ -20,6 +20,7 @@
 #   pip install -e packages/connector_sdk[dev]
 #   pip install -e packages/metadata_catalog[dev]
 #   pip install -e packages/semantic_model[dev]
+#   pip install -e packages/mcp_server[dev]
 #
 # If you do have `uv` installed and prefer it, the packages below are also
 # structured so that a `[tool.uv.workspace]` member list "just works" --
@@ -33,6 +34,7 @@
 #   - packages/connector_sdk   -> navigraph-connector-sdk
 #   - packages/metadata_catalog -> navigraph-metadata-catalog
 #   - packages/semantic_model  -> navigraph-semantic-model
+#   - packages/mcp_server      -> navigraph-mcp-server
 
 # This IS a real, active pytest config, not documentation: it's the nearest
 # pyproject.toml above all three packages, so `pytest packages/` (what CI
