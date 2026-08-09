@@ -49,11 +49,11 @@ All of the following must pass on every PR (see `.github/workflows/`):
 - `terraform-plan` (`terraform-plan.yml`) — `terraform fmt`/`validate` on any
   PR touching `terraform/**` (plan only runs if Azure credentials are
   configured; `apply` never runs in CI).
-- **`adversarial-tests` (`adversarial-tests.yml`)** — runs `tests/security/`.
-  This is a required check and cannot be skipped, even though it currently
-  passes vacuously (an empty test directory) until later phases add real
-  security-relevant components. Do not disable or bypass this check to get a
-  PR through.
+- **`adversarial-tests` (`adversarial-tests.yml`)** — runs `tests/security/`,
+  which now contains real adversarial tests (tenant isolation, OPA policy,
+  PII exposure, plus a `cloud/` suite for the real AKS deployment). This is
+  a required check and cannot be skipped. Do not disable or bypass this
+  check to get a PR through.
 
 ## Adding a new agent
 
@@ -71,15 +71,24 @@ To add a new one:
    fake/mocked LLM client by default. Mark any test that calls a real LLM with
    `@pytest.mark.llm_integration` so it can be excluded from the default fast
    test run.
-4. Wire the agent into the LangGraph orchestrator graph for in-process
-   invocation, and confirm its thin HTTP wrapper
-   (`POST /agents/<domain>/<agent_name>/invoke`) responds correctly for
-   isolated testing and the eval harness.
-5. Update `docs/architecture/overview.md`'s status table so the agent moves
-   from "designed" to "built."
+4. Register the agent in `packages/agent_runtime/navigraph_agents/main.py`'s
+   `lifespan()` (a direct construct-and-`register()` call — the real Request
+   Orchestrator is a plain Python async function that calls sub-agents
+   directly, not a LangGraph graph; see `DECISIONS.md`'s Phase 9 entry), and
+   confirm its thin HTTP wrapper (`POST /agents/<domain>/<agent_name>/invoke`)
+   responds correctly for isolated testing and the eval harness. If the new
+   agent belongs in the live request lifecycle, also wire it into
+   `RequestOrchestratorAgent.run()`
+   (`orchestrator/request_orchestrator/agent.py`) in the right sequence
+   position.
+5. Update `docs/architecture/overview.md`'s status table and
+   `docs/architecture/single-stage-mvp.md`'s sequence (if wired into the live
+   pipeline) to reflect the new agent.
 
-For a concrete, real example, see the one agent that is fully implemented today:
-`packages/agent_runtime/navigraph_agents/understanding/intent_understanding/`.
+For a concrete, real example, see any of the 25 real agents under
+`packages/agent_runtime/navigraph_agents/` — e.g.
+`understanding/intent_understanding/` for an LLM-backed agent, or
+`guardrail/schema_constraint_validator/` for a deterministic one.
 
 ## Code style
 

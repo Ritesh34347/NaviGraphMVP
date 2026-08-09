@@ -32,13 +32,26 @@ kind delete cluster --name navigraph-dev
 
 ## Status
 
-Real manifests exist under `base/` (every service from
-`infra/docker-compose.yml` except Trino, deliberately excluded from the
+**Updated 2026-08-09**: Real manifests exist under `base/` (every service
+from `infra/docker-compose.yml` except Trino, deliberately excluded from the
 cloud deployment — see `LIMITATIONS.md`) and two real overlays:
 `overlays/kind` (zero Azure, an ephemeral in-cluster Postgres stands in for
 the real Azure Postgres Flexible Server) and `overlays/dev` (real AKS, real
-Key Vault-synced secrets, real Postgres Flexible Server FQDN). `overlays/dev`
-still has several `REPLACE_AFTER_APPLY` placeholders (Key Vault name/tenant/
-identity, real domain, Postgres FQDN) that only get real values once Phase
-10b's `terraform apply` has actually run — see the Phase 10 plan's two
-hard-gated sub-phases for why.
+Key Vault-synced secrets, real Postgres Flexible Server FQDN).
+
+Phase 10b's `terraform apply` has since run for real, and `overlays/dev` has
+been applied to the real AKS cluster for real (ingress-nginx and
+cert-manager bootstrapped, all pods `Running`/`Ready`, a real weighted-canary
+run proven — see `LIMITATIONS.md` items 53-58 and `BUILD_LOG.md`'s Phase 10b
+entries). **The `REPLACE_AFTER_APPLY` placeholders have in fact already been
+substituted with real values, committed directly in these files** — the
+handful of comment lines still describing them as placeholders "below" are
+themselves now stale (e.g. `secretproviderclass-*.yaml`'s header comments).
+This means `overlays/dev/` currently has a real Azure tenant ID, a real
+managed-identity client ID, the real Key Vault name, the real ACR hostname,
+the real Postgres Flexible Server FQDN, and a real public IP (embedded in
+the `nip.io` ingress hostnames) checked into this repository in plaintext —
+not secret *values* (no passwords; those stay in Key Vault, fetched via the
+CSI driver), but real, identifying infrastructure fingerprints. Worth a
+deliberate decision about whether that belongs in a public repo, separate
+from whether the docs describing it are accurate.

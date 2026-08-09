@@ -2,7 +2,15 @@
 
 ## Status
 
-Accepted — 2026-07-28
+Accepted — 2026-07-28. **Partially superseded 2026-07-29 (Phase 9)**: the
+LangGraph portion of this decision (below) was formally reversed — the real
+Request Orchestrator is a plain Python async function calling each agent
+directly, not a LangGraph graph — see `DECISIONS.md`'s Phase 9 entry
+("Request Orchestrator is a plain Python async function, not a LangGraph
+graph") for the full reasoning and `LIMITATIONS.md` item 39 for the one
+capability (mid-pipeline crash recovery) given up by this reversal. Every
+other part of this ADR (Python 3.12, FastAPI, Pydantic v2) still stands and
+is what the real, built agent runtime uses today.
 
 ## Context
 
@@ -38,6 +46,11 @@ Key requirements driving the decision:
 We will build the agent runtime in **Python 3.12**, using **FastAPI** for the
 HTTP layer, **Pydantic v2** for all `AgentInput`/`AgentOutput` contract models,
 and **LangGraph** for orchestration of the agent graph.
+
+*(See the Status note above: the LangGraph portion of this decision was
+reversed in Phase 9. The real orchestrator is a plain, direct-call async
+function — see `orchestrator/request_orchestrator/agent.py` and
+`docs/architecture/single-stage-mvp.md`.)*
 
 ## Consequences
 

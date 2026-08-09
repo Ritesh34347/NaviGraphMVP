@@ -1,8 +1,10 @@
-# Required check — cannot be skipped. If tests/security/ is empty this passes
-# vacuously, which is expected until Phase 5/6 introduce real security-relevant
-# components (real RBAC/ABAC OPA policies, tenant-isolation enforcement, etc.).
-# A vacuous pass here is a known, accepted state — do NOT remove or make this
-# check optional just because it currently has little to test.
+# Required check — cannot be skipped. As of Phase 6, tests/security/ contains
+# real adversarial tests (tenant isolation, OPA policy bypass attempts, PII
+# exposure, fail-closed-on-insufficient-roles) plus a cloud/ suite (Phase 10a)
+# for the real AKS deployment (network policy isolation, RBAC least privilege,
+# secret-provider scoping, AKS API server exposure, ACR privacy, ingress TLS).
+# This is no longer a vacuous pass over an empty directory — do NOT remove or
+# make this check optional.
 name: Adversarial Security Tests
 
 on:

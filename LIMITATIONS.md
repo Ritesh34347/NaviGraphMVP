@@ -1123,19 +1123,25 @@ to avoid real Azure cost/attack-surface for a route nothing actually uses
 yet. It remains fully available in local `docker-compose` for continued
 dev/testing of the route itself.
 
-**Also still open, flagged rather than guessed**: no real domain name has
-been decided yet — `overlays/dev/ingress-patch.yaml` uses a
-`REPLACE_AFTER_APPLY_DOMAIN` placeholder, and cert-manager/Let's Encrypt
-setup is deferred until a real, DNS-resolvable hostname exists (Let's
-Encrypt's HTTP01 challenge cannot validate a placeholder domain).
+**Domain/TLS — RESOLVED 2026-07-30**: real cluster bootstrap used
+`nip.io` (a free wildcard DNS service resolving `<label>.<ip>.nip.io` to
+the real ingress-nginx LoadBalancer's public IP) as the dev environment's
+domain rather than blocking on acquiring a real registered one — see
+`DECISIONS.md`'s "Phase 10b: nip.io as the dev environment's domain" entry
+for the explicit stopgap framing (the IP-tied hostname would break if the
+LoadBalancer Service were ever recreated, which a real registered domain
+wouldn't be sensitive to). cert-manager's staging Let's Encrypt issuer was
+used first, promoted to prod after one verified issuance (see
+`DECISIONS.md`'s corresponding entry), and items 57-58 above confirm real
+HTTP traffic flowing through the real ingress controller against this
+domain. `overlays/dev/ingress-patch.yaml`'s `REPLACE_AFTER_APPLY_DOMAIN`
+placeholder in this checked-in repo is intentional, not unresolved — the
+real `nip.io` hostname (tied to a specific, real IP) is substituted at
+deploy time, not committed here.
 
 **UPDATE 2026-07-30**: AKS node sizing/region are no longer the original
 defaults — see item 53 for what changed and why, discovered during the
 real Phase 10b `terraform apply`.
-
-**What full version requires**: the user supplying a real domain (or
-confirming a temporary `nip.io`-style scheme is acceptable) before Phase
-10b's cluster bootstrap step.
 
 ### 53. Real Phase 10b `terraform apply` required several subscription-specific fixes not knowable from `plan` alone
 
@@ -1341,3 +1347,37 @@ already supports; write after a successful execution), wire it into
 `RequestOrchestratorAgent.run()`, and add an integration test asserting a
 second identical request is served from cache rather than re-executing
 against Snowflake.
+
+### 60. Real Azure identifiers are committed in plaintext in `infra/k8s/overlays/dev/`
+
+**What was found**: while correcting `infra/k8s/README.md`'s stale claim
+that `overlays/dev`'s `REPLACE_AFTER_APPLY` placeholders were still
+unresolved (2026-08-09 docs pass), found the opposite problem instead --
+they were already substituted with real values, committed directly to
+this repository: a real Azure tenant ID and managed-identity client ID
+(`secretproviderclass-agent-runtime.yaml`, `-neo4j.yaml`, `-grafana.yaml`),
+the real Key Vault name and ACR hostname (`kustomization.yaml`), the real
+Postgres Flexible Server FQDN (`configmap-postgres-patch.yaml`), and a real
+public IP address embedded in the `nip.io` ingress hostnames
+(`ingress-patch.yaml`, e.g. `app.navigraph.51-8-46-125.nip.io`). No secret
+*values* are committed (passwords stay in Key Vault, fetched via the CSI
+driver at runtime) -- but these are real, identifying infrastructure
+fingerprints for a live Azure environment, not synthetic placeholders.
+
+**Why this wasn't caught as a limitation before**: these values were
+substituted directly into the checked-in manifests as each Phase 10b step
+completed (no separate "apply value, then git-ignore or template it back
+out" step exists in this project's workflow), and no prior `LIMITATIONS.md`
+pass specifically audited `overlays/dev/` for what got committed versus
+what a real subscription's own secrets/RBAC would need to actually exploit
+these identifiers.
+
+**What full version requires**: A deliberate decision, not a docs fix --
+whether this belongs in a public repository at all. Options if not:
+template these values back out (env-substituted at deploy time via
+`kustomize edit set` or similar, values sourced from Terraform outputs and
+never committed), or accept the exposure on the basis that a tenant
+ID/managed-identity client ID/hostname alone is not independently
+sufficient to access anything without also compromising real Azure RBAC
+(the actual access boundary) -- but that judgment call has not been made
+or recorded anywhere yet.
