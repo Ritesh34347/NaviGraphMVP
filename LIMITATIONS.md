@@ -609,26 +609,42 @@ a real, silent security gap (tagging only `_v2` while the pipeline
 actually resolves the other one — a real mistake caught live via
 `tests/integration/guardrail_pipeline/` before this fix).
 
-**Resolution (mechanism only)**: `DataSource` gained a real `is_default`
-column plus a partial unique index (`uq_data_sources_tenant_default`,
-migration `0004_data_source_is_default`) enforcing "at most one default per
-tenant" at the DB level — verified for real against a live Postgres
-instance, including a genuine `IntegrityError` on a second default and a
-genuine atomic swap via the new `navigraph_catalog.api.set_default_data_source`.
-The Request Orchestrator's `_resolve_data_source_id` now falls back to a
-tenant's marked default when more than one `DataSource` is registered
-(see item 42).
+**Resolution (mechanism, plus a real decision)**: `DataSource` gained a
+real `is_default` column plus a partial unique index
+(`uq_data_sources_tenant_default`, migration `0004_data_source_is_default`)
+enforcing "at most one default per tenant" at the DB level — verified for
+real against a live Postgres instance, including a genuine `IntegrityError`
+on a second default and a genuine atomic swap via the new
+`navigraph_catalog.api.set_default_data_source`. The Request Orchestrator's
+`_resolve_data_source_id` now falls back to a tenant's marked default when
+more than one `DataSource` is registered (see item 42). Separately,
+`DataSourceDiscoveryAgent._resolve_table_owners`'s own "first data source
+encountered wins" tie-break (the mechanism that made `STAGING_TRANSACTIONS`
+resolve to the older `fidelity_poc_snowflake` registration) now prefers the
+tenant's marked default when a table name collides across sources —
+covered by a new unit test that deliberately returns the non-default
+source first, to prove the default wins on its own merit.
 
-**Still open — a real data decision, not a code gap**: the mechanism now
-exists, but nobody has actually called `set_default_data_source` against
-the real, live `navikenz-poc` catalog to designate `fidelity_poc_snowflake`
-or `_v2` as canonical. That is a deliberate business decision (which
-registration is authoritative going forward, and whether the other should
-eventually be de-duplicated away entirely) this phase does not make
-unilaterally — it requires a human decision from whoever owns the
-`navikenz-poc` tenant's data, then a one-time
-`set_default_data_source(tenant_id="navikenz-poc", data_source_id=...)`
-call against the live catalog.
+The underlying business question — which registration is canonical — was
+put to the user directly (`AskUserQuestion`, 2026-08-09) rather than
+decided unilaterally: **`fidelity_poc_snowflake_v2` was chosen as
+`navikenz-poc`'s canonical default**, not the older `fidelity_poc_snowflake`
+the pipeline happened to resolve to before this fix.
+
+**Still open — an operational step against a live system this sandbox
+cannot reach, not a code gap**: this sandbox has no connectivity to the
+real, live `navikenz-poc` metadata catalog (no docker-compose stack, no
+Azure credentials), so the decision above has been recorded here and in
+`DECISIONS.md` but not yet *applied*. Whoever has access to that live
+catalog still needs to run, once:
+```python
+set_default_data_source(
+    session, tenant_id="navikenz-poc", data_source_id=<fidelity_poc_snowflake_v2's real UUID>
+)
+```
+Until that one call is made, the live system continues resolving requests
+via the pre-existing "first encountered" behavior — the code fix and the
+data fix are two separate steps, and only the first is done here.
 
 ### 27. Rego policy hardening found live, during adversarial testing, not before
 

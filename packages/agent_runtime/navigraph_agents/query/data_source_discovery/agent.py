@@ -224,20 +224,29 @@ class DataSourceDiscoveryAgent:
 
         Tie-break: if the same table name exists in more than one of this
         tenant's data sources (rare, but nothing upstream prevents it), the
-        first data source encountered -- in `list_data_sources`' own
-        return order -- wins, and the rest are silently shadowed. There is
-        no ordering guarantee on `list_data_sources`' underlying query, so
-        "first" here means only "deterministic for a given DB state", not a
-        meaningful ranking; a real disambiguation signal would have to come
-        from upstream (e.g. which data source the request actually meant),
-        not from this agent guessing.
+        tenant's marked `is_default` data source wins when exactly one of
+        the colliding sources is marked default (LIMITATIONS.md item 26,
+        real navikenz-poc case) -- resolving to a meaningful signal instead
+        of guessing. When no colliding source is marked default (or more
+        than one somehow is, though the partial unique index at the DB
+        level prevents that within one tenant), the first one encountered
+        -- in `list_data_sources`' own return order -- wins, and the rest
+        are silently shadowed; there is no ordering guarantee on
+        `list_data_sources`' underlying query, so that fallback "first"
+        means only "deterministic for a given DB state", not a ranking.
         """
 
         with session_scope(self._session_factory) as session:
             data_sources = list_data_sources(session, tenant_id=tenant_id)
+            # Default-marked sources processed first so they win any
+            # collision against `if key not in table_owner` below, without
+            # changing relative order among non-default sources.
+            ordered_data_sources = sorted(
+                data_sources, key=lambda data_source: not data_source.is_default
+            )
 
             table_owner: dict[str, DataSource] = {}
-            for data_source in data_sources:
+            for data_source in ordered_data_sources:
                 for table in list_tables(session, data_source_id=data_source.id):
                     key = table.name.lower()
                     if key not in table_owner:

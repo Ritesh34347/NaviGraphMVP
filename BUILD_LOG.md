@@ -1135,3 +1135,31 @@ real cryptographic tests, not bundled into a credential-routing change.
 Also not attempted: verifying `AzureKeyVaultSecretsProvider` against the
 real, live `navigraph-dev-kv` Key Vault from Phase 10b -- this sandbox has
 no live Azure credentials to do so.
+
+## 2026-08-09 — Phase 11 part 1 follow-up: real navikenz-poc default decision + DataSourceDiscoveryAgent's own tie-break fixed
+
+Item 26's real navikenz-poc ambiguity has two independent resolution
+points, not one: the Request Orchestrator's `_resolve_data_source_id`
+(item 42, resolved above) and `DataSourceDiscoveryAgent
+._resolve_table_owners`'s own "first data source encountered wins"
+tie-break -- the specific mechanism that made `STAGING_TRANSACTIONS`
+resolve to the older `fidelity_poc_snowflake` registration in earlier
+phases. Fixed the second one too: `_resolve_table_owners` now sorts
+data sources so a tenant's marked `is_default` source is processed first,
+winning any table-name collision on its own merit -- proven with a new
+unit test that deliberately returns the non-default source first from
+`list_data_sources`. `agent_runtime`'s suite is now at 207 passing tests
+(was 204 before Phase 11 part 1, +3 for this fix), `ruff check` clean.
+
+Also resolved the actual business question item 26 left open: asked the
+user directly (`AskUserQuestion`) which of the two real navikenz-poc
+registrations should be canonical. They chose `fidelity_poc_snowflake_v2`
+-- a real behavior change from what the pipeline resolved to before this
+pass, not the no-op "keep the status quo" option. Recorded in
+`DECISIONS.md` and `LIMITATIONS.md` item 26. **Not yet applied**: this
+sandbox has no connectivity to the live `navikenz-poc` metadata catalog
+(no docker-compose stack, no Azure credentials), so the one-time
+`set_default_data_source(tenant_id="navikenz-poc", data_source_id=...)`
+call against that live system, and re-running the golden-question eval
+suite afterward to confirm the switch doesn't regress anything, are both
+real follow-up steps for whoever has that access -- not done here.

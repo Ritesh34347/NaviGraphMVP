@@ -947,3 +947,24 @@ verified for real against a live Postgres, not just asserted in a
 docstring (a genuine `IntegrityError` on a direct second-default insert,
 and a genuine successful atomic swap via the two-`UPDATE` unset-then-set
 pattern the index requires).
+
+## 2026-08-09 — `navikenz-poc`'s canonical `DataSource` is `fidelity_poc_snowflake_v2`, not the older registration
+
+With a real `is_default` mechanism now in place (LIMITATIONS.md items
+26/42), which of `navikenz-poc`'s two ambiguous Snowflake registrations
+should actually be canonical was a real business decision, not something
+to infer from which one the code happened to resolve to first. Put to the
+user directly via `AskUserQuestion` rather than decided unilaterally,
+with three options: keep the older `fidelity_poc_snowflake` (no behavior
+change, just makes today's incidental resolution explicit), switch to the
+newer `fidelity_poc_snowflake_v2` (a real behavior change, needs
+re-verification against golden questions), or leave it undecided. The
+user chose `fidelity_poc_snowflake_v2`. `DataSourceDiscoveryAgent`'s
+table-owner tie-break was updated accordingly to prefer the marked
+default. This decision is recorded here and in LIMITATIONS.md item 26,
+but has NOT yet been applied to the live `navikenz-poc` catalog -- this
+sandbox has no connectivity to that live system. Whoever has access needs
+to run `set_default_data_source(tenant_id="navikenz-poc",
+data_source_id=<fidelity_poc_snowflake_v2's UUID>)` once, and then
+re-verify the golden-question eval suite, since this does change which
+data source the pipeline resolves to by default going forward.

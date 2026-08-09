@@ -49,12 +49,15 @@ def _make_input(tables: list[str]) -> DataSourceDiscoveryInput:
     )
 
 
-def _data_source(source_id: uuid.UUID, source_type: str = "snowflake") -> SimpleNamespace:
+def _data_source(
+    source_id: uuid.UUID, source_type: str = "snowflake", *, is_default: bool = False
+) -> SimpleNamespace:
     return SimpleNamespace(
         id=source_id,
         source_type=source_type,
         tenant_id="tenant-acme",
         connection_ref={"secret_scope": f"tenant-acme-{source_id}"},
+        is_default=is_default,
     )
 
 
@@ -298,5 +301,42 @@ async def test_tie_break_picks_first_data_source_when_table_name_collides() -> N
 
     assert len(output.result.resolved) == 1
     assert output.result.resolved[0].data_source_id == str(ds1_id)
+    assert output.result.is_multi_source is False
+    assert connector_cls.call_count == 1
+
+
+async def test_tie_break_prefers_the_tenant_default_over_encounter_order() -> None:
+    """LIMITATIONS.md item 26's real navikenz-poc case: when one of the
+    colliding data sources is marked `is_default`, it wins regardless of
+    which one `list_data_sources` happened to return first."""
+
+    ds1_id, ds2_id = uuid.uuid4(), uuid.uuid4()
+    ds1 = _data_source(ds1_id, source_type="snowflake", is_default=False)
+    ds2 = _data_source(ds2_id, source_type="snowflake", is_default=True)
+    connector_cls = _reset_fake_connector(succeed=True)
+
+    tables_by_source = {
+        ds1_id: [_table("SHARED_TABLE")],
+        ds2_id: [_table("SHARED_TABLE")],
+    }
+
+    agent = DataSourceDiscoveryAgent(session_factory=MagicMock())
+
+    with (
+        patch(f"{_AGENT_MODULE}.session_scope", _fake_session_scope),
+        # ds1 (non-default) is still returned FIRST -- proving the default
+        # wins on its own merit, not because it happened to be encountered
+        # first too.
+        patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[ds1, ds2]),
+        patch(
+            f"{_AGENT_MODULE}.list_tables",
+            side_effect=lambda session, *, data_source_id: tables_by_source[data_source_id],
+        ),
+        patch(f"{_AGENT_MODULE}.build_connector", return_value=connector_cls()),
+    ):
+        output = await agent.run(_make_input(["shared_table"]))
+
+    assert len(output.result.resolved) == 1
+    assert output.result.resolved[0].data_source_id == str(ds2_id)
     assert output.result.is_multi_source is False
     assert connector_cls.call_count == 1
