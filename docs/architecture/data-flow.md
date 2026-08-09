@@ -6,6 +6,11 @@ emits. See `docs/architecture/overview.md` for the full agent map and current
 build status, and `docs/architecture/agent-contract.md` for the formal shape of
 `lineage_events`.
 
+**Note**: this document's per-stage "(designed)" labels are stale
+(`LIMITATIONS.md` item 32) — nearly every stage below is a real, built agent
+today. See [`single-stage-mvp.md`](./single-stage-mvp.md) for the accurate,
+current 19-agent sequence and real/stubbed infrastructure status.
+
 Example question used throughout: *"What was our churn rate by region last
 quarter, and why did it spike in the Southwest?"*
 

@@ -5,6 +5,14 @@ request lifecycle, the six agent domains, and the ~25 named agents within them.
 It is kept up to date as agents move from "designed" to "built" — see the status
 table at the bottom.
 
+**For the real, current request-lifecycle sequence** (which agents actually
+run today, in what order, against what real infrastructure), see
+[`single-stage-mvp.md`](./single-stage-mvp.md). The domain tables below are
+known-stale (see `LIMITATIONS.md` items 32 and 35) and a full reconciliation
+is deferred as its own dedicated phase — `single-stage-mvp.md` does not
+replace that reconciliation, it only documents the orchestrator's real
+19-agent call sequence accurately in the meantime.
+
 ## What NaviGraph does
 
 NaviGraph answers natural-language business questions by combining
