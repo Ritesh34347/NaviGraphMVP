@@ -831,3 +831,58 @@ real risk of misconfiguration (wrong ingress class, wrong solver, DNS not
 resolving yet), validating against staging's effectively unlimited but
 browser-untrusted certs first avoids burning that budget on a config
 that might need several iterations.
+
+## 2026-08-09 — Postgres connector's settings use a `CUSTOMER_POSTGRES_` prefix, not `POSTGRES_`
+
+We chose `CUSTOMER_POSTGRES_HOST`/`_PORT`/`_DATABASE`/`_USER`/`_PASSWORD`/
+`_SSLMODE` as `PostgresSettings`' env vars, deliberately not mirroring
+`SnowflakeSettings`' plain `snowflake_*` naming. We considered the plain
+`postgres_*`/`POSTGRES_*` names (matching `SnowflakeConnector`'s own
+naming convention exactly) and rejected it: those exact names are already
+claimed by `navigraph_catalog.settings.MetadataCatalogSettings` for
+NaviGraph's own internal catalog/lineage Postgres database (see
+`infra/docker-compose.yml`'s `postgres` service). Reusing them for a
+customer-facing connector would silently point real customer query
+execution at NaviGraph's own internal operational database in any
+environment where both settings classes get constructed in the same
+process (true today: `agent_runtime`'s `main.py` constructs both). The
+`customer_` prefix makes that collision structurally impossible rather
+than relying on engineers remembering not to introduce it.
+
+## 2026-08-09 — `psycopg2-binary`, not `psycopg` (v3) or source-built `psycopg2`, for the Postgres connector
+
+We chose `psycopg2-binary` as the Postgres driver dependency for
+`navigraph_connectors.postgres`, matching what most real-world projects
+reach for first. We considered `psycopg` (the actively-developed v3
+successor) and source-built `psycopg2` (which `psycopg2`'s own docs
+recommend for production, since `-binary` bundles a static `libpq` that
+can silently diverge from a system's own OpenSSL/libpq security patches)
+and rejected both for this phase: `psycopg2-binary` requires no build
+toolchain or system `libpq-dev` package, which kept this connector's
+introduction from also becoming an infra/Dockerfile change, and the real
+paramstyle compatibility this connector depends on (`%(name)s` pyformat,
+matching `SnowflakeConnector`'s driver) is `psycopg2`'s own native
+behavior either way. Logged as a real, intentional follow-up in
+`LIMITATIONS.md` item 1 -- not a decision meant to stand forever, since
+the production-hardening tradeoff `psycopg2`'s own maintainers document is
+real, not hypothetical.
+
+## 2026-08-09 — Promoting Trino to the default execution route is deferred, not bundled with the Postgres connector
+
+Building a real Postgres connector satisfies, at face value, one of the
+two conditions the original "Execution defaults to the direct Snowflake
+connector, not Trino" decision named for reconsidering that default ("a
+second real data source creates genuine federation need"). We considered
+flipping `ExecutionPlanningAgent.DEFAULT_ROUTE` to `"trino"` in the same
+pass and rejected it: no `postgresql.properties` Trino catalog exists yet
+(only `infra/trino/coordinator/catalog/postgresql.properties.example`,
+added this same pass, mirroring the pre-existing Snowflake pattern), no
+real `DataSource` row of `source_type="postgres"` is registered for any
+tenant, and no independent review of Trino's own access-control
+configuration (the decision's other named condition) has happened either.
+Flipping the default now would not create real cross-source federation --
+it would only change how the one real, currently-live production data
+source (Snowflake) executes for every real request, with no live-verified
+Postgres-via-Trino path to justify that change. Left as
+`"direct_connector"`; see `LIMITATIONS.md` item 3 for exactly what
+promoting it for real still requires.

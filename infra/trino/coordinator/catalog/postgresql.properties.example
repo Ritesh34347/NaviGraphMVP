@@ -1,0 +1,21 @@
+# This file documents the SHAPE of a future real Postgres Trino catalog file
+# and is not loaded by Trino (it does not end in .properties), mirroring
+# `snowflake.properties.example` in this same directory exactly. When
+# Postgres catalog wiring happens for real (see LIMITATIONS.md item 1 --
+# the connector itself is real as of 2026-08-09, but this Trino-side catalog
+# registration is NOT, so `route="trino"` cannot reach a Postgres data
+# source yet, only `route="direct_connector"` can), copy it to
+# `postgresql.properties` in THIS SAME directory (and the matching
+# `infra/trino/worker/catalog/` directory -- every worker needs the same
+# catalog files as the coordinator) and fill in real values.
+#
+# Trino auto-loads any *.properties file in a node's catalog/ directory as
+# a catalog, so do not add a real postgresql.properties here until
+# credentials are actually available and network access from Trino to the
+# real Postgres instance has been confirmed -- exactly the same discipline
+# `snowflake.properties.example`'s own comment already states.
+
+connector.name=postgresql
+connection-url=jdbc:postgresql://<host>:<port>/<database>
+connection-user=<postgres-user>
+connection-password=<postgres-password>

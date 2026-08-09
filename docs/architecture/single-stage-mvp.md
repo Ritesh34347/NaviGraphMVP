@@ -204,7 +204,7 @@ context, regardless of how this one ended.
 | Session state | **Real** | Redis, same key/TTL pattern as the query-result cache |
 | Lineage | **Real** | Postgres, one incremental append per stage, keyed by `trace_id` |
 | Knowledge graph | **Real**, single instance | Neo4j; no HA/clustering yet (`LIMITATIONS.md` item 2) |
-| Multi-tenant / multi-source | Structurally real, narrow in practice | Every call carries `tenant_id`; only one Snowflake connector and one real tenant's catalog exist today (`LIMITATIONS.md` item 1) |
+| Multi-tenant / multi-source | Structurally real, narrow in practice | Every call carries `tenant_id`; Snowflake and Postgres connectors both real, but only Snowflake has a registered tenant data source and a Trino catalog entry so far (`LIMITATIONS.md` item 1, partially resolved) |
 
 ## Deliberately out of scope for this stage
 

@@ -1024,3 +1024,54 @@ verification (item 23), promoting Trino to the default execution route
 flip unilaterally), and mid-pipeline crash recovery (item 39 -- would mean
 reversing the Phase 9 LangGraph-removal decision). See this session's
 chat-turn plan for the full reasoning on what's in/out of scope and why.
+
+## 2026-08-09 — Real second connector: Postgres (LIMITATIONS.md item 1, partially resolved)
+
+Built `navigraph_connectors.postgres.PostgresConnector`, a complete,
+real `Connector` implementation mirroring `SnowflakeConnector`'s exact
+structure (`settings.py`, `connector.py`, `__init__.py` registering
+`"postgres"` in the connector registry). Verified live, not just
+cross-checked against docs: started a real local Postgres 16 instance,
+created a real `navigraph_customer_sample` database with a `sales` schema
+(`customers`/`orders` tables, a column comment, a nullable column, and
+seed rows), and ran both `introspect_schema()` and `execute_query()` --
+including with real `%(name)s`-style bind parameters, the exact paramstyle
+`query.sql_generation` hardcodes because it matches Snowflake's driver --
+against it for real. Both the new `postgres_integration`-marked test
+(mirroring `snowflake_integration`'s pattern exactly, skipping cleanly
+without real `CUSTOMER_POSTGRES_*` env vars) and the fake-backed default
+unit tests pass; `ruff check` is clean.
+
+Real finding from that live verification: `psycopg2` natively accepts
+`%(name)s` pyformat bind parameters, so SQL Generation's output runs
+against this connector with zero dialect translation -- confirmed, not
+assumed, closing the specific "pressure-test the abstraction against a
+second, differently-shaped source" gap item 1 named.
+
+Settings use a `CUSTOMER_POSTGRES_*` env-var prefix, not `POSTGRES_*` --
+see `DECISIONS.md` for why (those exact names are already claimed by
+NaviGraph's own internal catalog database's settings, and reusing them
+would have silently pointed customer query execution at NaviGraph's own
+operational Postgres instance in any process that constructs both, which
+`agent_runtime`'s `main.py` does). `navigraph_connectors.postgres` is now
+imported for its registration side effect in `main.py`, alongside the
+pre-existing `navigraph_connectors.snowflake` import.
+
+Also added `infra/trino/coordinator/catalog/postgresql.properties.example`,
+mirroring the pre-existing `snowflake.properties.example` pattern, to
+document (not yet wire for real) what Trino-side Postgres catalog
+registration would look like.
+
+**Deliberately not done in this same pass**: promoting Trino to the
+default execution route, even though a second real connector was one of
+the two stated conditions for reconsidering that default. See
+`DECISIONS.md`'s "Promoting Trino to the default execution route is
+deferred" entry and `LIMITATIONS.md` item 3's 2026-08-09 update for the
+full reasoning -- no Trino-side Postgres catalog exists yet, and flipping
+the default now would only change how the one real, live production data
+source (Snowflake) executes, with no live-verified cross-source path to
+justify it. Also not done: registering a real `postgres`-type `DataSource`
+row for any tenant, or a metadata-catalog crawl against this connector
+(item 1's remaining "still open" list) -- this pass proved the connector
+itself is real and correct, not that it's wired into a live tenant's
+request pipeline yet.

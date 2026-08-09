@@ -11,8 +11,10 @@ NaviGraph is designed from day one to be:
 - **Multi-tenant** — every request carries a `tenant_id` and every agent, cache key,
   and lineage record is scoped to it.
 - **Multi-source** — the query federation layer (Trino) is architected to span
-  multiple underlying data warehouses/databases, even though only one connector
-  (Snowflake) is implemented today (see [`LIMITATIONS.md`](./LIMITATIONS.md)).
+  multiple underlying data warehouses/databases; Snowflake and Postgres
+  connectors are both real today, though only Snowflake has a registered
+  tenant data source and a Trino catalog entry so far (see
+  [`LIMITATIONS.md`](./LIMITATIONS.md) item 1).
 - **Explainable** — every answer carries a lineage trail from the natural-language
   question down to the SQL/Cypher that produced it, and a grounded narrative that
   cites the numbers it used.

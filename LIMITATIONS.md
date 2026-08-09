@@ -8,19 +8,53 @@ incomplete, but nobody has recorded it as an intentional deferral.
 
 ---
 
-### 1. Only a Snowflake connector is implemented
+### 1. PARTIALLY RESOLVED (2026-08-09): Only a Snowflake connector is implemented
 
-**What's deferred**: Postgres and generic REST reference connectors.
+**What was deferred**: Postgres and generic REST reference connectors.
 
-**Why**: Phase 1/2 scope is one real, production-quality data source end-to-end
-rather than several shallow ones. Snowflake is the customer's actual warehouse.
+**Why it was deferred**: Phase 1/2 scope was one real, production-quality data
+source end-to-end rather than several shallow ones. Snowflake is the
+customer's actual warehouse.
 
-**What full version requires**: The data-source SDK interface is already written to
-be source-agnostic (connection lifecycle, schema introspection, query execution,
-credential handling are all behind an interface), but that interface is unproven
-against a second, differently-shaped source. A Postgres connector should be built
-next specifically to pressure-test the abstraction, followed by a generic REST/API
-connector for sources with no SQL surface at all.
+**Resolution (Postgres only)**: `navigraph_connectors.postgres.PostgresConnector`
+is a real, complete `Connector` implementation (`test_connection`,
+`introspect_schema`, `execute_query`, `capabilities`), registered under
+`source_type="postgres"`. This genuinely pressure-tested the source-agnostic
+`Connector` abstraction against a second, differently-shaped driver, not
+just in theory: verified live against a real local Postgres 16 instance
+created for this purpose (a `sales` schema with `customers`/`orders`
+tables, a column comment, a nullable column, and real bind-parameterized
+query execution) -- both `test_connector.py` (fake-backed, default) and
+`test_connector_integration.py` (real, `postgres_integration`-marked,
+mirroring `snowflake_integration`'s pattern) pass. One real, useful finding
+from that live verification: `query.sql_generation` hardcodes `%(name)s`
+(pyformat) bind placeholders because that's Snowflake's driver's
+paramstyle -- `psycopg2` also natively accepts pyformat params, confirmed
+live, so SQL Generation's output needs zero dialect translation to run
+against this connector.
+
+**Still open**:
+- A generic REST/API connector for sources with no SQL surface at all --
+  not attempted this pass.
+- No real `DataSource` row of `source_type="postgres"` has been registered
+  in `metadata_catalog` for any tenant, and no real catalog crawl/ingestion
+  has been run against a Postgres source the way Snowflake's was (Phase 2)
+  -- the connector itself is real and proven, but nothing in the live
+  request pipeline has been exercised against it end-to-end yet.
+- Trino has NOT been given a corresponding `postgresql.properties` catalog
+  entry (see `infra/trino/coordinator/catalog/postgresql.properties.example`,
+  added this pass, mirroring the pre-existing `snowflake.properties.example`
+  pattern) -- `route="trino"` cannot reach a Postgres source yet, only
+  `route="direct_connector"` can. This directly affects item 3/19: whether
+  building this connector alone constitutes "a second real data source
+  creates genuine federation need" (one of that item's two stated
+  conditions for promoting Trino to the default route) is a real judgment
+  call, not a mechanical fact -- flagged there rather than resolved
+  unilaterally.
+- Per-`DataSource` credential routing (item 21) still applies equally to
+  this connector: it reads its own global env-var-backed settings
+  (`CUSTOMER_POSTGRES_*`), not anything specific to a resolved `DataSource`
+  row, exactly like `SnowflakeConnector` today.
 
 ### 2. Neo4j runs as a single local instance
 
@@ -48,6 +82,23 @@ schema (`far_trans`, `staging`).
 `ExecutionPlan`, but Phase 5's confirmed default (and the only route real
 executions currently use) is `route="direct_connector"` -- see item 18
 below for why.
+
+**2026-08-09 update, deliberately NOT acted on unilaterally**: a real
+Postgres connector now exists (item 1), which is one of this item's two
+originally-stated promotion conditions ("a second real data source creates
+genuine federation need"). Whether that condition is genuinely met is a
+real judgment call, not a mechanical fact, and two things are still
+missing even if it is: (1) Trino has no `postgresql.properties` catalog
+entry yet -- flipping the default now would mean any future
+`source_type="postgres"` execution routed through Trino fails outright,
+since only `route="direct_connector"` can currently reach it (see item 1's
+"still open" list); and (2) no independent review of Trino's own
+access-control configuration (this item's other stated condition) has
+happened either. Flipping `DEFAULT_ROUTE` would also change how the one
+real, currently-live production data source (Snowflake) executes for
+every real request -- a live-traffic-affecting change, not a low-risk
+default. Left as `"direct_connector"` pending an explicit decision that
+accounts for both gaps, not silently promoted alongside the connector work.
 
 ### 4. RESOLVED (Phase 6) — was a duplicate of item 18, never updated: OPA runs an allow-all placeholder policy
 

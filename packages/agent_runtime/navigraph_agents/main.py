@@ -52,16 +52,18 @@ import os
 from contextlib import asynccontextmanager
 from typing import cast
 
-# Import side effect only: registers "snowflake" in
+# Import side effect only: registers "snowflake" and "postgres" in
 # `navigraph_connectors.registry` (see
-# `navigraph_connectors/snowflake/__init__.py`'s `register_connector(...)`
-# call). Without this import somewhere in the process, the registry is
+# `navigraph_connectors/snowflake/__init__.py`'s and
+# `navigraph_connectors/postgres/__init__.py`'s `register_connector(...)`
+# calls). Without these imports somewhere in the process, the registry is
 # empty and every connector-dependent agent (Data Source Discovery, Data
 # Federation) fails at runtime with "No connector registered for
 # source_type='snowflake'" -- a real bug caught live via a direct HTTP call
 # against this service after Phase 5's rebuild (unit tests never caught it
 # because they inject a fake connector directly, and the pytest-based
 # integration test imports this module itself).
+import navigraph_connectors.postgres  # noqa: F401
 import navigraph_connectors.snowflake  # noqa: F401
 import redis
 from fastapi import FastAPI, HTTPException
