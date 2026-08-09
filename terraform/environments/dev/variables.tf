@@ -44,6 +44,18 @@ variable "postgres_administrator_password" {
   default     = "placeholder-never-applied"
 }
 
+variable "aks_admin_member_object_ids" {
+  description = "Azure AD object IDs to add to the real navigraph-dev-aks-admins group at apply time (Phase 15.4, LIMITATIONS.md item 51). Defaults to empty -- applying with the default grants nobody cluster-admin via AAD; a human must explicitly list real object IDs here (or add members out-of-band after apply) before this group does anything. See docs/runbooks/aad-k8s-rbac-rollout.md."
+  type        = list(string)
+  default     = []
+}
+
+variable "aks_viewer_member_object_ids" {
+  description = "Azure AD object IDs to add to the real navigraph-dev-aks-viewers group at apply time. Defaults to empty -- see aks_admin_member_object_ids's identical rationale."
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Common tags applied to every resource in this environment."
   type        = map(string)

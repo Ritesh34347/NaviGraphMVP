@@ -2,16 +2,32 @@
 already-known Kubernetes RBAC gap named in `terraform/modules/aks/main.tf`'s
 own Phase 10 comment and `LIMITATIONS.md`.
 
-`terraform/modules/aks` has no `azure_active_directory_role_based_access_control`
-block -- the cluster uses local Kubernetes accounts, not AAD-integrated auth.
-Once any identity can fetch a kubeconfig via `az aks get-credentials` at
-all (granted via the real `Azure Kubernetes Service Cluster User Role`
-`azurerm_role_assignment` this phase added), it is effectively
-cluster-admin -- there is no namespace-scoped Kubernetes RBAC layered on
-top. This test's job is to PROVE that real, current state rather than
-assume it -- if a future phase adds real AAD-integrated RBAC, this test
-should start failing, which is the correct signal to update it (and
-`LIMITATIONS.md`) rather than a regression to silently work around.
+`terraform/modules/aks` had no `azure_active_directory_role_based_access_control`
+block until Phase 15.4 (LIMITATIONS.md item 51) -- the cluster used local
+Kubernetes accounts, not AAD-integrated auth. Once any identity could fetch
+a kubeconfig via `az aks get-credentials` at all (granted via the real
+`Azure Kubernetes Service Cluster User Role` `azurerm_role_assignment`
+Phase 10 added), it was effectively cluster-admin -- there was no
+namespace-scoped Kubernetes RBAC layered on top.
+
+UPDATE (Phase 15.4): real Terraform code for AAD-integrated K8s RBAC now
+exists (`terraform/modules/aks`'s new `azure_active_directory_role_based
+_access_control` block, `terraform/modules/aks-aad-groups`, and
+`infra/k8s/base/rbac/`) but has DELIBERATELY NOT been applied to any live
+cluster -- see `docs/runbooks/aad-k8s-rbac-rollout.md` for why (a real,
+live-infrastructure change needs a human decision on real group
+membership first) and for the exact steps to roll it out for real.
+
+This test's identity is the CI/deploy service principal
+(`ci_service_principal_object_id`), NOT a human accessing the cluster
+through one of the new AAD groups -- that grant is separate, already-real,
+and DELIBERATELY still broad (deployment automation genuinely needs to
+manage cluster resources). Rolling out Phase 15.4's new AAD groups for
+real does not change this test's expected result: it should keep
+returning `yes` for the deploy identity even after real human RBAC is
+applied and enforced. If a FUTURE phase also narrows the deploy
+identity's own permissions, THAT is the signal to update this test and
+`LIMITATIONS.md` -- not Phase 15.4 on its own.
 """
 
 from __future__ import annotations
@@ -28,10 +44,12 @@ def test_current_identity_has_effective_cluster_admin_a_known_documented_gap() -
     )
     assert result.stdout.strip() == "yes", (
         "the current kubectl identity does NOT have effective cluster-admin -- "
-        "this is a SURPRISE given the documented gap (no AAD-integrated K8s "
-        "RBAC in terraform/modules/aks). If real namespace-scoped RBAC has "
-        "been added, update this test AND LIMITATIONS.md's corresponding item "
-        "to reflect the real, improved state -- do not just delete this test."
+        "this is a SURPRISE: this test's identity is the CI/deploy service "
+        "principal, whose own broad grant is unrelated to Phase 15.4's new "
+        "AAD-integrated RBAC for human access (see this module's docstring). "
+        "If the DEPLOY identity's own permissions have been narrowed, update "
+        "this test AND LIMITATIONS.md's corresponding item to reflect the "
+        "real, improved state -- do not just delete this test."
     )
 
 
@@ -47,8 +65,10 @@ def test_can_delete_secrets_across_the_whole_cluster_the_concrete_blast_radius(
         "auth", "can-i", "delete", "secrets", "--all-namespaces", check=False,
     )
     assert result.stdout.strip() == "yes", (
-        "expected 'yes' (the documented, known-broad-permission state) -- if "
-        "this now returns 'no', real least-privilege RBAC has landed; update "
-        "this test and LIMITATIONS.md to reflect it rather than treating this "
-        "assertion failure as a real regression"
+        "expected 'yes' (the documented, known-broad-permission state for "
+        "the CI/deploy identity) -- if this now returns 'no', the deploy "
+        "identity's OWN permissions have been narrowed (a separate change "
+        "from Phase 15.4's human-facing AAD RBAC); update this test and "
+        "LIMITATIONS.md to reflect it rather than treating this assertion "
+        "failure as a real regression"
     )

@@ -1,0 +1,34 @@
+# Phase 15.4 (LIMITATIONS.md item 51): real AAD-integrated Kubernetes RBAC
+# for human cluster access, closing the gap
+# tests/security/cloud/test_rbac_least_privilege.py documents.
+#
+# Binds the real "navigraph-<env>-aks-viewers" Azure AD group (created by
+# terraform/modules/aks-aad-groups, only usable once
+# terraform/modules/aks's azure_active_directory_role_based_access_control
+# block is applied to a real cluster) to Kubernetes' own built-in `view`
+# ClusterRole -- read-only access to almost everything, explicitly
+# EXCLUDING Secrets (the built-in `view` role never grants Secret read,
+# by Kubernetes' own design), cluster-wide.
+#
+# REPLACE_WITH_AKS_VIEWER_GROUP_OBJECT_ID below is a real placeholder, not
+# a working value -- it must be replaced with the real Azure AD group
+# object ID Terraform outputs as `aks_viewer_group_object_id` AFTER a
+# human has run `terraform apply` for real (see
+# docs/runbooks/aad-k8s-rbac-rollout.md for every step, in order). This
+# repo has an existing precedent for exactly this kind of "real value only
+# known after a separate manual step" placeholder -- see
+# docs/runbooks/local-dev-smoke-test.md's Azure AD app registration note.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: navigraph-aks-viewers
+  labels:
+    app.kubernetes.io/part-of: navigraph
+subjects:
+  - kind: Group
+    name: REPLACE_WITH_AKS_VIEWER_GROUP_OBJECT_ID
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: view
+  apiGroup: rbac.authorization.k8s.io

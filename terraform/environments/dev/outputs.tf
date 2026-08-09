@@ -47,3 +47,13 @@ output "aks_key_vault_secrets_provider_client_id" {
   description = "Client ID of the AKS-managed Key Vault Secrets Store CSI driver addon identity -- used by infra/k8s/overlays/dev's SecretProviderClass resources' userAssignedIdentityID parameter."
   value       = module.aks.key_vault_secrets_provider_client_id
 }
+
+output "aks_admin_group_object_id" {
+  description = "Object ID of the real navigraph-dev-aks-admins Azure AD group (Phase 15.4) -- already wired into the AKS cluster's cluster-admin binding; surfaced here for reference/audit."
+  value       = module.aks_aad_groups.admin_group_object_id
+}
+
+output "aks_viewer_group_object_id" {
+  description = "Object ID of the real navigraph-dev-aks-viewers Azure AD group (Phase 15.4) -- fill this into infra/k8s/base/rbac/cluster-role-binding-viewers.yaml's subject name before applying it (see docs/runbooks/aad-k8s-rbac-rollout.md)."
+  value       = module.aks_aad_groups.viewer_group_object_id
+}

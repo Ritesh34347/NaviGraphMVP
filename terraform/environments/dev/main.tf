@@ -42,6 +42,14 @@ module "key_vault" {
   tags                = var.tags
 }
 
+module "aks_aad_groups" {
+  source = "../../modules/aks-aad-groups"
+
+  name_prefix              = "navigraph-${var.environment}"
+  admin_member_object_ids  = var.aks_admin_member_object_ids
+  viewer_member_object_ids = var.aks_viewer_member_object_ids
+}
+
 module "aks" {
   source = "../../modules/aks"
 
@@ -58,6 +66,12 @@ module "aks" {
   vm_size   = "Standard_D2s_v7"
   subnet_id = module.networking.subnet_id
   tags      = var.tags
+
+  # Phase 15.4: real AAD-integrated K8s RBAC -- the admin group created
+  # above gets cluster-admin; infra/k8s/base/rbac/'s ClusterRoleBinding
+  # grants the viewer group real-but-limited access via native K8s RBAC
+  # (azure_rbac_enabled stays false, this module's own default).
+  aad_admin_group_object_ids = [module.aks_aad_groups.admin_group_object_id]
 }
 
 module "postgres_flexible_server" {
