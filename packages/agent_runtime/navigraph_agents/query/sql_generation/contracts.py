@@ -121,7 +121,25 @@ class ResolvedDataSource(BaseModel):
 class SqlGenerationPayload(BaseModel):
     """Everything the upstream Understanding-domain pipeline (via Schema
     Mapping) and the sibling Data Source Discovery agent contribute to this
-    agent's SQL-generation decision."""
+    agent's SQL-generation decision.
+
+    `metric_aggregations` is an optional, already-resolved
+    `{column_name: aggregation}` map (`aggregation` one of `SUM`/`COUNT`/
+    `AVG`/`MIN`/`MAX`) -- a declared fact from a per-tenant
+    `navigraph_semantic_model.Metric`, not this agent's own inference. This
+    agent deliberately does not import `navigraph_semantic_model` itself
+    (mirroring `CatalogInventoryEntry`'s "no direct cross-agent-package
+    contract imports" convention, applied here to a cross-cutting artifact
+    package instead of a sibling agent): whichever caller has already
+    resolved a real Semantic Model for this request/tenant is responsible
+    for pre-computing this plain dict. Defaults to `{}` -- when a column
+    has no entry here (the common case today, since no live request path
+    yet resolves a real Semantic Model per tenant -- see LIMITATIONS.md
+    item 38's "still open" section), `_aggregation_function` falls back to
+    its existing data-type/intent heuristic exactly as before, so this
+    field is purely additive and never changes behavior for a request that
+    doesn't supply it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -129,6 +147,7 @@ class SqlGenerationPayload(BaseModel):
     intent: IntentLabel
     schema_mapping: SchemaMappingResult
     resolved_data_sources: list[ResolvedDataSource]
+    metric_aggregations: dict[str, str] = Field(default_factory=dict)
 
 
 class SqlGenerationInput(AgentInput):

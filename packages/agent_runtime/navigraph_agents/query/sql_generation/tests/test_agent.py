@@ -69,6 +69,7 @@ def _make_input(
     columns: list[ResolvedColumnRef] | None = None,
     joins: list[JoinSpec] | None = None,
     resolved_data_sources: list[ResolvedDataSource] | None = None,
+    metric_aggregations: dict[str, str] | None = None,
 ) -> SqlGenerationInput:
     cols = columns if columns is not None else _MARKET_VOLUME_COLUMNS
     return SqlGenerationInput(
@@ -91,6 +92,7 @@ def _make_input(
                 if resolved_data_sources is not None
                 else _MARKET_VOLUME_DATA_SOURCES
             ),
+            metric_aggregations=metric_aggregations or {},
         ),
     )
 
@@ -138,6 +140,99 @@ async def test_worked_example_produces_exact_sql_skeleton_with_no_llm_call() -> 
     assert output.metadata.tokens_input is None
     assert output.metadata.tokens_output is None
     assert output.metadata.latency_ms >= 0
+
+
+# ---------------------------------------------------------------------------
+# (a2) LIMITATIONS.md item 38's structural fix: an explicit, declared
+# `metric_aggregations` entry (a per-tenant navigraph_semantic_model.Metric
+# .aggregation) wins outright over the data-type/intent heuristic, in both
+# directions -- this is the real regression coverage for the Phase 8 gq_002
+# bug ("how many transactions has each customer made" wrongly producing SUM).
+# ---------------------------------------------------------------------------
+
+
+async def test_explicit_aggregation_overrides_the_heuristic_to_count() -> None:
+    """Reproduces the real Phase 8 `gq_002` bug shape: a numeric measure
+    column (`UNITS`) under a measure-shaped intent (`comparison`) -- the
+    heuristic alone would choose `SUM` here (exactly the historical bug),
+    but a declared `metric_aggregations={"UNITS": "COUNT"}` (e.g. a
+    `transaction_count` Metric counting rows, not summing a quantity) must
+    win outright."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question="How many transactions has each customer made?",
+            intent="comparison",
+            metric_aggregations={"UNITS": "COUNT"},
+        )
+    )
+
+    assert output.errors == []
+    statement = output.result.statements[0]
+    assert "COUNT(STAGING_TRANSACTIONS.UNITS) AS UNITS_TOTAL" in statement.sql
+    assert "SUM(" not in statement.sql
+
+
+async def test_explicit_aggregation_overrides_the_heuristic_to_sum() -> None:
+    """The reverse direction: an intent NOT in the heuristic's measure set
+    (`anomaly_investigation`) would normally fall back to `COUNT`, but a
+    declared `metric_aggregations={"UNITS": "SUM"}` must still win."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            intent="anomaly_investigation",
+            metric_aggregations={"UNITS": "SUM"},
+        )
+    )
+
+    assert output.errors == []
+    statement = output.result.statements[0]
+    assert "SUM(STAGING_TRANSACTIONS.UNITS) AS UNITS_TOTAL" in statement.sql
+    assert "COUNT(" not in statement.sql
+
+
+async def test_unrecognized_declared_aggregation_falls_back_to_the_heuristic() -> None:
+    """A `metric_aggregations` value this agent doesn't recognize as a real
+    SQL aggregate function is never trusted blindly -- it receives this
+    dict as plain data from its caller, not a validated
+    `navigraph_semantic_model.Aggregation`."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(metric_aggregations={"UNITS": "NOT_A_REAL_AGGREGATE"})
+    )
+
+    statement = output.result.statements[0]
+    # Falls through to the heuristic: numeric UNITS + metric_lookup (a
+    # measure intent) -> SUM, exactly as if metric_aggregations were empty.
+    assert "SUM(STAGING_TRANSACTIONS.UNITS) AS UNITS_TOTAL" in statement.sql
+
+
+async def test_metric_aggregations_for_a_different_column_does_not_affect_this_one() -> None:
+    """A declaration keyed by a column name that isn't actually a resolved
+    measure in THIS request must never leak into an unrelated column's
+    aggregation choice."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(metric_aggregations={"SOME_OTHER_COLUMN": "COUNT"})
+    )
+
+    statement = output.result.statements[0]
+    # UNITS itself has no declaration -- falls back to the heuristic
+    # exactly as if metric_aggregations were empty (metric_lookup + numeric
+    # -> SUM).
+    assert "SUM(STAGING_TRANSACTIONS.UNITS) AS UNITS_TOTAL" in statement.sql
 
 
 # ---------------------------------------------------------------------------

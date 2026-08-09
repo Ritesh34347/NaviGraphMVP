@@ -76,6 +76,8 @@ _NUMERIC_DATA_TYPES = {"NUMBER", "FLOAT", "INTEGER", "DECIMAL", "NUMERIC", "DOUB
 # the only intents schema_mapping itself ever assigns `role="measure"` under.
 _MEASURE_INTENTS = {"metric_lookup", "trend_analysis", "comparison"}
 
+_VALID_AGGREGATIONS = {"SUM", "COUNT", "AVG", "MIN", "MAX"}
+
 # Case-insensitive substring/word triggers for "this question likely
 # contains a relative-date phrase or an explicit range/comparison that
 # schema_mapping's resolved columns don't already pin down." Deliberately a
@@ -141,21 +143,45 @@ def _needs_predicate_resolution(question: str, columns: list[ResolvedColumnRef])
     return not already_has_filter_column
 
 
-def _aggregation_function(column: ResolvedColumnRef, intent: IntentLabel) -> str:
+def _aggregation_function(
+    column: ResolvedColumnRef, intent: IntentLabel, metric_aggregations: dict[str, str]
+) -> str:
     """Choose the SQL aggregate function for a `role="measure"` column.
 
-    v1 rule (deliberately narrow, mirrors `schema_mapping.agent._assign_role`'s
+    A DECLARED fact wins outright when one is available: if
+    `metric_aggregations` (a per-tenant `navigraph_semantic_model.Metric
+    .aggregation`, pre-resolved by this agent's caller -- see
+    `SqlGenerationPayload`'s docstring) names this column, that value is
+    used verbatim, with no further guessing. This is what structurally
+    closes LIMITATIONS.md item 38 (the real Phase 8 `gq_002` bug: "how
+    many transactions has each customer made" produced a nonsensical `SUM`
+    because nothing declared that transaction-COUNTING needed `COUNT`, not
+    `SUM`) -- a tenant that has declared `transaction_count`'s aggregation
+    as `COUNT` never depends on this heuristic guessing right again for
+    that column. An unrecognized aggregation string (defensive: this
+    agent receives it as plain data from its caller, not a validated
+    `navigraph_semantic_model.Aggregation`, so it does not blindly trust
+    it) is ignored, falling through to the heuristic below exactly as if
+    no declaration existed.
+
+    Falls back to the v1 heuristic when no declaration is available
+    (deliberately narrow, mirrors `schema_mapping.agent._assign_role`'s
     documented narrowness): a numeric `data_type` combined with an intent
     that actually asks for an aggregated quantity (`_MEASURE_INTENTS`) uses
     `SUM` -- correct for the additive metrics this system's worked examples
-    actually exercise (transaction volume, unit counts, revenue). A column
-    that upstream nonetheless labeled `role="measure"` without a numeric
-    `data_type` (which, per schema_mapping's own role-assignment invariant,
-    should never happen -- but this agent does not blindly trust that
-    invariant since it receives schema_mapping's output as plain data, not a
-    guarantee) falls back to `COUNT`, since `SUM` over non-numeric data is
-    invalid SQL.
+    actually exercise (transaction volume, unit counts, revenue), but
+    exactly the heuristic that gets `gq_002`-shaped "how many X" questions
+    wrong. A column that upstream nonetheless labeled `role="measure"`
+    without a numeric `data_type` (which, per schema_mapping's own role-
+    assignment invariant, should never happen -- but this agent does not
+    blindly trust that invariant since it receives schema_mapping's output
+    as plain data, not a guarantee) falls back to `COUNT`, since `SUM` over
+    non-numeric data is invalid SQL.
     """
+
+    declared = metric_aggregations.get(column.column_name)
+    if declared is not None and declared in _VALID_AGGREGATIONS:
+        return declared
 
     if column.data_type.upper() in _NUMERIC_DATA_TYPES and intent in _MEASURE_INTENTS:
         return "SUM"
@@ -513,7 +539,7 @@ class SqlGenerationAgent:
 
         select_parts = [_qualified_col(c) for c in dimension_columns]
         for measure in measure_columns:
-            agg = _aggregation_function(measure, payload.intent)
+            agg = _aggregation_function(measure, payload.intent, payload.metric_aggregations)
             select_parts.append(f"{agg}({_qualified_col(measure)}) AS {measure.column_name}_TOTAL")
 
         columns_by_name = {c.column_name: c for c in columns}
