@@ -1641,3 +1641,43 @@ validate`/`plan` require network access to the Terraform provider registry
 that was not available in the environment this merge was prepared in, so
 those must still be run for real (by CI or a human) before anyone applies
 this.
+
+---
+
+## 2026-08-09 — Fixed three real CI bugs surfaced by this PR's first live run
+
+Landing the merge PR's first real GitHub Actions run surfaced three
+genuine, fixable bugs -- distinct from the pre-existing/environmental
+failures (`k8s-manifests-ci.yml`'s canary-weight proof, `terraform-plan.yml`)
+that were confirmed unrelated via cross-branch CI history and left alone:
+
+1. **`mypy.ini`'s `python_version = 3.11`** mismatched `ci.yml`'s real
+   `Set up Python 3.12` step. mypy applies `python_version` to every parsed
+   file, including third-party bundled stubs -- numpy's stub uses a PEP 695
+   `type` statement, valid only on 3.12+. Fixed by bumping to 3.12.
+2. **`adversarial-tests.yml`** only ever installed bare `pytest`, correct
+   back when `tests/security/` was empty but never updated once it gained
+   real content importing `navigraph_shared`/`navigraph_connectors`/
+   `navigraph_agents` directly. Fixed by matching `ci.yml`'s real install
+   list.
+3. **`web/package.json`'s `overrides.brace-expansion`** was pinned to
+   `5.0.8` -- the *last vulnerable* version in the advisory's 4.0.0-5.0.8
+   range, not a fix. Bumped to `5.0.9`, the real patched release.
+
+Each was verified via `gh run list` cross-branch comparison (to rule out
+"caused by this PR") before fixing, and with a real local run after
+(564 tests, ruff/mypy/npm-audit clean) -- not assumed from a plausible-looking
+diff.
+
+A fourth, same-shape bug was found right after: `security-scan.yml`'s
+pip-audit job only ever installed `shared`/`gateway`/`agent_runtime`, but
+`agent_runtime` depends directly on five more local packages
+(`metadata_catalog`, `knowledge_graph`, `connector_sdk`, `federation`,
+`lineage`) that were never added to that job's install list -- pip could
+never resolve them (none are on PyPI), so pip-audit never actually ran.
+Fixed by matching `ci.yml`'s real, already-correct install order. Once it
+could actually run, pip-audit surfaced a real vulnerability: the base
+toolchain's bundled `setuptools==65.5.0` carries four known CVEs. Fixed by
+adding an explicit `pip install --upgrade setuptools` -- confirmed locally
+that this alone takes pip-audit from 7 findings to 0, with no other real
+vulnerabilities in this workspace.

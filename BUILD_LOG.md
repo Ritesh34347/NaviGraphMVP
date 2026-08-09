@@ -2182,3 +2182,18 @@ file. `terraform fmt` is clean on the new Terraform; `terraform validate`/
 `plan` need real network access to the provider registry this merge's
 environment didn't have, so those are still owed before anyone runs
 `apply`.
+
+## 2026-08-09 — Fixed four real CI bugs surfaced by the merge PR's first live run
+
+Full rationale for each is in `DECISIONS.md`'s matching entry. In short:
+`mypy.ini` targeted Python 3.11 against a real 3.12 CI runner (numpy's
+bundled stub needs 3.12+); `adversarial-tests.yml` never installed the
+packages `tests/security/` actually imports; `web/package.json`'s
+`brace-expansion` override was pinned to the last *vulnerable* version, not
+a fix; and `security-scan.yml`'s pip-audit job was missing five of
+`agent_runtime`'s local package dependencies from its install list, so
+pip-audit silently never ran at all -- fixing that then surfaced a real
+`setuptools` CVE, fixed by upgrading it explicitly. Two other failing
+checks (`k8s-manifests-ci.yml`'s canary-weight proof,
+`terraform-plan.yml`) were confirmed pre-existing and unrelated via
+cross-branch `gh run list` comparison and left alone.

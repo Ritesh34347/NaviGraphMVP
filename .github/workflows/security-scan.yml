@@ -26,7 +26,33 @@ jobs:
       - name: Install workspace packages
         run: |
           python -m pip install --upgrade pip
-          pip install -e packages/shared -e packages/gateway -e packages/agent_runtime
+          # REAL VULNERABILITY, found live once the install-list fix below let
+          # pip-audit actually run: the base toolchain's bundled setuptools
+          # 65.5.0 carries 4 known CVEs (PYSEC-2022-43012, PYSEC-2025-49,
+          # PYSEC-2026-1918, PYSEC-2026-3447). `pip install --upgrade pip`
+          # does not touch setuptools, and nothing in this workspace declares
+          # it as a dependency to pull a newer one in -- upgrade it directly.
+          python -m pip install --upgrade setuptools
+          # REAL BUG, found live on this PR's first real GitHub Actions run:
+          # this only ever installed shared/gateway/agent_runtime, but
+          # agent_runtime depends directly on navigraph-metadata-catalog,
+          # navigraph-knowledge-graph, navigraph-connector-sdk,
+          # navigraph-federation, and navigraph-lineage (see
+          # packages/agent_runtime/pyproject.toml) -- none of which are on
+          # PyPI, so pip always failed to resolve them. Confirmed pre-existing
+          # via `gh run list` showing identical failures across unrelated
+          # branches, not something this PR's changes caused. Order matches
+          # ci.yml's real, already-correct install order exactly.
+          pip install -e packages/shared
+          pip install -e packages/connector_sdk
+          pip install -e packages/metadata_catalog
+          pip install -e packages/knowledge_graph
+          pip install -e packages/federation
+          pip install -e packages/lineage
+          pip install -e packages/gateway
+          pip install -e packages/agent_runtime
+          pip install -e packages/semantic_model
+          pip install -e packages/slack_bot
           pip install pip-audit
 
       - name: Run pip-audit
