@@ -155,7 +155,12 @@ class OntologyDraftingAgent:
                     llm_response = await self._llm_client.complete(
                         system=self._system_prompt,
                         messages=[{"role": "user", "content": user_message}],
-                        max_tokens=4096,
+                        # 4096 was too small for a real, non-trivial schema (confirmed
+                        # live: a 59-column inventory produced a response that hit this
+                        # ceiling exactly and got cut off mid-JSON, failing to parse).
+                        # 8192 mirrors the headroom semantic_retrieval's agent.py
+                        # already gives its own large-candidate-list completion call.
+                        max_tokens=8192,
                     )
                 except Exception as exc:  # noqa: BLE001 - never let an LLM-side failure crash the agent
                     errors.append(
