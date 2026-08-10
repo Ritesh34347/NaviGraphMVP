@@ -56,6 +56,9 @@ export default async function HomePage() {
           <Link href="/admin/lineage" className="pill" style={{ textDecoration: "none" }}>
             Admin: Lineage
           </Link>
+          <Link href="/admin/data-sources" className="pill" style={{ textDecoration: "none" }}>
+            Admin: Data Sources
+          </Link>
         </div>
       </header>
 
