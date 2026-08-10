@@ -36,3 +36,11 @@ data:
   # Gateway-only, harmless for agent-runtime to also receive since it's
   # unused there.
   AGENT_RUNTIME_BASE_URL: http://agent-runtime:8001
+
+  # Self-service data source onboarding's credential-write backend (see
+  # navigraph_shared.secrets.client's module docstring). Empty by default
+  # -- agent-runtime falls back to EnvVarSecretsProvider and self-service
+  # registration's credential-write step raises NotImplementedError
+  # loudly at USE time, rather than silently no-opping. overlays/dev
+  # patches this to the real navigraph-dev-kv vault URL.
+  AZURE_KEY_VAULT_URL: ""

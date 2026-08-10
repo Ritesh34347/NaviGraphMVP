@@ -1,0 +1,16 @@
+# Real value: the same navigraph-dev-kv vault
+# secretproviderclass-agent-runtime.yaml already reads from read-only via
+# the CSI driver. agent-runtime's AKS managed identity
+# (userAssignedIdentityID 002030c6-3c35-451f-86c0-4041554413f2, see that
+# file) was additionally granted "Key Vault Secrets Officer" on this same
+# vault so AzureKeyVaultSecretsProvider can WRITE self-service-onboarded
+# credentials here too, not just read the pre-existing ones the CSI driver
+# syncs -- two independent access paths to the one real vault, not two
+# vaults.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: navigraph-app-env
+  namespace: navigraph
+data:
+  AZURE_KEY_VAULT_URL: https://navigraph-dev-kv.vault.azure.net/
