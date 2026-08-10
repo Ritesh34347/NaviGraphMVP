@@ -2385,3 +2385,21 @@ Verified: full `pytest packages/` (621 passed, 8 skipped, up from 611),
 `ruff check` clean, `mypy` clean (165 files). New CLI commands run for
 real by hand for all three registered connector types plus the
 unknown-type error path.
+
+## 2026-08-10 — Docs: consolidated outstanding-items summary
+
+Phase 6 completed the 7-phase configurable-platform build plan. Added
+`LIMITATIONS.md` item 111: a single pointer entry summarizing every
+still-open item across the full plan (Phase 7's deliberate deferral, the
+recurring live-infra verification gaps, and the other real gaps flagged
+along the way), so a future reader doesn't have to scan all 110 prior
+entries individually. It supersedes nothing — each referenced item's own
+entry remains the authoritative detail.
+
+Docs-only change, no code affected. Origin PR #9
+(`Ritesh34347/NaviGraphMVP`) and navikenz mirror PR #8
+(`Navikenz-Data-Practice/NaviGraph`) both merged into `main`; both showed
+only the known pre-existing CI failures (`Adversarial Security Tests` /
+`Cloud Security Tests`, and navikenz's `CD Deploy` canary-weight-proof
+job), confirmed via `gh run list` history to fail identically on every
+recent push to `main` regardless of content — not caused by this change.
