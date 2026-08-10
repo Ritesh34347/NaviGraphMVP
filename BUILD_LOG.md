@@ -2451,3 +2451,70 @@ The source branch's other 8 areas, and its remaining unique piece
 (nothing else left to port), are addressed by archiving the branch as a
 tag rather than deleting it outright — see this repo's branch listing/tag
 for `claude/navigraph-mvp-architecture-lo35o7`.
+
+## 2026-08-10 — Three real, live-only bugs found and fixed while preparing an internal demo
+
+Preparing to demo the deployed app surfaced three genuine bugs, none of
+which any prior CI run or unit test caught -- all three only manifest
+against the real, live AKS cluster and its real Azure Postgres, not `kind`
+or a mocked test:
+
+1. **`allow-web-to-gateway` NetworkPolicy only declared its egress half.**
+   Same exact bug class already documented once for gateway-to-agent-runtime
+   (see the `allow-gateway-egress-to-agent-runtime` entry above and item
+   49) -- `allow-ingress-nginx-to-gateway` is the only Ingress-type policy
+   selecting `app: gateway`, and it only admits traffic from the
+   `ingress-nginx` namespace, not from `web` pods. `default-deny-all`
+   silently dropped every real `web -> gateway` call as a result (`wget`
+   from inside a `web-stable` pod to `gateway-stable:8000/healthz` timed
+   out). Fixed by adding `allow-web-ingress-to-gateway`, a dedicated
+   Ingress-type policy on `app: gateway` admitting `app: web` on port
+   8000 -- verified live: the same `wget` immediately succeeded
+   (`{"status":"ok"}`) after `kubectl apply`.
+
+2. **The live metadata-catalog Postgres was 5 migrations behind head.**
+   `alembic current` inside the real `agent-runtime` pod reported `0003`;
+   code has been at `0008` since Phase 5. Migrations `0004`
+   (`data_source_is_default`) through `0008` (`tenant_guardrail_config`)
+   were written and tested across four separate phases but never actually
+   run against the live database -- no CD step runs migrations
+   automatically, and `docs/runbooks/data-source-onboarding.md`'s own
+   "migrated to head" prerequisite was apparently never followed for this
+   real deployment. Real consequence: any request touching
+   `DataSource.is_default` (added in Phase 5) crashed with
+   `sqlalchemy.exc.ProgrammingError: column data_sources.is_default does
+   not exist`. Fixed by running `alembic upgrade head` for real inside the
+   `agent-runtime` pod (the only pod in the cluster with real network
+   access to the private Postgres instance -- a local `alembic current`
+   attempt from this machine timed out, confirming the instance is not
+   reachable outside the cluster's own network). Confirmed at `0008
+   (head)` afterward.
+
+3. **The deployed chat UI (`web/src/app/chat/ChatClient.tsx`) never sent
+   `roles`/`claims`.** `AskRequest`'s real defaults
+   (`roles: list[str] = []`, `claims: dict[str, Any] = {}`) mean an
+   omitted `claims` resolves to `claims.tenant_id = None`, which never
+   equals a real `tenant_id` -- so the real per-tenant OPA policy's
+   `tenant_claim_matches` check (Phase 3) denied EVERY question asked
+   through the chat UI since that policy shipped, with
+   `failure_stage="guardrail.policy_authorization"`. This predates the
+   demo entirely -- the chat UI (Phase 14.1) was built before Phase 3's
+   real per-tenant policy landed and was never updated after. Fixed by
+   having `ChatClient.tsx` self-declare `roles: ['analyst']` and
+   `claims: { tenant_id: tenantId }` in its request body -- exactly the
+   self-declaration LIMITATIONS.md item 23 already documents as
+   intentional while Azure AD verification stays feature-flagged off, just
+   never actually sent by this one caller. `AskRequestBody`'s TypeScript
+   type gained an optional `claims` field to match.
+
+**Verification**: the exact live request the chat UI now sends
+(`roles: ["analyst"]`, `claims: {"tenant_id": "navikenz-poc"}`) was
+replayed by hand against the real deployed gateway after all three fixes
+-- a real, non-canned question ("What is the total transaction volume by
+market?") returned `outcome: "answered"`, `confidence: 1`, real generated
+SQL against the real Snowflake warehouse, a real bar chart, a real
+anomaly flag (XATH's z-score of 3.85), and three real follow-up
+suggestions. `web`'s own `tsc --noEmit` and `next lint` both clean.
+NetworkPolicy and migration fixes were applied directly to the live
+cluster first (to unblock the demo immediately) and are captured in this
+commit so the next real deploy doesn't regress them.

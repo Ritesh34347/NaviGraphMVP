@@ -4272,3 +4272,57 @@ real step, if this project continues, is either (a) real live-infra
 access to close the verification gaps above, or (b) enough real
 multi-tenant usage data to make Phase 7's deployment-topology/metering
 decisions non-speculative.
+
+### 112. RESOLVED (partially): the CD pipeline never runs database migrations, and had a second missing NetworkPolicy half — both found live while demoing
+
+**What was found**: preparing an internal demo of the real, deployed app
+surfaced that the live app was fully non-functional end to end — three
+separate, real bugs, none catchable by CI or unit tests since all three
+only manifest against the real AKS cluster and its real Postgres:
+
+1. `allow-web-to-gateway`'s NetworkPolicy declared only its egress half
+   (the exact same bug class as item 49's gateway-to-agent-runtime gap) —
+   `web` pods could never actually reach `gateway` pods on the real,
+   NetworkPolicy-enforcing Azure CNI. RESOLVED: added
+   `allow-web-ingress-to-gateway` (see `infra/k8s/base/networkpolicy-allow.yaml`).
+2. The live metadata-catalog Postgres was 5 migrations behind the code
+   (`alembic current` reported `0003`; code has been at `0008` since
+   Phase 5) — no CD step runs `alembic upgrade head` automatically, and
+   this real deployment's database was never migrated by hand either.
+   RESOLVED for the current head only: ran `alembic upgrade head` for
+   real inside the live `agent-runtime` pod.
+3. The deployed chat UI never sent `roles`/`claims`, so the real
+   per-tenant OPA policy (Phase 3) silently denied every single question
+   asked through it since that policy shipped. RESOLVED:
+   `ChatClient.tsx` now self-declares `roles`/`claims` matching
+   `tenant_id` — see `BUILD_LOG.md`'s matching 2026-08-10 entry for full
+   detail on all three.
+
+**What's still open, NOT resolved by the fixes above**:
+- **No automated migration step exists anywhere in `cd-deploy.yml`.**
+  Fix #2 above manually brought THIS deployment current as of today —
+  the next new migration added by a future phase will hit the exact same
+  gap again unless a real migration step (a Job, an init container, or a
+  CD workflow step running `alembic upgrade head` before promoting
+  traffic) is added to the real CD pipeline. This is the actual root
+  cause; running the migration by hand today is a one-time fix, not a
+  structural one.
+- **No test caught either the NetworkPolicy gap or the missing
+  migrations before a human tried to use the real app.**
+  `tests/security/cloud/test_network_policy_isolation.py` has a
+  documented positive-control test for gateway-to-agent-runtime (see item
+  49) but no equivalent for web-to-gateway — this real bug proves that
+  gap is not hypothetical. There is also no live smoke test anywhere in
+  CI that exercises a real `POST /ask` against the freshly-deployed
+  cluster and asserts `outcome != "failed"` — CD Deploy's own canary bake
+  gate only checks Prometheus-visible error-rate/latency signals, not
+  whether the app can actually answer a real question end to end. Both
+  are real, concrete follow-ups a future phase should add.
+- **The web-to-gateway positive-control gap is structurally identical
+  to item 49's gateway-to-agent-runtime one** — the same class of mistake
+  (writing only one half of a NetworkPolicy pair) recurred once already
+  after being found and documented the first time, meaning the
+  documentation alone did not prevent a repeat. A lint/CI check that
+  every `app: X` egress policy has a matching `app: X`-selecting ingress
+  policy (or vice versa) would catch this mechanically instead of relying
+  on a human noticing during a demo.
