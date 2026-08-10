@@ -52,6 +52,16 @@ Exposes:
                      -- invokes the six Understanding-domain, six Query-domain,
                         four Guardrail-domain, four Insight-domain, two
                         Ops-domain, and three Orchestrator-domain agents
+  - Self-service data source onboarding routes, mounted from
+    `navigraph_agents.onboarding_routes` (see that module's own docstring
+    for the full rationale, including the per-DataSource crawl credential
+    bug fix):
+      GET  /onboarding/connector-types
+      POST /onboarding/data-sources/test-connection
+      POST /onboarding/data-sources
+      GET  /onboarding/data-sources
+      POST /onboarding/data-sources/{data_source_id}/crawl
+      POST /onboarding/semantic-models/compile-and-activate
 
 At startup, constructs a real `AnthropicLLMClient` if `ANTHROPIC_API_KEY` is
 set, or falls back to a `FakeLLMClient` (logging a warning) so this service
@@ -101,6 +111,11 @@ from navigraph_shared.config import get_settings
 from navigraph_shared.contracts import AgentInput
 from navigraph_shared.llm import AnthropicLLMClient, FakeLLMClient, LLMClient
 from navigraph_shared.opa import HttpOpaClient
+from navigraph_shared.secrets import (
+    AzureKeyVaultSecretsProvider,
+    EnvVarSecretsProvider,
+    SecretsProvider,
+)
 from navigraph_shared.telemetry import (
     bind_request_context,
     configure_logging,
@@ -245,6 +260,7 @@ from navigraph_agents.query.sql_optimization.agent import (
 )
 from navigraph_agents.query.sql_optimization.agent import SqlOptimizationAgent
 from navigraph_agents.query.sql_optimization.contracts import SqlOptimizationInput
+from navigraph_agents.onboarding_routes import router as onboarding_router
 from navigraph_agents.registry import AGENT_REGISTRY, get_agent, register
 from navigraph_agents.understanding.conversation.agent import (
     AGENT_NAME as CONVERSATION_AGENT_NAME,
@@ -312,6 +328,33 @@ def _build_llm_client() -> LLMClient:
         "Set ANTHROPIC_API_KEY to use the real Anthropic API."
     )
     return FakeLLMClient()
+
+
+def _build_secrets_provider() -> SecretsProvider:
+    """Real `AzureKeyVaultSecretsProvider` when `AZURE_KEY_VAULT_URL` is
+    set, mirroring `_build_llm_client`'s exact fall-back-with-a-warning
+    convention. Without a real vault configured, self-service
+    registration's credential-write step (`onboarding_routes
+    .register_data_source_route`) will fail loudly the first time a client
+    tries to register a data source -- `EnvVarSecretsProvider.set()` raises
+    `NotImplementedError` by design (see `navigraph_shared.secrets.client`),
+    so this is a deliberate, visible failure at USE time, not a silent
+    downgrade that would only surface as a confusing "credential not
+    found" on the first crawl.
+    """
+
+    vault_url = os.environ.get("AZURE_KEY_VAULT_URL")
+    if vault_url:
+        return AzureKeyVaultSecretsProvider(vault_url)
+
+    logger.warning(
+        "AZURE_KEY_VAULT_URL is not set -- falling back to EnvVarSecretsProvider. "
+        "Reading existing per-DataSource credentials from env vars still works, "
+        "but self-service data source registration's credential-write step will "
+        "raise NotImplementedError the first time a client tries to register a "
+        "new source. Set AZURE_KEY_VAULT_URL to enable self-service onboarding."
+    )
+    return EnvVarSecretsProvider()
 
 
 def _redis_url() -> str:
@@ -511,6 +554,11 @@ async def lifespan(app: FastAPI):
     app.state.lineage_session_factory = lineage_session_factory
     app.state.catalog_session_factory = catalog_session_factory
     app.state.opa_client = opa_client
+    # Self-service data source onboarding (`onboarding_routes.py`): the one
+    # new external dependency this feature adds, real Azure Key Vault by
+    # default -- see `_build_secrets_provider`'s own docstring for the
+    # fallback behavior when no vault is configured.
+    app.state.secrets_provider = _build_secrets_provider()
     yield
 
     neo4j_client.close()
@@ -519,6 +567,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="NaviGraph Agent Runtime", version="0.1.0", lifespan=lifespan)
+app.include_router(onboarding_router)
 
 # Prometheus /metrics endpoint. Exposed on the same port (8001) per the
 # infra workstream's Prometheus scrape config (agent-runtime:8001/metrics).

@@ -19,6 +19,38 @@ Exposes:
                                   `_verify_identity_for_tenant`
   - GET  /lineage/{trace_id}  -- real proxy to agent-runtime's single-trace
                                   lineage retrieval, same gate
+  - Self-service data source onboarding: pure proxies to
+    `navigraph_agents.onboarding_routes` (agent-runtime hosts the real
+    business logic -- see that module's docstring; this service stays a
+    thin, stateless proxy, same as everything else in this file):
+      GET  /admin/data-sources/connector-types  -- public connector
+                                                     manifest, no tenant
+                                                     scope to gate on
+      POST /admin/data-sources/test-connection  -- stateless dry run,
+                                                     nothing persisted
+      GET  /admin/data-sources                  -- gated by
+                                                     `_verify_identity_for_tenant`
+      POST /admin/data-sources                  -- same gate; writes real
+                                                     credentials, see
+                                                     LIMITATIONS.md's entry
+                                                     on this route's v1
+                                                     security posture
+      POST /admin/data-sources/{id}/crawl       -- same gate
+      POST /admin/data-sources/{id}/draft-ontology -- same gate; proxies
+                                                     to agent-runtime's
+                                                     EXISTING
+                                                     /agents/understanding
+                                                     /ontology_drafting
+                                                     /invoke route, not a
+                                                     second copy of it
+      POST /admin/semantic-models/compile-and-activate -- same gate; a
+                                                     422 from agent-runtime
+                                                     is forwarded VERBATIM
+                                                     (structured validation
+                                                     issues), not folded
+                                                     into a generic 502
+                                                     like every other proxy
+                                                     route above does
 
 Gateway and agent-runtime are two separate containers/services (see
 infra/docker-compose.yml) -- this call is a real HTTP hop, not an in-process
@@ -481,6 +513,208 @@ async def get_lineage_trace(
     try:
         response = await http_client.get(f"/lineage/{trace_id}", params={"tenant_id": tenant_id})
         response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.error("agent-runtime call failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="agent-runtime is unavailable or returned an error"
+        ) from exc
+
+    return response.json()
+
+
+class RegisterDataSourceRequest(BaseModel):
+    tenant_id: str
+    name: str
+    source_type: str
+    is_default: bool = False
+    credential_fields: dict[str, str] = {}
+
+
+class TestConnectionRequest(BaseModel):
+    source_type: str
+    credential_fields: dict[str, str] = {}
+
+
+class CrawlRequest(BaseModel):
+    tenant_id: str
+
+
+class DraftOntologyRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+    roles: list[str] = []
+    claims: dict[str, Any] = {}
+
+
+class CompileAndActivateRequest(BaseModel):
+    tenant_id: str
+    data_source_name: str
+    version: int = 1
+    draft: dict[str, Any]
+
+
+async def _proxy(method: str, path: str, *, json_body: dict | None = None, params: dict | None = None) -> dict:
+    """Shared implementation behind every `/admin/...` proxy route below:
+    forward to agent-runtime, translate a connection failure into a 502
+    (matching `/ask`/`/lineage`'s existing behavior), and let a non-2xx
+    HTTP response from agent-runtime raise normally -- callers that need
+    to forward a 4xx body VERBATIM (compile-and-activate's 422 `issues`)
+    catch `httpx.HTTPStatusError` themselves instead of calling this
+    helper, since folding every non-2xx into the same generic 502 here
+    would lose that structured body.
+    """
+
+    http_client: httpx.AsyncClient = app.state.http_client
+    try:
+        response = await http_client.request(method, path, json=json_body, params=params)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.error("agent-runtime returned an error for %s %s: %s", method, path, exc)
+        raise HTTPException(status_code=502, detail="agent-runtime rejected the request") from exc
+    except httpx.HTTPError as exc:
+        logger.error("agent-runtime call failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail="agent-runtime is unavailable or returned an error"
+        ) from exc
+
+    return response.json()
+
+
+@app.get("/admin/data-sources/connector-types")
+async def list_connector_types() -> dict:
+    """Real proxy to agent-runtime's connector-type manifest. No tenant
+    scope to gate on -- this is a static, source-type-level fact (which
+    connectors are registered and what fields they need), not tenant data.
+    """
+
+    return await _proxy("GET", "/onboarding/connector-types")
+
+
+@app.post("/admin/data-sources/test-connection")
+async def test_data_source_connection(request: TestConnectionRequest) -> dict:
+    """Real proxy to agent-runtime's pre-save connection dry run. Stateless
+    -- nothing is persisted regardless of outcome, so no tenant gate."""
+
+    return await _proxy(
+        "POST", "/onboarding/data-sources/test-connection", json_body=request.model_dump()
+    )
+
+
+@app.get("/admin/data-sources")
+async def list_admin_data_sources(
+    tenant_id: str, bearer_token: str | None = Depends(_extract_bearer_token)
+) -> dict:
+    """Real proxy to agent-runtime's enriched data-source listing. Same
+    `_verify_identity_for_tenant` gate `/lineage` uses."""
+
+    verified_identity = await _verify_identity_for_tenant(tenant_id, bearer_token)
+    del verified_identity
+
+    return await _proxy("GET", "/onboarding/data-sources", params={"tenant_id": tenant_id})
+
+
+@app.post("/admin/data-sources")
+async def register_admin_data_source(
+    request: RegisterDataSourceRequest, bearer_token: str | None = Depends(_extract_bearer_token)
+) -> dict:
+    """Real proxy to agent-runtime's data source registration route --
+    writes real credentials to the configured secrets backend. Same gate
+    as every other `/admin/...` route; see this module's docstring for the
+    explicit v1 security-posture caveat (self-declared `tenant_id`, same
+    as `/ask`, but with real write side effects here)."""
+
+    verified_identity = await _verify_identity_for_tenant(request.tenant_id, bearer_token)
+    del verified_identity
+
+    return await _proxy("POST", "/onboarding/data-sources", json_body=request.model_dump())
+
+
+@app.post("/admin/data-sources/{data_source_id}/crawl")
+async def crawl_admin_data_source(
+    data_source_id: str,
+    request: CrawlRequest,
+    bearer_token: str | None = Depends(_extract_bearer_token),
+) -> dict:
+    """Real proxy to agent-runtime's crawl route."""
+
+    verified_identity = await _verify_identity_for_tenant(request.tenant_id, bearer_token)
+    del verified_identity
+
+    return await _proxy(
+        "POST", f"/onboarding/data-sources/{data_source_id}/crawl", json_body=request.model_dump()
+    )
+
+
+@app.post("/admin/data-sources/{data_source_id}/draft-ontology")
+async def draft_data_source_ontology(
+    data_source_id: str,
+    request: DraftOntologyRequest,
+    bearer_token: str | None = Depends(_extract_bearer_token),
+) -> dict:
+    """Real proxy to agent-runtime's EXISTING `/agents/understanding
+    /ontology_drafting/invoke` route -- deliberately not a second copy of
+    that agent's wiring. Builds the exact `OntologyDraftingInput` envelope
+    `/ask` already builds for the Request Orchestrator (RequestContext +
+    payload), just with `payload = {"data_source_id": ...}` instead of a
+    question.
+    """
+
+    verified_identity = await _verify_identity_for_tenant(request.tenant_id, bearer_token)
+
+    trace_id = str(uuid.uuid4())
+    if verified_identity is not None:
+        request_context = RequestContext(
+            tenant_id=verified_identity.tenant_id,
+            user_id=request.user_id,
+            trace_id=trace_id,
+            roles=verified_identity.roles,
+            claims={**request.claims, "tenant_id": verified_identity.tenant_id},
+        )
+    else:
+        request_context = RequestContext(
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            trace_id=trace_id,
+            roles=request.roles,
+            claims=request.claims,
+        )
+
+    agent_payload = {
+        "request_context": request_context.model_dump(mode="json"),
+        "payload": {"data_source_id": data_source_id},
+    }
+
+    return await _proxy(
+        "POST", "/agents/understanding/ontology_drafting/invoke", json_body=agent_payload
+    )
+
+
+@app.post("/admin/semantic-models/compile-and-activate")
+async def compile_and_activate_semantic_model(
+    request: CompileAndActivateRequest, bearer_token: str | None = Depends(_extract_bearer_token)
+) -> dict:
+    """Real proxy to agent-runtime's compile+activate route.
+
+    The one proxy route in this file that does NOT use the shared
+    `_proxy` helper: a 422 here carries structured `{"issues": [...]}` the
+    review UI needs to render verbatim, so it must be forwarded as-is, not
+    folded into `_proxy`'s generic 502-on-any-error-status behavior.
+    """
+
+    verified_identity = await _verify_identity_for_tenant(request.tenant_id, bearer_token)
+    del verified_identity
+
+    http_client: httpx.AsyncClient = app.state.http_client
+    try:
+        response = await http_client.post(
+            "/onboarding/semantic-models/compile-and-activate", json=request.model_dump()
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 422:
+            raise HTTPException(status_code=422, detail=exc.response.json().get("detail")) from exc
+        logger.error("agent-runtime returned an error for compile-and-activate: %s", exc)
+        raise HTTPException(status_code=502, detail="agent-runtime rejected the request") from exc
     except httpx.HTTPError as exc:
         logger.error("agent-runtime call failed: %s", exc)
         raise HTTPException(
