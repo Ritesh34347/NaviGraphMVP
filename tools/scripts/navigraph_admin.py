@@ -23,6 +23,19 @@ Usage:
     python tools/scripts/navigraph_admin.py lineage show --tenant-id acme-corp --trace-id lineage-abc123
     python tools/scripts/navigraph_admin.py semantic-model compile-and-activate \\
         --draft draft.json --tenant-id acme-corp --data-source-name acme_prod_snowflake
+    python tools/scripts/navigraph_admin.py identity set-provider --tenant-id acme-corp \\
+        --provider-type azure_ad --provider-settings-json '{"azure_ad_tenant_id": "...", "azure_ad_client_id": "..."}'
+    python tools/scripts/navigraph_admin.py identity show --tenant-id acme-corp
+
+`identity set-provider`/`show` manage a tenant's `TenantIdentityConfig`
+row (Phase 4 of the configurable-platform build plan) -- which identity
+provider the gateway's `TenantVerifierResolver` selects for that tenant's
+requests, instead of the process-wide default Azure AD verifier every
+tenant used before this existed. `--provider-settings-json` is validated
+against the registered provider's own `Settings` class
+(`navigraph_shared.auth.registry.build_verifier`) before being persisted,
+so a typo'd field name fails loudly here rather than silently at the next
+real request.
 
 `semantic-model compile-and-activate` is Phase 2's real connective step:
 `onboard_data_source.py`'s `draft` command still owns drafting (and the
@@ -50,8 +63,10 @@ from pathlib import Path
 
 from navigraph_catalog.api import (
     get_default_data_source,
+    get_tenant_identity_config,
     list_data_sources,
     set_default_data_source,
+    set_tenant_identity_config,
 )
 from navigraph_catalog.db import get_engine as get_catalog_engine
 from navigraph_catalog.db import get_session_factory as get_catalog_session_factory
@@ -65,6 +80,7 @@ from navigraph_lineage.settings import LineageSettings
 from navigraph_semantic_model.activation import activate_semantic_model
 from navigraph_semantic_model.loader import SemanticModelValidationError
 from navigraph_semantic_model.onboarding import compile_draft_to_semantic_model
+from navigraph_shared.auth.registry import build_verifier
 from navigraph_shared.opa import HttpOpaClient
 
 
@@ -168,6 +184,52 @@ def cmd_lineage_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_identity_set_provider(args: argparse.Namespace) -> int:
+    try:
+        provider_settings = json.loads(args.provider_settings_json)
+    except json.JSONDecodeError as exc:
+        print(f"--provider-settings-json is not valid JSON: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        build_verifier(args.provider_type, provider_settings)
+    except Exception as exc:  # noqa: BLE001 -- surfaces build_verifier's real error (unregistered provider_type, or a pydantic ValidationError on provider_settings) as a clean CLI message, not a traceback
+        print(f"Invalid --provider-type/--provider-settings-json: {exc}", file=sys.stderr)
+        return 1
+
+    session_factory = get_catalog_session_factory(get_catalog_engine(MetadataCatalogSettings()))
+    with catalog_session_scope(session_factory) as session:
+        set_tenant_identity_config(
+            session,
+            tenant_id=args.tenant_id,
+            provider_type=args.provider_type,
+            provider_settings=provider_settings,
+        )
+
+    print(
+        f"Tenant {args.tenant_id!r} now uses identity provider {args.provider_type!r}: "
+        f"{provider_settings}"
+    )
+    return 0
+
+
+def cmd_identity_show(args: argparse.Namespace) -> int:
+    session_factory = get_catalog_session_factory(get_catalog_engine(MetadataCatalogSettings()))
+
+    with catalog_session_scope(session_factory) as session:
+        config = get_tenant_identity_config(session, tenant_id=args.tenant_id)
+
+    if config is None:
+        print(
+            f"Tenant {args.tenant_id!r} has no identity provider configured -- "
+            "the gateway falls back to its process-wide default verifier."
+        )
+        return 0
+
+    print(f"provider_type: {config.provider_type}\nprovider_settings: {config.provider_settings}")
+    return 0
+
+
 def cmd_semantic_model_compile_and_activate(args: argparse.Namespace) -> int:
     draft = json.loads(Path(args.draft).read_text(encoding="utf-8"))
 
@@ -264,6 +326,31 @@ def main() -> int:
     sm_compile_and_activate.add_argument("--data-source-name", required=True)
     sm_compile_and_activate.add_argument("--version", type=int, default=1)
     sm_compile_and_activate.set_defaults(func=cmd_semantic_model_compile_and_activate)
+
+    identity_parser = subparsers.add_parser(
+        "identity", help="Manage a tenant's identity-verification provider"
+    )
+    identity_subparsers = identity_parser.add_subparsers(dest="action", required=True)
+
+    identity_set_provider = identity_subparsers.add_parser(
+        "set-provider", help="Set (or replace) a tenant's identity provider"
+    )
+    identity_set_provider.add_argument("--tenant-id", required=True)
+    identity_set_provider.add_argument(
+        "--provider-type", required=True, help='e.g. "azure_ad" or "oidc"'
+    )
+    identity_set_provider.add_argument(
+        "--provider-settings-json",
+        required=True,
+        help='e.g. \'{"azure_ad_tenant_id": "...", "azure_ad_client_id": "..."}\'',
+    )
+    identity_set_provider.set_defaults(func=cmd_identity_set_provider)
+
+    identity_show = identity_subparsers.add_parser(
+        "show", help="Show a tenant's configured identity provider, if any"
+    )
+    identity_show.add_argument("--tenant-id", required=True)
+    identity_show.set_defaults(func=cmd_identity_show)
 
     args = parser.parse_args()
     return args.func(args)

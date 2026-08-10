@@ -2302,3 +2302,32 @@ service, despite this suite's own docs saying it does.
 Verified: full `pytest packages/` (569 passed, 8 skipped), `ruff check`
 clean, `mypy` clean (162 files), `opa check`/`opa eval` against the real
 policy engine.
+
+## 2026-08-10 — Phase 4: pluggable, tenant-aware identity verification
+
+`navigraph_shared.auth` gained a verifier registry (`registry.py`,
+mirroring `navigraph_connectors.registry`'s exact pattern) and a second,
+real, non-Azure implementation (`oidc.py`'s `HttpOidcTokenVerifier` --
+real two-step OIDC discovery, configurable tenant_id/roles claim names).
+New `tenant_identity_configs` table in `metadata_catalog` (migration
+`0007`) plus a `navigraph_admin.py identity set-provider`/`show` pair to
+manage it. `packages/gateway/navigraph_gateway/identity.py`'s new
+`TenantVerifierResolver` is what the gateway actually uses: a cached,
+fail-safe-to-the-global-default per-tenant lookup, wired into `main.py`'s
+now-split `_extract_bearer_token`/`_verify_identity_for_tenant`, the
+latter also checking that a verified identity's tenant claim matches
+what the caller declared.
+
+Deliberately did NOT build the plan's own suggested subdomain/path-based
+tenant resolution -- full rationale (this codebase has none of that
+infrastructure, and the real protection is a post-auth check this phase
+adds instead) is in `DECISIONS.md`'s matching entry, and
+`LIMITATIONS.md` item 108 has the full breakdown, including the new,
+real Postgres dependency this gives the previously-stateless gateway and
+a real gap found live in the new admin CLI (a typo'd `provider_settings`
+key was silently accepted before `build_verifier` was fixed to check
+explicitly).
+
+Verified: full `pytest packages/` (603 passed, 8 skipped, up from 569),
+`ruff check` clean, `mypy` clean (165 files). The new CLI commands were
+run for real by hand against both invalid and valid settings JSON.

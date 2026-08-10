@@ -27,6 +27,7 @@ from navigraph_catalog.models import (
     ColumnGlossary,
     DataSource,
     SemanticModelRecord,
+    TenantIdentityConfig,
 )
 
 
@@ -506,3 +507,47 @@ def list_glossary(session: Session, *, data_source_id: uuid.UUID) -> list[Column
             .where(CatalogSchema.data_source_id == data_source_id)
         ).scalars()
     )
+
+
+def set_tenant_identity_config(
+    session: Session, *, tenant_id: str, provider_type: str, provider_settings: dict
+) -> TenantIdentityConfig:
+    """Insert or update `tenant_id`'s one identity-provider config.
+
+    Unlike `save_semantic_model`/`activate_semantic_model`'s two-step
+    persist-then-activate (which preserves prior versions for a real
+    rollback), there is only ever one row per tenant here -- an update in
+    place, mirroring `upsert_glossary`'s exact insert-or-update pattern.
+    """
+
+    existing = session.execute(
+        select(TenantIdentityConfig).where(TenantIdentityConfig.tenant_id == tenant_id)
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        existing.provider_type = provider_type
+        existing.provider_settings = provider_settings
+        session.flush()
+        return existing
+
+    config = TenantIdentityConfig(
+        tenant_id=tenant_id,
+        provider_type=provider_type,
+        provider_settings=provider_settings,
+    )
+    session.add(config)
+    session.flush()
+    return config
+
+
+def get_tenant_identity_config(
+    session: Session, *, tenant_id: str
+) -> TenantIdentityConfig | None:
+    """Return `tenant_id`'s one identity-provider config, or `None` if it
+    has never configured one -- callers (the gateway's `TenantVerifierResolver`)
+    must treat `None` as "use the process-wide default verifier", not as
+    an error."""
+
+    return session.execute(
+        select(TenantIdentityConfig).where(TenantIdentityConfig.tenant_id == tenant_id)
+    ).scalar_one_or_none()

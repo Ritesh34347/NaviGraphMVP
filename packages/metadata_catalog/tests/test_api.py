@@ -28,6 +28,7 @@ from navigraph_catalog.api import (
     get_active_semantic_model,
     get_default_data_source,
     get_table,
+    get_tenant_identity_config,
     list_columns,
     list_data_sources,
     list_glossary,
@@ -39,6 +40,7 @@ from navigraph_catalog.api import (
     register_data_source,
     save_semantic_model,
     set_default_data_source,
+    set_tenant_identity_config,
     upsert_glossary,
     upsert_schema_tree,
 )
@@ -49,6 +51,7 @@ from navigraph_catalog.models import (
     ColumnGlossary,
     DataSource,
     SemanticModelRecord,
+    TenantIdentityConfig,
 )
 from navigraph_connectors.base import (
     ColumnDescriptor,
@@ -723,3 +726,69 @@ class TestListSemanticModels:
 
         assert result == expected
         session.execute.assert_called_once()
+
+
+class TestSetTenantIdentityConfig:
+    def test_inserts_new_config_when_none_exists(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = set_tenant_identity_config(
+            session,
+            tenant_id="tenant-a",
+            provider_type="azure_ad",
+            provider_settings={"azure_ad_tenant_id": "t", "azure_ad_client_id": "c"},
+        )
+
+        session.add.assert_called_once()
+        added = session.add.call_args.args[0]
+        assert isinstance(added, TenantIdentityConfig)
+        assert added.tenant_id == "tenant-a"
+        assert added.provider_type == "azure_ad"
+        assert added.provider_settings == {
+            "azure_ad_tenant_id": "t",
+            "azure_ad_client_id": "c",
+        }
+        session.flush.assert_called_once()
+        assert result is added
+
+    def test_updates_existing_config_without_reinserting(self) -> None:
+        session = MagicMock()
+        existing = TenantIdentityConfig(
+            tenant_id="tenant-a",
+            provider_type="azure_ad",
+            provider_settings={"azure_ad_tenant_id": "old"},
+        )
+        session.execute.return_value.scalar_one_or_none.return_value = existing
+
+        result = set_tenant_identity_config(
+            session,
+            tenant_id="tenant-a",
+            provider_type="oidc",
+            provider_settings={"oidc_issuer": "https://idp.example.com"},
+        )
+
+        session.add.assert_not_called()
+        assert existing.provider_type == "oidc"
+        assert existing.provider_settings == {"oidc_issuer": "https://idp.example.com"}
+        session.flush.assert_called_once()
+        assert result is existing
+
+
+class TestGetTenantIdentityConfig:
+    def test_returns_the_config_when_one_exists(self) -> None:
+        session = MagicMock()
+        expected = MagicMock(spec=TenantIdentityConfig)
+        session.execute.return_value.scalar_one_or_none.return_value = expected
+
+        result = get_tenant_identity_config(session, tenant_id="tenant-a")
+
+        assert result is expected
+
+    def test_returns_none_when_never_configured(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = get_tenant_identity_config(session, tenant_id="tenant-a")
+
+        assert result is None

@@ -15,9 +15,21 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the local workspace dependency first, then the service itself.
+# Install local workspace dependencies in dependency order, then the
+# service itself.
 COPY shared /app/shared
 RUN pip install --no-cache-dir /app/shared
+
+# Phase 4 of the configurable-platform build plan added navigraph-metadata-
+# catalog as a real gateway dependency (TenantVerifierResolver's live
+# per-tenant lookup) -- connector_sdk is metadata_catalog's own dependency
+# and must be installed before it for the same reason agent_runtime's
+# Dockerfile already documents.
+COPY connector_sdk /app/connector_sdk
+RUN pip install --no-cache-dir /app/connector_sdk
+
+COPY metadata_catalog /app/metadata_catalog
+RUN pip install --no-cache-dir /app/metadata_catalog
 
 COPY gateway /app/gateway
 RUN pip install --no-cache-dir /app/gateway

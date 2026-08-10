@@ -1834,3 +1834,59 @@ solved by this phase.
 final `authz.rego` compiles; `opa eval` confirmed its real decisions
 match every existing adversarial test's assertions, by hand, against the
 actual policy engine.
+
+---
+
+## 2026-08-10 — Phase 4: resolve the verifier from the SAME pre-auth tenant_id everything else already trusts, not a new subdomain/path scheme
+
+The build plan's Phase 4 goal was letting the gateway select an identity
+verifier per tenant. Its own text recommended resolving WHICH tenant
+from the request's subdomain or path prefix, pre-auth, specifically to
+avoid a "chicken and egg" trust problem (you can't know which verifier to
+use from a claim inside a token you haven't verified yet).
+
+**What we considered and rejected**: building that subdomain/path-based
+resolution scheme as recommended. Rejected because this codebase has
+ZERO such infrastructure anywhere (no per-tenant subdomains, no path-
+prefix routing, no ingress rules for either), and every other tenant-
+scoped operation in this entire system already resolves `tenant_id` the
+same, single way: a caller-declared field, pre-auth (`/ask`'s request
+body, `/lineage`'s query param, every MCP tool's explicit parameter).
+Building a second, URL-based pre-auth trust signal just for this one
+lookup would introduce a new, inconsistent trust boundary for no real
+security gain -- the actual protection against a caller lying about its
+tenant is a POST-auth check (the verified identity's own tenant_id claim
+must match what was declared), which `infra/opa/policies/authz.rego`'s
+`tenant_claim_matches` already performs downstream. `_verify_identity_for_tenant`
+now performs the identical check again at the gateway edge, which is the
+real, sufficient mitigation -- not a second pre-auth signal.
+
+**Real, deliberate architecture change, called out explicitly rather than
+slipped in quietly**: the gateway was a deliberately stateless HTTP proxy
+with zero Postgres dependency before this phase. `TenantVerifierResolver`
+needed a live, persisted, tenant-owned config to select from, so we gave
+the gateway a new, real one -- guarded at every layer specifically
+because the plan itself flagged this as "high blast radius once live":
+a construction-time failure never prevents the gateway from starting; a
+per-request lookup failure never breaks that request, it only falls back
+to the exact global verifier every tenant already had.
+
+**Real gap found live exercising the new admin CLI by hand, not caught by
+unit tests alone**: `NaviGraphSettings`'s `extra="ignore"` (correct for
+its real job, reading OS env vars) meant `build_verifier`'s
+`model_validate` call silently dropped a typo'd `provider_settings` key
+instead of rejecting it -- confirmed by actually running
+`identity set-provider` with a deliberately misspelled key and watching
+it validate successfully. Fixed by explicitly diffing given keys against
+the settings class's real fields before validating, at this one call
+site specifically (not by changing the base settings class's behavior,
+which is correct for its actual job elsewhere).
+
+**Verification**: full `pytest packages/` (603 passed, 8 skipped, up from
+569), `ruff check` clean, `mypy` clean (165 files, including a real
+`type: ignore[call-arg]` at the one place mypy can't see through
+`type[AzureADTokenVerifier]` to the shared constructor shape every
+registered concrete class actually uses). The new admin CLI commands
+were run for real, by hand, against both a deliberately-invalid and a
+valid `--provider-settings-json`, confirming validation fires before any
+database attempt in both directions.

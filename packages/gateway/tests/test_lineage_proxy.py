@@ -2,14 +2,14 @@
 routes.
 
 Follows `test_azure_ad_wiring.py`'s established pattern of monkeypatching
-the module-level `_azure_ad_settings`/`_azure_ad_verifier` (the same
-objects `Depends(_verify_identity)` reads) rather than a real JWKS round
-trip -- see that module's docstring for the full rationale, which applies
-identically here since these routes are gated by the exact same
-dependency `/ask` uses. `app.state.http_client` is overridden after
-entering the `TestClient` context (the same object `search_lineage_traces`/
-`get_lineage_trace` read at request time) to fake the agent-runtime hop
-without a real network call.
+the module-level `_azure_ad_settings`/`_verifier_resolver` (the same
+objects `Depends(_extract_bearer_token)`/`_verify_identity_for_tenant`
+read) rather than a real JWKS round trip -- see that module's docstring
+for the full rationale, which applies identically here since these
+routes are gated by the exact same check `/ask` uses. `app.state
+.http_client` is overridden after entering the `TestClient` context (the
+same object `search_lineage_traces`/`get_lineage_trace` read at request
+time) to fake the agent-runtime hop without a real network call.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from navigraph_shared.auth import (
 )
 
 from navigraph_gateway import main as gateway_main
+from navigraph_gateway.identity import TenantVerifierResolver
 from navigraph_gateway.main import app
 
 
@@ -133,7 +134,7 @@ def test_lineage_trace_detail_requires_a_bearer_token_when_azure_ad_is_enabled(
 def test_lineage_search_with_a_rejected_token_is_401(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_verifier = FakeAzureADTokenVerifier(raise_exc=AzureADTokenError("expired"))
     monkeypatch.setattr(gateway_main._azure_ad_settings, "azure_ad_enabled", True)
-    monkeypatch.setattr(gateway_main, "_azure_ad_verifier", fake_verifier)
+    monkeypatch.setattr(gateway_main, "_verifier_resolver", TenantVerifierResolver(fake_verifier))
 
     with TestClient(app) as client:
         response = client.get(
@@ -149,7 +150,7 @@ def test_lineage_search_with_a_verified_identity_succeeds(monkeypatch: pytest.Mo
     identity = VerifiedIdentity(subject="user-1", tenant_id="tenant-a", roles=["admin"])
     fake_verifier = FakeAzureADTokenVerifier(identity=identity)
     monkeypatch.setattr(gateway_main._azure_ad_settings, "azure_ad_enabled", True)
-    monkeypatch.setattr(gateway_main, "_azure_ad_verifier", fake_verifier)
+    monkeypatch.setattr(gateway_main, "_verifier_resolver", TenantVerifierResolver(fake_verifier))
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"tenant_id": "tenant-a", "traces": []})

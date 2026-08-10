@@ -15,7 +15,8 @@ Exposes:
                           list_data_sources, list_business_glossary,
                           get_lineage) to any MCP-speaking AI agent, headless.
   - GET  /lineage             -- real proxy to agent-runtime's lineage
-                                  search route, gated by `_verify_identity`
+                                  search route, gated by
+                                  `_verify_identity_for_tenant`
   - GET  /lineage/{trace_id}  -- real proxy to agent-runtime's single-trace
                                   lineage retrieval, same gate
 
@@ -33,10 +34,25 @@ what they always were: caller-supplied, not cryptographically verified --
 Guardrail's Policy Authorization agent fails closed on empty/mismatched
 roles/claims exactly as designed, so a caller that omits them will
 legitimately get an `outcome="failed"`/`guardrail.policy_authorization`
-response rather than a silent bypass. Once enabled, `_verify_identity`'s
-FastAPI dependency requires and verifies a real `Authorization: Bearer`
-header and the VERIFIED identity's roles/tenant_id override whatever the
-request body self-declared.
+response rather than a silent bypass. Once enabled, identity verification
+requires and verifies a real `Authorization: Bearer` header and the
+VERIFIED identity's roles/tenant_id override whatever the request body
+self-declared.
+
+PER-TENANT IDENTITY (Phase 4 of the configurable-platform build plan):
+`_verifier_resolver` (a `navigraph_gateway.identity.TenantVerifierResolver`)
+selects WHICH verifier to use per request, based on the tenant_id the
+caller already declares pre-auth (see that module's own docstring for
+why this, not a new subdomain/path scheme, is the real trust boundary).
+Falls back to the single global `_azure_ad_verifier` -- today's exact,
+unchanged behavior -- for any tenant with no configured
+`TenantIdentityConfig` row, or if the metadata-catalog lookup itself
+fails for any reason. Split into `_extract_bearer_token` (a real FastAPI
+`Depends()`, header-only, tenant-agnostic) and `_verify_identity_for_tenant`
+(a plain async function each route calls explicitly once it has its own
+tenant_id, which arrives from a body field on `/ask` but a query param on
+`/lineage` -- two different FastAPI parameter sources a single shared
+`Depends()` can't cleanly straddle).
 """
 
 from __future__ import annotations
@@ -64,6 +80,7 @@ from navigraph_shared.telemetry import (
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 
+from navigraph_gateway.identity import TenantVerifierResolver
 from navigraph_gateway.mcp_tools import build_mcp_server
 from navigraph_gateway.settings import get_gateway_settings
 
@@ -74,11 +91,65 @@ tracer = get_tracer("navigraph-gateway")
 _settings = get_gateway_settings()
 # See `navigraph_shared.auth.azure_ad`'s module docstring: a real, generic
 # JWT/JWKS verifier, feature-flagged OFF (`AzureADSettings.azure_ad_enabled
-# = False`) until a real Azure AD app registration exists -- `_verify_identity`
-# below is a no-op passthrough while disabled, so `/ask`'s behavior is
-# completely unchanged today.
+# = False`) until a real Azure AD app registration exists -- identity
+# verification below is a no-op passthrough while disabled, so `/ask`'s
+# behavior is completely unchanged today. This remains every tenant's
+# fallback verifier even once enabled -- see `_verifier_resolver` below.
 _azure_ad_settings = AzureADSettings()
 _azure_ad_verifier: AzureADTokenVerifier = HttpAzureADTokenVerifier(_azure_ad_settings)
+
+# Phase 4 of the configurable-platform build plan: the gateway previously
+# had ZERO Postgres dependency at all (a deliberately thin, stateless
+# proxy) -- this is a new, real one, added specifically so a tenant's
+# `TenantIdentityConfig` row (which identity provider it uses) can be
+# looked up live. Guarded defensively: a construction-time failure here
+# (e.g. missing/invalid catalog settings) must never prevent the gateway
+# from starting at all -- `_lookup_tenant_identity_config` below already
+# treats a query-time failure as "use the default verifier"; this guards
+# the rarer case of the engine/session-factory itself failing to build.
+_catalog_session_factory = None
+try:
+    from navigraph_catalog.db import get_engine as _get_catalog_engine
+    from navigraph_catalog.db import get_session_factory as _get_catalog_session_factory
+    from navigraph_catalog.settings import MetadataCatalogSettings as _MetadataCatalogSettings
+
+    _catalog_session_factory = _get_catalog_session_factory(
+        _get_catalog_engine(_MetadataCatalogSettings())
+    )
+except Exception:
+    logger.warning(
+        "metadata_catalog unavailable at startup -- every tenant will use the "
+        "default identity verifier until this is resolved",
+        exc_info=True,
+    )
+
+
+def _lookup_tenant_identity_config(tenant_id: str) -> tuple[str, dict] | None:
+    """Real, catalog-backed lookup `TenantVerifierResolver` calls on a
+    cache miss -- a blocking, synchronous DB query (this codebase's
+    `metadata_catalog` session layer is sync-only throughout), acceptable
+    here because it only runs once per tenant per cache TTL, not on every
+    request. Any exception (DB unreachable, no such tenant, corrupt row)
+    propagates to the resolver, which already treats that as "use the
+    default verifier" -- this function itself adds no additional
+    fallback logic, by design, so there is exactly one place that
+    decision is made.
+    """
+
+    from navigraph_catalog.api import get_tenant_identity_config
+    from navigraph_catalog.db import session_scope
+
+    with session_scope(_catalog_session_factory) as session:
+        config = get_tenant_identity_config(session, tenant_id=tenant_id)
+        if config is None:
+            return None
+        return config.provider_type, config.provider_settings
+
+
+_verifier_resolver = TenantVerifierResolver(
+    _azure_ad_verifier,
+    lookup=_lookup_tenant_identity_config if _catalog_session_factory is not None else None,
+)
 
 # Constructed at MODULE load, not inside `lifespan()`, and shared between
 # `/ask` (via `app.state.http_client`, assigned in `lifespan()` below) and
@@ -214,17 +285,20 @@ class AskRequest(BaseModel):
     claims: dict[str, Any] = {}
 
 
-async def _verify_identity(
+async def _extract_bearer_token(
     authorization: str | None = Header(default=None),
-) -> VerifiedIdentity | None:
-    """FastAPI dependency gating `/ask` behind Azure AD, once enabled.
+) -> str | None:
+    """FastAPI dependency gating every identity-verified route.
 
-    Returns `None` (today's default, `azure_ad_enabled=False`) so `/ask`
-    keeps trusting the request body's self-declared `roles`/`claims`
-    exactly as it always has -- zero behavior change. Once flipped on,
-    requires a well-formed `Authorization: Bearer <token>` header and a
-    real, verified identity; any failure is a 401, never a silent
-    fallback to the unverified body fields.
+    Returns `None` (today's default, `azure_ad_enabled=False`) so
+    `_verify_identity_for_tenant` below stays a no-op and `/ask` keeps
+    trusting the request body's self-declared `roles`/`claims` exactly as
+    it always has -- zero behavior change. Once flipped on, requires a
+    well-formed `Authorization: Bearer <token>` header, returning just the
+    raw token -- WHICH verifier checks it, and whether its tenant claim is
+    trustworthy for this specific request, is `_verify_identity_for_tenant`'s
+    job, not this dependency's (it has no tenant context to resolve a
+    per-tenant verifier with).
     """
 
     if not _azure_ad_settings.azure_ad_enabled:
@@ -233,23 +307,60 @@ async def _verify_identity(
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
 
-    token = authorization.removeprefix("Bearer ").strip()
+    return authorization.removeprefix("Bearer ").strip()
+
+
+async def _verify_identity_for_tenant(
+    tenant_id: str, bearer_token: str | None
+) -> VerifiedIdentity | None:
+    """Resolve `tenant_id`'s configured verifier (falling back to the
+    process-wide default -- see `navigraph_gateway.identity`'s own
+    docstring), verify `bearer_token` against it, and confirm the
+    VERIFIED identity's own tenant_id claim matches `tenant_id` -- the
+    same ABAC cross-check `infra/opa/policies/authz.rego`'s
+    `tenant_claim_matches` already enforces downstream, done again here
+    at the edge so a caller can't pick a weaker tenant's verifier by
+    simply declaring a different `tenant_id` than the token it presents
+    actually belongs to.
+
+    Returns `None` when `bearer_token` is `None` (identity verification
+    disabled) -- callers must treat that exactly as `/ask` always has:
+    trust the request body's self-declared fields.
+    """
+
+    if bearer_token is None:
+        return None
+
+    verifier = await _verifier_resolver.resolve(tenant_id)
     try:
-        return await _azure_ad_verifier.verify(token)
+        identity = await verifier.verify(bearer_token)
     except AzureADTokenError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    if identity.tenant_id != tenant_id:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                f"verified identity's tenant ({identity.tenant_id!r}) does not "
+                f"match the request's tenant ({tenant_id!r})"
+            ),
+        )
+
+    return identity
 
 
 @app.post("/ask")
 async def ask(
     request: AskRequest,
-    verified_identity: VerifiedIdentity | None = Depends(_verify_identity),
+    bearer_token: str | None = Depends(_extract_bearer_token),
 ) -> dict:
     """Forward a question to the real Request Orchestrator agent (the full
     ~19-stage pipeline: Understanding -> Query -> Guardrail -> Insight, with
     lineage recorded at every stage and multi-turn session/clarification
     handling) and return its `RequestOrchestratorOutput` verbatim.
     """
+
+    verified_identity = await _verify_identity_for_tenant(request.tenant_id, bearer_token)
 
     trace_id = str(uuid.uuid4())
     bind_request_context(
@@ -316,16 +427,17 @@ async def search_lineage_traces(
     search_text: str | None = None,
     limit: int = 50,
     offset: int = 0,
-    verified_identity: VerifiedIdentity | None = Depends(_verify_identity),
+    bearer_token: str | None = Depends(_extract_bearer_token),
 ) -> dict:
     """Real proxy to the agent-runtime's `GET /lineage` search route -- the
     first time lineage search has been reachable through the gateway, this
     platform's one real public trust boundary. Gated by the same
-    `_verify_identity` dependency `/ask` uses; see that function's
+    `_verify_identity_for_tenant` check `/ask` uses; see that function's
     docstring for what this does and doesn't close while Azure AD
     verification remains feature-flagged off.
     """
 
+    verified_identity = await _verify_identity_for_tenant(tenant_id, bearer_token)
     del verified_identity  # not needed to build the request; presence is the gate
 
     params: dict[str, Any] = {"tenant_id": tenant_id, "limit": limit, "offset": offset}
@@ -355,13 +467,14 @@ async def search_lineage_traces(
 async def get_lineage_trace(
     trace_id: str,
     tenant_id: str,
-    verified_identity: VerifiedIdentity | None = Depends(_verify_identity),
+    bearer_token: str | None = Depends(_extract_bearer_token),
 ) -> dict:
     """Real proxy to the agent-runtime's `GET /lineage/{trace_id}` route --
     see `search_lineage_traces` above for the same gate and its documented
     limits.
     """
 
+    verified_identity = await _verify_identity_for_tenant(tenant_id, bearer_token)
     del verified_identity
 
     http_client: httpx.AsyncClient = app.state.http_client
