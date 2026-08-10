@@ -4008,3 +4008,91 @@ stack... including in CI." This is a distinct, larger infra task (wiring
 real service containers into that workflow) from "make the policy
 data-driven" and is deliberately left out of this phase's scope -- tracked
 here so it isn't mistaken for something this phase already solved.
+
+### 108. NEW: Phase 4 of the configurable-platform build plan -- the gateway resolves identity verifiers per tenant instead of one hardcoded global Azure AD verifier
+
+**What changed**: `navigraph_shared.auth` gained a small registry
+(`registry.py`, mirroring `navigraph_connectors.registry`'s exact
+`register_/get_/list_` pattern) mapping a `provider_type` string to a
+verifier class + its `Settings` class, and a second, real, non-Azure
+implementation (`oidc.py`'s `HttpOidcTokenVerifier` -- real OIDC
+discovery, `{issuer}/.well-known/openid-configuration` -> `jwks_uri` ->
+real JWKS fetch, configurable `tenant_id`/`roles` claim names since those
+aren't standardized across providers) -- proving
+`AzureADTokenVerifier.verify(bearer_token) -> VerifiedIdentity` is
+genuinely reusable, not just theoretically generic, exactly as the build
+plan asked. Both self-register as an import side effect, following
+`navigraph_connectors.snowflake`/etc.'s exact pattern.
+
+New `tenant_identity_configs` table in `metadata_catalog` (migration
+`0007`): which provider (`provider_type`) a tenant uses and that
+provider's own real, non-secret settings (`provider_settings` -- issuer
+URLs, client/audience IDs; genuinely never a credential, unlike
+`DataSource.connection_ref`'s opaque secret-scope pointer, since JWT
+verification only ever needs PUBLIC signing keys). Managed via a new
+`navigraph_admin.py identity set-provider`/`show` pair, which validates
+`--provider-settings-json` against the registered provider's real
+`Settings` class before persisting -- see the REAL GAP note below.
+
+`packages/gateway/navigraph_gateway/identity.py`'s new
+`TenantVerifierResolver` is what actually uses this: caches, per
+`tenant_id`, which verifier to use (a live `metadata_catalog` lookup on a
+cache miss, TTL'd like `HttpAzureADTokenVerifier`'s own JWKS cache),
+FAILING SAFE (not closed) to the single global default verifier -- every
+tenant's exact prior behavior -- if the lookup fails for any reason (no
+configured row, an unregistered `provider_type`, the catalog itself
+unreachable). `_verify_identity_for_tenant` in `main.py` also now checks
+that the VERIFIED identity's own `tenant_id` claim matches what the
+caller declared -- the same ABAC property `authz.rego`'s
+`tenant_claim_matches` already enforces downstream, enforced again here
+at the edge so a caller can't pick a weaker tenant's verifier by
+declaring a tenant the presented token doesn't actually belong to.
+
+**Deliberate deviation from the plan's own literal suggestion**: the plan
+recommended resolving which tenant's verifier to use from the request's
+subdomain/path prefix, pre-auth, to avoid a "chicken and egg" trust
+problem. This codebase has zero subdomain/path-based tenant-routing
+infrastructure anywhere, and every other tenant-scoped operation already
+resolves `tenant_id` the same way (`/ask`'s request-body field,
+`/lineage`'s query param, every MCP tool's explicit parameter) --
+introducing a second, URL-based pre-auth signal just for this one lookup
+would add a new trust boundary inconsistent with the rest of this
+platform, for no real security gain over the post-auth tenant-match
+check this phase adds instead. See `DECISIONS.md`'s matching entry for
+the full reasoning.
+
+**Real, live architectural change, not free**: the gateway previously had
+ZERO Postgres dependency at all (a deliberately thin, stateless HTTP
+proxy) -- `TenantVerifierResolver`'s live lookup is a new, real one.
+Guarded defensively at every layer (construction-time failure never
+prevents the gateway from starting; a lookup failure never breaks a
+request, only falls back to the default verifier) specifically because
+the plan itself flagged this as "low risk today, high blast radius once
+live." `packages/gateway/Dockerfile` and its `pyproject.toml` updated to
+match (`connector_sdk`/`metadata_catalog` installed before `gateway`, the
+same fix Phase 1 already applied to `agent_runtime`'s Dockerfile for an
+analogous new dependency).
+
+**REAL GAP, found live exercising the new CLI by hand, fixed in this same
+phase**: every `NaviGraphSettings` subclass sets `extra="ignore"`
+(correct for its real job -- reading actual OS env vars, where unrelated
+ones are common) -- so validating a human-typed `--provider-settings-json`
+blob via `model_validate` alone silently DROPS a typo'd key instead of
+rejecting it, only surfacing as a failure at the next real token
+verification. `build_verifier` now explicitly diffs the given keys
+against the settings class's real fields and raises on any unknown one --
+confirmed live: `identity set-provider ... --provider-settings-json
+'{"oidc_issur_typo": "..."}'` now fails immediately with the typo named,
+instead of silently persisting a config missing its real issuer URL.
+
+**What still requires a live environment, not run in this session**: no
+live Postgres to persist a real `TenantIdentityConfig` row against, no
+live Azure AD/OIDC provider to verify a real end-to-end token through a
+tenant-specific verifier. `TenantVerifierResolver`'s caching/fallback
+logic, both verifiers' real JWT/JWKS verification, and the registry's
+validation are all covered by real unit tests (`packages/gateway/tests
+/test_identity.py`, `packages/shared/tests/test_oidc.py`, `test_auth_registry.py`)
+using real cryptographic material and fake/injected lookups -- but the
+plan's own Phase 4 verification bar ("a real second identity provider
+verified end to end against a live token") is not yet met for real,
+live infrastructure.

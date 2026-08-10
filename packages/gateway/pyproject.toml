@@ -22,6 +22,16 @@ dependencies = [
     # so that `navigraph-shared` is already satisfied in the environment
     # when pip resolves this package's dependencies. See packages/pyproject.toml.
     "navigraph-shared",
+    # Phase 4 of the configurable-platform build plan: the gateway was
+    # previously a deliberately stateless HTTP proxy with zero Postgres
+    # dependency -- this is a new, real one, so `TenantVerifierResolver`
+    # (`navigraph_gateway.identity`) can look up a tenant's
+    # `TenantIdentityConfig` row live. Install order matters the same way
+    # as `navigraph-shared` above: `pip install -e packages/connector_sdk`
+    # then `packages/metadata_catalog` BEFORE `packages/gateway` (matches
+    # `ci.yml`'s real, already-correct order).
+    "navigraph-connector-sdk",
+    "navigraph-metadata-catalog",
     "prometheus-fastapi-instrumentator",
     # Not in the original spec's minimal dep list, but required for the
     # "OTel FastAPI auto-instrumentation" requirement on this service.

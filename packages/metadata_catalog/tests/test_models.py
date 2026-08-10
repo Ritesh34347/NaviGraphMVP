@@ -22,6 +22,7 @@ def test_expected_tables_exist() -> None:
         "catalog_columns",
         "column_glossary",
         "semantic_models",
+        "tenant_identity_configs",
     }
 
 
@@ -177,6 +178,29 @@ def test_semantic_models_columns() -> None:
     )
     assert isinstance(active_index, Index)
     assert active_index.unique
+
+
+def test_tenant_identity_configs_columns() -> None:
+    table = Base.metadata.tables["tenant_identity_configs"]
+    columns = table.columns
+
+    assert isinstance(columns["id"].type, UUID)
+    assert columns["id"].primary_key
+
+    assert not columns["tenant_id"].nullable
+    assert columns["tenant_id"].index
+
+    assert not columns["provider_type"].nullable
+    assert isinstance(columns["provider_settings"].type, JSONB)
+    assert not columns["provider_settings"].nullable
+    assert not columns["created_at"].nullable
+
+    unique_constraints = {
+        tuple(sorted(c.name for c in uc.columns))
+        for uc in table.constraints
+        if isinstance(uc, UniqueConstraint)
+    }
+    assert ("tenant_id",) in unique_constraints
 
 
 def test_relationships_navigate_parent_to_child() -> None:

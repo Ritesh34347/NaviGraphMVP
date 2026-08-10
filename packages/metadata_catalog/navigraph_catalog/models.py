@@ -232,6 +232,43 @@ class SemanticModelRecord(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class TenantIdentityConfig(Base):
+    """Which identity-verification provider a tenant uses, and that
+    provider's own (non-secret) settings -- e.g. an Azure AD tenant/client
+    ID pair, or a generic OIDC issuer/audience/claim-name mapping (Phase 4
+    of the configurable-platform build plan).
+
+    `provider_settings` is real, verifiable-against configuration (issuer
+    URLs, client/audience IDs), never a credential -- unlike
+    `DataSource.connection_ref`'s opaque secret-scope POINTER, there is no
+    secret material an OIDC/Azure AD verifier needs stored here at all
+    (JWT verification only needs PUBLIC signing keys, fetched live from
+    the provider's own JWKS endpoint).
+
+    At most one row per tenant -- a tenant has exactly one identity
+    provider configured at a time (or none, meaning the gateway falls
+    back to its process-wide default verifier). No versioning/activation
+    dance like `SemanticModelRecord`'s: replacing a tenant's provider is a
+    real UPDATE, not a new row, since there's no "previous provider" a
+    rollback would ever want to reactivate.
+    """
+
+    __tablename__ = "tenant_identity_configs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_tenant_identity_configs_tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id: Mapped[str] = mapped_column(index=True, nullable=False)
+    provider_type: Mapped[str] = mapped_column(nullable=False)
+    provider_settings: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class ColumnGlossary(Base):
     """A business glossary entry for a single `CatalogColumn`.
 

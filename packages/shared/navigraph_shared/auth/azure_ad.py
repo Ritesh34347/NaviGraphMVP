@@ -30,6 +30,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from navigraph_shared.auth.registry import register_verifier
 from navigraph_shared.config import NaviGraphSettings
 
 
@@ -213,3 +214,10 @@ class FakeAzureADTokenVerifier(AzureADTokenVerifier):
         raise AzureADTokenError(
             "FakeAzureADTokenVerifier not configured with an identity or exception"
         )
+
+
+# Phase 4 of the configurable-platform build plan: self-registers as an
+# import side effect, mirroring `navigraph_connectors.snowflake`/etc.'s
+# exact pattern -- see `registry.py`'s own docstring for why this, not a
+# caller-remembered separate import, is what triggers registration.
+register_verifier("azure_ad", HttpAzureADTokenVerifier, AzureADSettings)
