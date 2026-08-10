@@ -72,6 +72,43 @@ spec:
         - protocol: TCP
           port: 8000
 ---
+# REAL BUG, found live against the actual AKS cluster (same exact bug
+# class as `allow-gateway-egress-to-agent-runtime`'s own comment above --
+# see item 49): the policy above declares only the *egress* half of
+# web-to-gateway traffic (an Egress rule attached to web pods).
+# `allow-ingress-nginx-to-gateway` is the only Ingress-type policy that
+# selects `app: gateway`, and it only permits traffic from the
+# `ingress-nginx` namespace -- gateway had no Ingress rule at all
+# admitting traffic from web pods, so `default-deny-all` silently dropped
+# every real POST /ask call web's own server-side route made to gateway
+# (confirmed live: web's chat page returned "gateway is unreachable" even
+# though both pods were Running and gateway's own /healthz responded fine
+# to the ingress controller). This is precisely what
+# test_positive_control_gateway_can_still_reach_agent_runtime's sibling
+# check should have caught for this pair too -- see
+# tests/security/cloud/test_network_policy_isolation.py, which needs an
+# equivalent positive-control test for web-to-gateway, not just
+# gateway-to-agent-runtime.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web-ingress-to-gateway
+  namespace: navigraph
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: web
+      ports:
+        - protocol: TCP
+          port: 8000
+---
 # Gateway's only real backend call (POST /agents/orchestrator/request_orchestrator/invoke
 # and friends) is to agent-runtime -- see packages/gateway/navigraph_gateway/main.py.
 apiVersion: networking.k8s.io/v1

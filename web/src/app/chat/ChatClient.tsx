@@ -107,6 +107,15 @@ export default function ChatClient({ tenantId, userId }: ChatClientProps): React
           tenant_id: tenantId,
           user_id: userId,
           session_id: sessionId,
+          // Self-declared, matching the real per-tenant OPA policy's
+          // tenant_claim_matches check -- without this every request was
+          // silently denied by guardrail.policy_authorization (found live:
+          // claims.tenant_id defaults to null server-side when omitted,
+          // which never matches a real tenant_id). See LIMITATIONS.md item
+          // 23 for why self-declaration is acceptable while Azure AD
+          // verification stays off.
+          roles: ['analyst'],
+          claims: { tenant_id: tenantId },
         }),
       });
 

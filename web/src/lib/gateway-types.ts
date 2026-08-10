@@ -20,6 +20,12 @@ export interface AskRequestBody {
   session_id?: string | null;
   data_source_id?: string | null;
   roles?: string[];
+  // Self-declared, matching the real per-tenant OPA policy's
+  // `tenant_claim_matches` check (`input.claims.tenant_id ==
+  // input.tenant_id`) -- required for `/ask` to pass the real Guardrail
+  // domain's Policy Authorization agent while Azure AD verification
+  // stays feature-flagged off. See LIMITATIONS.md item 23.
+  claims?: Record<string, unknown>;
 }
 
 export interface AskResult {
