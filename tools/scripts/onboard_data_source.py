@@ -38,33 +38,32 @@ import sys
 import uuid
 from pathlib import Path
 
+# REAL BUG, found live wiring Phase 2: `register`/`crawl` call
+# `get_connector_class`, but a connector is only ever registered as an
+# IMPORT SIDE EFFECT of importing its own submodule -- this script never
+# did, so a fresh CLI invocation always failed with "No connector
+# registered for source_type='...'". Same exact bug, same fix, as
+# `navigraph_agents.main`'s own identical import block -- see that
+# module's comment for the original live discovery.
+import navigraph_connectors.databricks
+import navigraph_connectors.postgres
+import navigraph_connectors.snowflake  # noqa: F401
 import yaml
-from navigraph_catalog.api import (
-    activate_semantic_model,
-    list_data_sources,
-    register_data_source,
-    save_semantic_model,
-)
+from navigraph_catalog.api import list_data_sources, register_data_source
 from navigraph_catalog.db import get_engine, get_session_factory, session_scope
 from navigraph_catalog.ingestion.snowflake_crawler import crawl_and_store
 from navigraph_catalog.settings import MetadataCatalogSettings
-from navigraph_connectors.registry import build_connector
-from navigraph_semantic_model.loader import compile_sensitivity as compile_pii_flags
+from navigraph_connectors.registry import get_connector_class
+from navigraph_semantic_model.activation import activate_semantic_model
 from navigraph_semantic_model.loader import (
+    SemanticModelValidationError,
     load_semantic_model,
-    validate_semantic_model_against_catalog,
 )
 from navigraph_semantic_model.onboarding import compile_draft_to_semantic_model
-from navigraph_semantic_model.opa_sync import sync_policy_bindings
 from navigraph_shared.config import get_settings
 from navigraph_shared.contracts import RequestContext
 from navigraph_shared.llm import AnthropicLLMClient, FakeLLMClient, LLMClient
 from navigraph_shared.opa import HttpOpaClient
-from navigraph_shared.secrets import (
-    AzureKeyVaultSecretsProvider,
-    EnvVarSecretsProvider,
-    SecretsProvider,
-)
 
 
 def _build_llm_client() -> LLMClient:
@@ -84,24 +83,6 @@ def _build_llm_client() -> LLMClient:
         file=sys.stderr,
     )
     return FakeLLMClient()
-
-
-def _build_secrets_provider() -> SecretsProvider:
-    """Mirrors `navigraph_agents.main._build_secrets_provider` exactly --
-    see `_build_llm_client`'s docstring for why this is duplicated rather
-    than imported."""
-
-    import os
-
-    vault_url = os.environ.get("SECRETS_KEY_VAULT_URL")
-    if vault_url:
-        return AzureKeyVaultSecretsProvider(vault_url)
-    print(
-        "WARNING: SECRETS_KEY_VAULT_URL is not set -- falling back to "
-        "EnvVarSecretsProvider for this data source's crawl credentials.",
-        file=sys.stderr,
-    )
-    return EnvVarSecretsProvider()
 
 
 def _find_data_source(session, *, tenant_id: str, data_source_name: str):
@@ -149,7 +130,6 @@ def cmd_register(args: argparse.Namespace) -> int:
 def cmd_crawl(args: argparse.Namespace) -> int:
     settings = MetadataCatalogSettings()
     session_factory = get_session_factory(get_engine(settings))
-    secrets = _build_secrets_provider()
 
     with session_scope(session_factory) as session:
         data_source = _find_data_source(
@@ -158,11 +138,21 @@ def cmd_crawl(args: argparse.Namespace) -> int:
         if data_source is None:
             return 1
 
-        connector = build_connector(
-            data_source.source_type,
-            connection_ref=data_source.connection_ref,
-            secrets=secrets,
-        )
+        # REAL BUG, found live wiring Phase 2: this called a
+        # `navigraph_connectors.registry.build_connector` that never
+        # existed in this SDK at all -- every real caller (Data Source
+        # Discovery, Data Federation) constructs a connector the same,
+        # documented way instead: the class reads its own global,
+        # env-var-backed settings (e.g. `SnowflakeConnector.__init__`'s
+        # `SnowflakeSettings()` default) rather than being handed
+        # `DataSource.connection_ref`/secrets directly -- there is no
+        # per-DataSource credential-routing layer anywhere in this
+        # codebase yet (a real, separately-tracked limitation, not
+        # something to invent here). This never had a test exercising it
+        # and isn't in CI's mypy scope (`tools/scripts/` isn't checked),
+        # so it was invisible until read closely.
+        connector_cls = get_connector_class(data_source.source_type)
+        connector = connector_cls()
         result = crawl_and_store(session, data_source_id=data_source.id, connector=connector)
 
     print(f"Crawled {args.data_source_name!r}: {result.tables_synced} table(s) synced.")
@@ -262,38 +252,22 @@ def cmd_activate(args: argparse.Namespace) -> int:
 
     settings = MetadataCatalogSettings()
     session_factory = get_session_factory(get_engine(settings))
+    opa_client = HttpOpaClient()
 
     with session_scope(session_factory) as session:
-        issues = validate_semantic_model_against_catalog(model, session)
-        if issues:
+        try:
+            result = asyncio.run(activate_semantic_model(model, session, opa_client))
+        except SemanticModelValidationError as exc:
             print(
                 f"Semantic Model for tenant {model.tenant_id!r} failed catalog validation "
-                f"with {len(issues)} issue(s) -- NOT activated:",
+                f"with {len(exc.issues)} issue(s) -- NOT activated:",
                 file=sys.stderr,
             )
-            for issue in issues:
+            for issue in exc.issues:
                 print(f"  - {issue}", file=sys.stderr)
             return 1
 
-        tagged = compile_pii_flags(model, session)
-        print(f"Catalog validation passed. Tagged {tagged} column(s) is_pii=true.")
-
-        # REAL GAP, found live wiring Phase 1 (navigraph_kg.ingestion.pipeline
-        # ._sync_relationship_concepts now reads this): this command used to
-        # validate + tag PII + sync OPA but never persisted the model
-        # anywhere ingestion could read it back from -- `activate` was not
-        # actually activating anything besides the OPA side. Persist this
-        # version, then mark it the one active version for this tenant.
-        save_semantic_model(
-            session,
-            tenant_id=model.tenant_id,
-            version=model.version,
-            compiled_json=model.model_dump(mode="json"),
-        )
-        activate_semantic_model(session, tenant_id=model.tenant_id, version=model.version)
-
-    opa_client = HttpOpaClient()
-    asyncio.run(sync_policy_bindings(opa_client, model))
+    print(f"Catalog validation passed. Tagged {result.tagged_pii_columns} column(s) is_pii=true.")
     print(
         f"Synced policy_bindings for tenant {model.tenant_id!r} "
         f"(allowed_roles={model.policy_bindings.allowed_roles}) to OPA."

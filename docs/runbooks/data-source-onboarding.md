@@ -17,10 +17,20 @@ hand-writing YAML from scratch).
 - A real, reachable Postgres metadata catalog (`POSTGRES_HOST`/`_PORT`/
   `_USER`/`_PASSWORD`/`_DB` — see `MetadataCatalogSettings`), migrated to
   `head` (`alembic upgrade head` from `packages/metadata_catalog`).
-- Real credentials for the source system you're onboarding, reachable via
-  either `SECRETS_KEY_VAULT_URL` (a real Azure Key Vault) or the
-  `EnvVarSecretsProvider` fallback's scoped environment variables — see
-  `navigraph_shared.secrets`.
+- Real credentials for the source system you're onboarding, exported as
+  that connector's own global environment variables (e.g.
+  `SnowflakeSettings`'s `SNOWFLAKE_*` vars) — see each connector's own
+  `*Settings` class in `navigraph_connectors`. **Known, documented
+  limitation, found live wiring Phase 2:** `crawl` constructs a connector
+  via `get_connector_class(source_type)()` with NO arguments, matching
+  every other real caller in this codebase (Data Source Discovery, Data
+  Federation) — it does NOT read `DataSource.connection_ref` or route
+  through a per-source `SecretsProvider`. Two `DataSource` rows of the
+  same `source_type` are indistinguishable to it; both resolve to a
+  connector reading the same global env vars. There is no
+  per-`DataSource` credential-routing layer anywhere in this codebase
+  yet — `--connection-ref-json` below is stored for a future one, not
+  consumed by `crawl` today.
 - `ANTHROPIC_API_KEY` for the `draft` step. Without it, `draft` still runs
   but falls back to `FakeLLMClient` (a loud warning is printed) and
   produces an empty draft — fine for rehearsing the pipeline's plumbing,
@@ -44,10 +54,10 @@ python tools/scripts/onboard_data_source.py register \
 ```
 
 `--connection-ref-json` is that `DataSource`'s own opaque credential
-pointer (see `navigraph_connectors.registry.build_connector`) — it names
-*where* to look up real credentials via the configured `SecretsProvider`,
-never the credentials themselves. `--set-default` is optional; omit it for
-a second/third data source on an already-onboarded tenant (see
+pointer (e.g. `{"secret_scope": "acme-corp-prod"}`) — stored for a future
+per-source credential-routing layer, but not read by `crawl` today (see
+the Prerequisites section above). `--set-default` is optional; omit it
+for a second/third data source on an already-onboarded tenant (see
 `set_default_data_source` if you need to change the default later).
 
 ### 2. Crawl its schema
@@ -142,10 +152,26 @@ Three real steps, in order, against live infrastructure:
    this never clears an existing PII flag a prior version had that this
    one dropped — see that function's own docstring for why.
 3. **OPA policy sync** — `policy_bindings.allowed_roles` is pushed to a
-   real per-tenant OPA data document (`sync_policy_bindings`), which
-   `infra/opa/policies/authz.rego` reads at
-   `data.navigraph.tenants[tenant_id].allowed_roles` on every real
-   authorization decision from that point on.
+   real per-tenant OPA data document (`sync_policy_bindings`). **Not yet
+   read by `authz.rego` as of Phase 2** — that policy still has a static
+   `allowed_roles` literal; making it read this per-tenant document is
+   Phase 3's job (see `DECISIONS.md`).
+
+Steps 5 and 6 above can also be run as one step, skipping the intermediate
+YAML file, via `tools/scripts/navigraph_admin.py`:
+
+```bash
+python tools/scripts/navigraph_admin.py semantic-model compile-and-activate \
+  --draft acme-draft.json \
+  --tenant-id acme-corp \
+  --data-source-name acme_prod_snowflake \
+  --version 1
+```
+
+Use `onboard_data_source.py compile`/`activate` instead when you want to
+hand-edit the compiled YAML before activating it; use
+`navigraph_admin.py`'s combined command for the common case where the
+draft itself (step 4) was your only edit point.
 
 ## What this runbook does NOT yet cover
 
@@ -153,24 +179,33 @@ Three real steps, in order, against live infrastructure:
   scheduler the query it needs ("which data sources haven't been crawled
   recently"), but no scheduler/cron job actually calls `crawl` on a timer
   yet — this is still a manually-run step.
-- **Request-time Semantic Model resolution.** Activating a Semantic Model
-  writes its PII flags and OPA policy bindings for real, but the live
-  Request Orchestrator has no mechanism yet to look up "which
-  `SemanticModel` applies to this tenant's request" and feed its
-  `metrics`/`relationships` into `SqlGenerationPayload.metric_aggregations`
-  or `navigraph_kg`'s ingestion pipeline automatically — see
+- **Request-time Semantic Model resolution for SQL generation.** As of
+  Phase 1, activating a Semantic Model IS automatically picked up by
+  `navigraph_kg`'s ingestion pipeline (`_sync_relationship_concepts` reads
+  a tenant's activated model, falling back to the hardcoded
+  `ontology.RELATIONSHIP_CONCEPTS` list otherwise) — re-run `crawl`+the
+  real ingestion job to see it take effect. The live Request Orchestrator
+  still has no mechanism to feed a Semantic Model's `metrics` into
+  `SqlGenerationPayload.metric_aggregations` directly, though — see
   `LIMITATIONS.md` item 61's "still open" list. Wiring that up is a
-  separate, later step, not part of onboarding itself.
+  separate, later step (Phase 5), not part of onboarding itself.
+- **`authz.rego` still ignores the synced policy document.** See step 6's
+  OPA policy sync note above — Phase 3.
 - **No live end-to-end run of this exact runbook has been performed** —
   this sandbox has no reachable Postgres/Snowflake/OPA/Anthropic access to
   run `register`/`crawl`/`activate` against real infrastructure. Each
   subcommand's own logic is covered by real unit tests (crawl via
   `tests/integration/metadata_catalog/test_schema_drift.py`'s live-Postgres
   proof, drafting via `ontology_drafting`'s own test suite, compiling via
-  `navigraph_semantic_model`'s `test_onboarding.py`), and the `compile`
-  step specifically has been run for real end-to-end in this sandbox
-  (fully offline, no infra required) with its output round-tripped back
-  through `load_semantic_model` to confirm the YAML it writes is valid.
-  Whoever runs this against a real tenant for the first time should treat
-  it as the first genuine end-to-end proof of the full chain, not assume
-  one already happened.
+  `navigraph_semantic_model`'s `test_onboarding.py`, the real
+  validate → tag PII → persist → mark active → sync OPA sequence via
+  `test_activation.py`), and the `compile` step specifically has been run
+  for real end-to-end in this sandbox (fully offline, no infra required)
+  with its output round-tripped back through `load_semantic_model` to
+  confirm the YAML it writes is valid. Whoever runs this against a real
+  tenant for the first time should treat it as the first genuine
+  end-to-end proof of the full chain, not assume one already happened.
+  This is also when `crawl`'s connector-construction fix (see
+  Prerequisites above) gets its first real exercise -- it was previously
+  calling a function that never existed in `connector_sdk` at all and had
+  never been run.
