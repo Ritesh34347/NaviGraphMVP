@@ -25,12 +25,27 @@ Follows the same structural pattern as
 `navigraph_agents.understanding.intent_understanding.agent`: open an OTel
 span, never raise, always emit a `LineageEvent` and `AgentMetadata` with
 `latency_ms` populated.
+
+TENANT-CONFIGURABLE THRESHOLDS (Phase 5 of the configurable-platform
+build plan): `session_factory`, if given, lets a tenant override
+`ROLE_ROW_LIMITS`/`DEFAULT_ROLE_ROW_LIMIT`/`MAX_ROWS_CAP` via a real
+`TenantGuardrailConfig` row -- additive-only, fails SAFE (not closed) to
+these exact hardcoded defaults for any tenant with no row, any field left
+`NULL` in that row, or if the lookup itself fails for any reason (no
+`session_factory` given, the catalog unreachable). This agent is
+constructed once, at agent-runtime startup, and reused for every request
+(see `main.py`/`RequestOrchestratorAgent.__init__`) -- so the override
+lookup happens fresh inside `run()`, per request, cached per tenant with
+a TTL, the same "singleton agent, live per-request resolution" shape
+`navigraph_gateway.identity.TenantVerifierResolver` already established
+for Phase 4's per-tenant identity verifier.
 """
 
 from __future__ import annotations
 
 import time
 
+from navigraph_catalog.db import session_scope
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
 from navigraph_shared.telemetry import (
     get_tracer,
@@ -38,6 +53,7 @@ from navigraph_shared.telemetry import (
     record_agent_invocation,
 )
 from opentelemetry.trace import Tracer
+from sqlalchemy.orm import Session, sessionmaker
 
 from navigraph_agents.guardrail.query_cost_estimator.contracts import (
     CostEstimate,
@@ -53,7 +69,12 @@ AGENT_NAME = "guardrail.query_cost_estimator"
 # through OPA/Rego (cost/capacity policy is a distinct concern from
 # authorization -- see DECISIONS.md). These exact numbers are placeholders
 # pending real business-requirement confirmation, not derived from any
-# stated requirement.
+# stated requirement. A tenant may override these via a real
+# `TenantGuardrailConfig` row (see the module docstring's "TENANT-
+# CONFIGURABLE THRESHOLDS" note) -- these three names stay real, mutable
+# module globals (not, e.g., wrapped in a settings object) specifically so
+# `_effective_row_limit`'s own default parameter values keep tracking
+# them by reference; existing tests rely on mutating these in place.
 ROLE_ROW_LIMITS: dict[str, int] = {"analyst": 5_000, "pii_viewer": 5_000, "admin": 10_000}
 DEFAULT_ROLE_ROW_LIMIT = 1_000
 # Mirrors execution_planning.agent.MAX_ROWS_CAP -- duplicated, not
@@ -61,32 +82,101 @@ DEFAULT_ROLE_ROW_LIMIT = 1_000
 # limit is always <= this global cap, never looser than it.
 MAX_ROWS_CAP = 10_000
 
+# TTL for the per-tenant threshold-override cache -- mirrors
+# `TenantVerifierResolver`'s identical rationale: a live catalog query on
+# every single request would be a real, needless cost for a value that
+# changes at most as often as an operator runs `navigraph_admin.py
+# guardrail set-thresholds`.
+_GUARDRAIL_CONFIG_CACHE_TTL_SECONDS = 300.0
 
-def _effective_row_limit(roles: list[str]) -> int:
+
+def _effective_row_limit(
+    roles: list[str],
+    *,
+    role_row_limits: dict[str, int] = ROLE_ROW_LIMITS,
+    default_role_row_limit: int = DEFAULT_ROLE_ROW_LIMIT,
+    max_rows_cap: int = MAX_ROWS_CAP,
+) -> int:
     """The row limit this call's roles are held to: the MOST PERMISSIVE of
-    whatever `ROLE_ROW_LIMITS` entries apply, capped at `MAX_ROWS_CAP`.
+    whatever `role_row_limits` entries apply, capped at `max_rows_cap`.
 
     A caller with multiple roles (e.g. `["analyst", "admin"]`) is treated
     as "has any of these roles" -- the admin limit wins over the analyst
     one -- which is the sensible reading of a multi-role principal, not a
     security gap: this table is a cost-control convenience, not an
     authorization boundary (that's Policy Authorization's job). An empty
-    `roles` list, or a list of roles with no entry in `ROLE_ROW_LIMITS`,
-    falls back to `DEFAULT_ROLE_ROW_LIMIT`.
+    `roles` list, or a list of roles with no entry in `role_row_limits`,
+    falls back to `default_role_row_limit`.
+
+    `role_row_limits`/`default_role_row_limit`/`max_rows_cap` default to
+    the module-level globals of the same name -- callers with no tenant
+    override (or no `session_factory` at all) get today's exact,
+    unchanged behavior by simply not passing these.
     """
 
-    role_limits = (ROLE_ROW_LIMITS.get(role, DEFAULT_ROLE_ROW_LIMIT) for role in roles)
-    most_permissive = max(role_limits, default=DEFAULT_ROLE_ROW_LIMIT)
-    return min(most_permissive, MAX_ROWS_CAP)
+    role_limits = (role_row_limits.get(role, default_role_row_limit) for role in roles)
+    most_permissive = max(role_limits, default=default_role_row_limit)
+    return min(most_permissive, max_rows_cap)
 
 
 class QueryCostEstimatorAgent:
     """Checks each optimized statement's estimated row count against the
-    caller's effective per-role row limit. Pure function of its input --
-    no external client dependency."""
+    caller's effective per-role row limit. No external client dependency
+    UNLESS `session_factory` is given, in which case it looks up (and
+    caches) each tenant's threshold overrides -- see the module
+    docstring."""
 
-    def __init__(self, tracer: Tracer | None = None) -> None:
+    def __init__(
+        self,
+        tracer: Tracer | None = None,
+        *,
+        session_factory: sessionmaker[Session] | None = None,
+    ) -> None:
         self._tracer = tracer or get_tracer("navigraph-agent-runtime")
+        self._session_factory = session_factory
+        self._guardrail_config_cache: dict[str, tuple[tuple[dict, int, int], float]] = {}
+
+    def _resolve_thresholds(self, tenant_id: str) -> tuple[dict[str, int], int, int]:
+        """Returns `(role_row_limits, default_role_row_limit, max_rows_cap)`
+        for `tenant_id` -- its real override, PARTIALLY merged over the
+        hardcoded defaults (a tenant overriding just one role doesn't
+        need to repeat every other role's default), or the hardcoded
+        defaults verbatim if this tenant has none, any lookup step fails,
+        or no `session_factory` was given at all. Fails SAFE, never
+        closed -- a catalog outage must never change query-cost
+        enforcement, only fall back to already-shipped, global defaults.
+        Cached per tenant with a TTL; see `_GUARDRAIL_CONFIG_CACHE_TTL_SECONDS`.
+        """
+
+        defaults = (ROLE_ROW_LIMITS, DEFAULT_ROLE_ROW_LIMIT, MAX_ROWS_CAP)
+        if self._session_factory is None:
+            return defaults
+
+        now = time.monotonic()
+        cached = self._guardrail_config_cache.get(tenant_id)
+        if cached is not None and now < cached[1]:
+            return cached[0]
+
+        resolved = defaults
+        try:
+            from navigraph_catalog.api import get_tenant_guardrail_config
+
+            with session_scope(self._session_factory) as session:
+                config = get_tenant_guardrail_config(session, tenant_id=tenant_id)
+            if config is not None:
+                resolved = (
+                    {**ROLE_ROW_LIMITS, **(config.role_row_limits or {})},
+                    config.default_role_row_limit or DEFAULT_ROLE_ROW_LIMIT,
+                    config.max_rows_cap or MAX_ROWS_CAP,
+                )
+        except Exception:  # noqa: BLE001 -- deliberately blind, see this method's "fails SAFE" docstring note
+            resolved = defaults
+
+        self._guardrail_config_cache[tenant_id] = (
+            resolved,
+            now + _GUARDRAIL_CONFIG_CACHE_TTL_SECONDS,
+        )
+        return resolved
 
     async def run(self, input: QueryCostEstimatorInput) -> QueryCostEstimatorOutput:
         start = time.perf_counter()
@@ -98,7 +188,15 @@ class QueryCostEstimatorAgent:
             span.set_attribute("navigraph.trace_id", request_context.trace_id)
             span.set_attribute("navigraph.agent_name", AGENT_NAME)
 
-            effective_limit = _effective_row_limit(request_context.roles)
+            role_row_limits, default_role_row_limit, max_rows_cap = self._resolve_thresholds(
+                request_context.tenant_id
+            )
+            effective_limit = _effective_row_limit(
+                request_context.roles,
+                role_row_limits=role_row_limits,
+                default_role_row_limit=default_role_row_limit,
+                max_rows_cap=max_rows_cap,
+            )
 
             approved, estimates, rejected = self._estimate_statements(
                 payload.statements, effective_limit=effective_limit, roles=request_context.roles

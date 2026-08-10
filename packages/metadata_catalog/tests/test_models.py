@@ -23,6 +23,7 @@ def test_expected_tables_exist() -> None:
         "column_glossary",
         "semantic_models",
         "tenant_identity_configs",
+        "tenant_guardrail_configs",
     }
 
 
@@ -193,6 +194,30 @@ def test_tenant_identity_configs_columns() -> None:
     assert not columns["provider_type"].nullable
     assert isinstance(columns["provider_settings"].type, JSONB)
     assert not columns["provider_settings"].nullable
+    assert not columns["created_at"].nullable
+
+    unique_constraints = {
+        tuple(sorted(c.name for c in uc.columns))
+        for uc in table.constraints
+        if isinstance(uc, UniqueConstraint)
+    }
+    assert ("tenant_id",) in unique_constraints
+
+
+def test_tenant_guardrail_configs_columns() -> None:
+    table = Base.metadata.tables["tenant_guardrail_configs"]
+    columns = table.columns
+
+    assert isinstance(columns["id"].type, UUID)
+    assert columns["id"].primary_key
+
+    assert not columns["tenant_id"].nullable
+    assert columns["tenant_id"].index
+
+    assert isinstance(columns["role_row_limits"].type, JSONB)
+    assert columns["role_row_limits"].nullable
+    assert columns["default_role_row_limit"].nullable
+    assert columns["max_rows_cap"].nullable
     assert not columns["created_at"].nullable
 
     unique_constraints = {

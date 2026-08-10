@@ -269,6 +269,45 @@ class TenantIdentityConfig(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class TenantGuardrailConfig(Base):
+    """Per-tenant overrides for Guardrail agent thresholds -- Phase 5 of
+    the configurable-platform build plan. Starts with
+    `query_cost_estimator`'s row limits only
+    (`ROLE_ROW_LIMITS`/`DEFAULT_ROLE_ROW_LIMIT`/`MAX_ROWS_CAP`) --
+    deliberately NOT a generic "any agent, any threshold" blob; extending
+    this to another agent's thresholds is a real, separate, later
+    decision, not something this table's shape should have to
+    anticipate speculatively.
+
+    Every column is NULLABLE and deliberately additive-only: a tenant
+    with no row here, or a row with some/all fields `NULL`, gets EXACTLY
+    `QueryCostEstimatorAgent`'s hardcoded default behavior -- never an
+    error, never a fabricated value. `role_row_limits` is a PARTIAL
+    override, merged over the hardcoded `ROLE_ROW_LIMITS` dict by the
+    agent (a tenant overriding just `"analyst"` doesn't need to also
+    repeat `"admin"`'s default). At most one row per tenant -- a real
+    `UniqueConstraint`, mirroring `TenantIdentityConfig`'s exact
+    convention -- no versioning, since there's no "previous threshold
+    set" a rollback would ever want to reactivate.
+    """
+
+    __tablename__ = "tenant_guardrail_configs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_tenant_guardrail_configs_tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    tenant_id: Mapped[str] = mapped_column(index=True, nullable=False)
+    role_row_limits: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    default_role_row_limit: Mapped[int | None] = mapped_column(default=None)
+    max_rows_cap: Mapped[int | None] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class ColumnGlossary(Base):
     """A business glossary entry for a single `CatalogColumn`.
 

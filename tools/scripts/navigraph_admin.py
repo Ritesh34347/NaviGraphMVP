@@ -26,6 +26,19 @@ Usage:
     python tools/scripts/navigraph_admin.py identity set-provider --tenant-id acme-corp \\
         --provider-type azure_ad --provider-settings-json '{"azure_ad_tenant_id": "...", "azure_ad_client_id": "..."}'
     python tools/scripts/navigraph_admin.py identity show --tenant-id acme-corp
+    python tools/scripts/navigraph_admin.py guardrail set-thresholds --tenant-id acme-corp \\
+        --role-row-limits-json '{"analyst": 8000}' --default-role-row-limit 2000
+    python tools/scripts/navigraph_admin.py guardrail show --tenant-id acme-corp
+
+`guardrail set-thresholds`/`show` manage a tenant's `TenantGuardrailConfig`
+row (Phase 5 of the configurable-platform build plan) -- overrides for
+`QueryCostEstimatorAgent`'s hardcoded row-limit thresholds. Every
+`--role-row-limits-json`/`--default-role-row-limit`/`--max-rows-cap` flag
+is optional and additive-only: omit any of them (or the whole command,
+for a tenant with no row at all) to keep that agent's exact hardcoded
+default for that field -- `--role-row-limits-json` is a PARTIAL override,
+merged over the hardcoded per-role table by the agent itself, not a full
+replacement a caller has to reconstruct from scratch.
 
 `identity set-provider`/`show` manage a tenant's `TenantIdentityConfig`
 row (Phase 4 of the configurable-platform build plan) -- which identity
@@ -63,9 +76,11 @@ from pathlib import Path
 
 from navigraph_catalog.api import (
     get_default_data_source,
+    get_tenant_guardrail_config,
     get_tenant_identity_config,
     list_data_sources,
     set_default_data_source,
+    set_tenant_guardrail_config,
     set_tenant_identity_config,
 )
 from navigraph_catalog.db import get_engine as get_catalog_engine
@@ -230,6 +245,61 @@ def cmd_identity_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_guardrail_set_thresholds(args: argparse.Namespace) -> int:
+    role_row_limits = None
+    if args.role_row_limits_json is not None:
+        try:
+            role_row_limits = json.loads(args.role_row_limits_json)
+        except json.JSONDecodeError as exc:
+            print(f"--role-row-limits-json is not valid JSON: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(role_row_limits, dict) or not all(
+            isinstance(v, int) for v in role_row_limits.values()
+        ):
+            print("--role-row-limits-json must be a JSON object of role -> integer.", file=sys.stderr)
+            return 1
+
+    session_factory = get_catalog_session_factory(get_catalog_engine(MetadataCatalogSettings()))
+    with catalog_session_scope(session_factory) as session:
+        set_tenant_guardrail_config(
+            session,
+            tenant_id=args.tenant_id,
+            role_row_limits=role_row_limits,
+            default_role_row_limit=args.default_role_row_limit,
+            max_rows_cap=args.max_rows_cap,
+        )
+
+    print(
+        f"Tenant {args.tenant_id!r} guardrail thresholds: "
+        f"role_row_limits={role_row_limits}, "
+        f"default_role_row_limit={args.default_role_row_limit}, "
+        f"max_rows_cap={args.max_rows_cap} "
+        "(any field left unset keeps QueryCostEstimatorAgent's hardcoded default)."
+    )
+    return 0
+
+
+def cmd_guardrail_show(args: argparse.Namespace) -> int:
+    session_factory = get_catalog_session_factory(get_catalog_engine(MetadataCatalogSettings()))
+
+    with catalog_session_scope(session_factory) as session:
+        config = get_tenant_guardrail_config(session, tenant_id=args.tenant_id)
+
+    if config is None:
+        print(
+            f"Tenant {args.tenant_id!r} has no guardrail threshold overrides -- "
+            "QueryCostEstimatorAgent's hardcoded defaults apply."
+        )
+        return 0
+
+    print(
+        f"role_row_limits: {config.role_row_limits}\n"
+        f"default_role_row_limit: {config.default_role_row_limit}\n"
+        f"max_rows_cap: {config.max_rows_cap}"
+    )
+    return 0
+
+
 def cmd_semantic_model_compile_and_activate(args: argparse.Namespace) -> int:
     draft = json.loads(Path(args.draft).read_text(encoding="utf-8"))
 
@@ -351,6 +421,30 @@ def main() -> int:
     )
     identity_show.add_argument("--tenant-id", required=True)
     identity_show.set_defaults(func=cmd_identity_show)
+
+    guardrail_parser = subparsers.add_parser(
+        "guardrail", help="Manage a tenant's Guardrail threshold overrides"
+    )
+    guardrail_subparsers = guardrail_parser.add_subparsers(dest="action", required=True)
+
+    guardrail_set_thresholds = guardrail_subparsers.add_parser(
+        "set-thresholds", help="Set (or replace) a tenant's Guardrail threshold overrides"
+    )
+    guardrail_set_thresholds.add_argument("--tenant-id", required=True)
+    guardrail_set_thresholds.add_argument(
+        "--role-row-limits-json",
+        default=None,
+        help='Partial override, merged over the defaults, e.g. \'{"analyst": 8000}\'',
+    )
+    guardrail_set_thresholds.add_argument("--default-role-row-limit", type=int, default=None)
+    guardrail_set_thresholds.add_argument("--max-rows-cap", type=int, default=None)
+    guardrail_set_thresholds.set_defaults(func=cmd_guardrail_set_thresholds)
+
+    guardrail_show = guardrail_subparsers.add_parser(
+        "show", help="Show a tenant's configured Guardrail threshold overrides, if any"
+    )
+    guardrail_show.add_argument("--tenant-id", required=True)
+    guardrail_show.set_defaults(func=cmd_guardrail_show)
 
     args = parser.parse_args()
     return args.func(args)

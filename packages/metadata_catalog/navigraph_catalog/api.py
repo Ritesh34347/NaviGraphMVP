@@ -27,6 +27,7 @@ from navigraph_catalog.models import (
     ColumnGlossary,
     DataSource,
     SemanticModelRecord,
+    TenantGuardrailConfig,
     TenantIdentityConfig,
 )
 
@@ -550,4 +551,61 @@ def get_tenant_identity_config(
 
     return session.execute(
         select(TenantIdentityConfig).where(TenantIdentityConfig.tenant_id == tenant_id)
+    ).scalar_one_or_none()
+
+
+def set_tenant_guardrail_config(
+    session: Session,
+    *,
+    tenant_id: str,
+    role_row_limits: dict | None = None,
+    default_role_row_limit: int | None = None,
+    max_rows_cap: int | None = None,
+) -> TenantGuardrailConfig:
+    """Insert or update `tenant_id`'s one Guardrail-threshold override
+    row. Mirrors `set_tenant_identity_config`'s exact insert-or-update
+    pattern -- at most one row per tenant, no versioning.
+
+    Passing `None` for any field means "use `QueryCostEstimatorAgent`'s
+    hardcoded default for this field" -- callers that want to CLEAR a
+    previously-set override, not just leave it unspecified, must pass
+    `None` explicitly for that field, which this function does not
+    distinguish from "never set" (both end up `NULL`); that is a
+    deliberate simplification, not a gap, since both mean the identical
+    thing to `QueryCostEstimatorAgent`.
+    """
+
+    existing = session.execute(
+        select(TenantGuardrailConfig).where(TenantGuardrailConfig.tenant_id == tenant_id)
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        existing.role_row_limits = role_row_limits
+        existing.default_role_row_limit = default_role_row_limit
+        existing.max_rows_cap = max_rows_cap
+        session.flush()
+        return existing
+
+    config = TenantGuardrailConfig(
+        tenant_id=tenant_id,
+        role_row_limits=role_row_limits,
+        default_role_row_limit=default_role_row_limit,
+        max_rows_cap=max_rows_cap,
+    )
+    session.add(config)
+    session.flush()
+    return config
+
+
+def get_tenant_guardrail_config(
+    session: Session, *, tenant_id: str
+) -> TenantGuardrailConfig | None:
+    """Return `tenant_id`'s one Guardrail-threshold override row, or
+    `None` if it has never configured one -- callers
+    (`QueryCostEstimatorAgent`) must treat `None` (and, per-field, a
+    `NULL` value within a real row) as "use the hardcoded default", not
+    as an error."""
+
+    return session.execute(
+        select(TenantGuardrailConfig).where(TenantGuardrailConfig.tenant_id == tenant_id)
     ).scalar_one_or_none()

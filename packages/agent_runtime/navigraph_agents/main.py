@@ -399,7 +399,14 @@ async def lifespan(app: FastAPI):
     # which SQL Optimization populates -- so it sits here, after SQL
     # Optimization and before Execution Planning's independent SELECT-only
     # safety gate.
-    query_cost_estimator_agent = QueryCostEstimatorAgent(tracer=tracer)
+    # Phase 5 of the configurable-platform build plan: `session_factory`
+    # lets a tenant override the hardcoded row-limit thresholds below via
+    # a real TenantGuardrailConfig row -- see that agent's own module
+    # docstring. Additive-only: a tenant with no override row gets
+    # today's exact, unchanged behavior.
+    query_cost_estimator_agent = QueryCostEstimatorAgent(
+        tracer=tracer, session_factory=catalog_session_factory
+    )
     register(QUERY_COST_ESTIMATOR_AGENT_NAME, query_cost_estimator_agent.run)
 
     execution_planning_agent = ExecutionPlanningAgent(tracer=tracer)

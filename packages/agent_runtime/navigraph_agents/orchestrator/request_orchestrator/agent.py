@@ -361,7 +361,13 @@ class RequestOrchestratorAgent:
         self._policy_authorization_agent = PolicyAuthorizationAgent(
             opa_client=opa_client, tracer=tracer
         )
-        self._query_cost_estimator_agent = QueryCostEstimatorAgent(tracer=tracer)
+        # Phase 5 of the configurable-platform build plan: session_factory
+        # lets a tenant override QueryCostEstimatorAgent's hardcoded row-limit
+        # thresholds via a real TenantGuardrailConfig row -- additive-only,
+        # see that agent's own module docstring.
+        self._query_cost_estimator_agent = QueryCostEstimatorAgent(
+            tracer=tracer, session_factory=catalog_session_factory
+        )
 
         # Insight domain
         self._chart_selection_agent = ChartSelectionAgent(tracer=tracer)

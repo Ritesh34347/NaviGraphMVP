@@ -28,6 +28,7 @@ from navigraph_catalog.api import (
     get_active_semantic_model,
     get_default_data_source,
     get_table,
+    get_tenant_guardrail_config,
     get_tenant_identity_config,
     list_columns,
     list_data_sources,
@@ -40,6 +41,7 @@ from navigraph_catalog.api import (
     register_data_source,
     save_semantic_model,
     set_default_data_source,
+    set_tenant_guardrail_config,
     set_tenant_identity_config,
     upsert_glossary,
     upsert_schema_tree,
@@ -51,6 +53,7 @@ from navigraph_catalog.models import (
     ColumnGlossary,
     DataSource,
     SemanticModelRecord,
+    TenantGuardrailConfig,
     TenantIdentityConfig,
 )
 from navigraph_connectors.base import (
@@ -790,5 +793,83 @@ class TestGetTenantIdentityConfig:
         session.execute.return_value.scalar_one_or_none.return_value = None
 
         result = get_tenant_identity_config(session, tenant_id="tenant-a")
+
+        assert result is None
+
+
+class TestSetTenantGuardrailConfig:
+    def test_inserts_new_config_when_none_exists(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = set_tenant_guardrail_config(
+            session,
+            tenant_id="tenant-a",
+            role_row_limits={"analyst": 8_000},
+            default_role_row_limit=2_000,
+            max_rows_cap=20_000,
+        )
+
+        session.add.assert_called_once()
+        added = session.add.call_args.args[0]
+        assert isinstance(added, TenantGuardrailConfig)
+        assert added.tenant_id == "tenant-a"
+        assert added.role_row_limits == {"analyst": 8_000}
+        assert added.default_role_row_limit == 2_000
+        assert added.max_rows_cap == 20_000
+        session.flush.assert_called_once()
+        assert result is added
+
+    def test_omitted_fields_default_to_none_not_an_error(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = set_tenant_guardrail_config(session, tenant_id="tenant-a")
+
+        assert result.role_row_limits is None
+        assert result.default_role_row_limit is None
+        assert result.max_rows_cap is None
+
+    def test_updates_existing_config_without_reinserting(self) -> None:
+        session = MagicMock()
+        existing = TenantGuardrailConfig(
+            tenant_id="tenant-a",
+            role_row_limits={"analyst": 1_000},
+            default_role_row_limit=500,
+            max_rows_cap=5_000,
+        )
+        session.execute.return_value.scalar_one_or_none.return_value = existing
+
+        result = set_tenant_guardrail_config(
+            session,
+            tenant_id="tenant-a",
+            role_row_limits={"analyst": 8_000},
+            default_role_row_limit=None,
+            max_rows_cap=None,
+        )
+
+        session.add.assert_not_called()
+        assert existing.role_row_limits == {"analyst": 8_000}
+        assert existing.default_role_row_limit is None
+        assert existing.max_rows_cap is None
+        session.flush.assert_called_once()
+        assert result is existing
+
+
+class TestGetTenantGuardrailConfig:
+    def test_returns_the_config_when_one_exists(self) -> None:
+        session = MagicMock()
+        expected = MagicMock(spec=TenantGuardrailConfig)
+        session.execute.return_value.scalar_one_or_none.return_value = expected
+
+        result = get_tenant_guardrail_config(session, tenant_id="tenant-a")
+
+        assert result is expected
+
+    def test_returns_none_when_never_configured(self) -> None:
+        session = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = get_tenant_guardrail_config(session, tenant_id="tenant-a")
 
         assert result is None
