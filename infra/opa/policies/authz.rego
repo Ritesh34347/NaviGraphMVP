@@ -20,8 +20,36 @@ import rego.v1
 # Deny-by-default: nothing is authorized unless `allow` fires below.
 default allow := false
 
-# RBAC: which application-level roles may query at all.
-allowed_roles := {"analyst", "pii_viewer", "admin"}
+# RBAC: which application-level roles may query at all, for THIS request's
+# tenant specifically. Phase 3 of the configurable-platform build plan:
+# reads the real per-tenant document `navigraph_semantic_model.opa_sync
+# .sync_policy_bindings` writes via `OpaClient.set_data` at
+# `navigraph/tenants/<tenant_id>` -- previously a static literal here,
+# identical for every tenant regardless of what (if anything) it had
+# activated.
+#
+# FAIL-CLOSED, DELIBERATELY: a tenant with no synced document at all
+# (never onboarded, or `sync_policy_bindings` hasn't run yet) resolves to
+# an EMPTY set via the `default` below, not a fallback allow-list --
+# `data.navigraph.tenants[input.tenant_id].allowed_roles` is simply
+# undefined for an unknown tenant, which makes the non-default rule body
+# below undefined too, so the default fires. An explicit empty
+# `policy_bindings.allowed_roles` (a deliberate lockout, see
+# `navigraph_semantic_model.contracts.PolicyBindings`'s own docstring) is
+# indistinguishable from "never synced" here, and that is correct: both
+# really do mean "no role is currently authorized for this tenant."
+#
+# ROLLOUT REQUIREMENT, NOT OPTIONAL: every tenant that was relying on the
+# old static `{"analyst", "pii_viewer", "admin"}` literal needs a real
+# `sync_policy_bindings` call (with that same role set, to change nothing
+# for them) BEFORE this policy is deployed live, or they lock themselves
+# out at deploy time -- see `tools/scripts/seed_semantic_model_from_ontology.py`,
+# extended in this same phase to do exactly that for `navikenz-poc`/
+# `ecommerce-poc`. See DECISIONS.md for why this is fail-closed rather
+# than falling back to a default allow-list.
+default allowed_roles := []
+
+allowed_roles := data.navigraph.tenants[input.tenant_id].allowed_roles
 
 # `input.roles` may be missing, null, or not an array on a malformed
 # request -- default to an empty set rather than letting `some role in

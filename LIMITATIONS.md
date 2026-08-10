@@ -3951,3 +3951,60 @@ anywhere in this codebase (two `DataSource` rows of the same
 `source_type` are indistinguishable to `crawl`, both reading the same
 global env vars) -- a real, separately-tracked limitation this phase
 surfaced clearly but did not attempt to solve.
+
+### 107. NEW: Phase 3 of the configurable-platform build plan -- `authz.rego`'s `allowed_roles` is now per-tenant and data-driven, fail-closed for any unconfigured tenant
+
+**What changed**: `infra/opa/policies/authz.rego`'s `allowed_roles`
+literal (`{"analyst", "pii_viewer", "admin"}`, identical for every
+tenant) now reads `data.navigraph.tenants[input.tenant_id].allowed_roles`
+-- the real document `navigraph_semantic_model.opa_sync
+.sync_policy_bindings` already wrote to, but that nothing ever read.
+FAIL-CLOSED: a tenant with no synced document resolves to an EMPTY set
+(`default allowed_roles := []`), never a fallback allow-list -- an
+earlier version of `opa_sync.py`'s own docstring inaccurately described a
+"generic default_allowed_roles fallback" that was never actually
+implemented; corrected to describe the real, fail-closed behavior instead.
+
+**Real, live verification, not just careful reading**: the official `opa`
+static binary was downloaded and run locally (no Docker available in this
+session) to evaluate the real, final `authz.rego` via `opa eval` against
+every one of `tests/security/test_opa_policy_adversarial.py`'s real
+scenarios by hand -- control case with no synced document (denied,
+`allowed: []`), control case with a synced document (allowed), all 5
+adversarial cases (denied, matching deny_reasons), the documented
+self-declared-role-escalation-with-matching-tenant gap (allowed, as
+intended), and an explicit empty `allowed_roles` document (a deliberate
+lockout, correctly denied, not confused with "unconfigured"). Every
+result matched what the existing test suite already asserts.
+
+**Rollout requirement, addressed here, not left implicit**:
+`tools/scripts/seed_semantic_model_from_ontology.py` (Phase 1) now also
+calls `sync_policy_bindings` with the SAME default roles the old static
+literal granted every tenant -- running it for `navikenz-poc`/
+`ecommerce-poc` before this Rego change deploys is what keeps them from
+locking themselves out on deploy day. Not yet run against a live OPA/
+Postgres in this session (no live access) -- this is the real, deliberate
+bootstrap step a human must run for real before/at deploy time, not
+something to assume already happened.
+
+**Named regression risk, addressed**: `tests/security/conftest.py`
+gained a `_sync_opa_integration_test_tenant_policy_bindings` fixture
+(module-scoped, autouse, gated on the `opa_integration` marker) that
+syncs tenant "tenant-a"'s document -- built from a real in-memory
+`SemanticModel`, never hand-authored -- before any `opa_integration`
+test module runs, so this Rego change doesn't silently break every
+existing adversarial test the moment a real OPA is available to run them
+against.
+
+**Real, separate, pre-existing gap found while investigating this
+regression risk, NOT fixed here**: `tests/security/`'s `opa_integration`/
+`postgres_integration`-marked tests have never actually run in ANY CI
+workflow -- `adversarial-tests.yml` runs `pytest tests/security/` on a
+bare GitHub-hosted runner with no OPA or Postgres service at all (no
+`services:` block, no docker-compose invocation), despite
+`tests/security/conftest.py`'s own marker docstrings and `README.md`
+explicitly describing these as running "against the actual docker-compose
+stack... including in CI." This is a distinct, larger infra task (wiring
+real service containers into that workflow) from "make the policy
+data-driven" and is deliberately left out of this phase's scope -- tracked
+here so it isn't mistaken for something this phase already solved.

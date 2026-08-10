@@ -2264,3 +2264,41 @@ end-to-end against a real `OntologyDraftingResult`-shaped draft; connector
 registration confirmed generic across Snowflake/Postgres/Databricks in a
 fresh process, both bugs above reproduced live before the fix and
 confirmed gone after.
+
+## 2026-08-10 — Phase 3: `authz.rego`'s `allowed_roles` is now per-tenant and data-driven
+
+`infra/opa/policies/authz.rego`'s static `allowed_roles` literal (same
+three roles for every tenant, forever) now reads
+`data.navigraph.tenants[input.tenant_id].allowed_roles` -- the document
+`navigraph_semantic_model.opa_sync.sync_policy_bindings` already wrote,
+which nothing previously read. Fail-closed for any tenant with no synced
+document (`default allowed_roles := []`), not a fallback allow-list --
+full rationale for that design decision, and why an earlier version of
+`opa_sync.py`'s own docstring described something different and never
+implemented, is in `DECISIONS.md`'s matching entry.
+
+Verified against a REAL OPA engine: downloaded the official `opa` static
+binary (no Docker available locally) and ran `opa eval` against every
+scenario `tests/security/test_opa_policy_adversarial.py` already
+asserts -- all matched, including the fail-closed-with-no-document case,
+which didn't exist before this change and had no prior test to compare
+against.
+
+`tools/scripts/seed_semantic_model_from_ontology.py` (Phase 1) now also
+syncs OPA policy bindings with the same default roles the old static
+literal granted, so running it for `navikenz-poc`/`ecommerce-poc` is the
+real, required bootstrap before this Rego change deploys -- not yet run
+against live infra in this session. `tests/security/conftest.py` gained
+an autouse fixture that syncs a real `tenant-a` policy document before
+any `opa_integration`-marked test runs, addressing the plan's own named
+regression risk.
+
+Found, but deliberately NOT fixed here (a distinct, larger task, tracked
+as `LIMITATIONS.md` item 107): `tests/security/`'s `opa_integration`/
+`postgres_integration` tests have never actually run in any CI workflow
+at all -- `adversarial-tests.yml` never starts a real OPA or Postgres
+service, despite this suite's own docs saying it does.
+
+Verified: full `pytest packages/` (569 passed, 8 skipped), `ruff check`
+clean, `mypy` clean (162 files), `opa check`/`opa eval` against the real
+policy engine.
