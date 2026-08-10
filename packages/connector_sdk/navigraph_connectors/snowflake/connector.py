@@ -21,6 +21,7 @@ from navigraph_connectors.base import (
     Connector,
     ConnectorCapabilities,
     QueryResult,
+    RequiredSetting,
     SchemaDescriptor,
     TableDescriptor,
 )
@@ -183,3 +184,41 @@ class SnowflakeConnector(Connector):
             supports_column_masking=True,
             supports_query_pushdown=True,
         )
+
+    @classmethod
+    def required_settings(cls) -> list[RequiredSetting]:
+        return [
+            RequiredSetting(field="snowflake_account", description="Snowflake account identifier"),
+            RequiredSetting(field="snowflake_user", description="Snowflake username"),
+            RequiredSetting(
+                field="snowflake_warehouse", description="Snowflake warehouse to run queries against"
+            ),
+            RequiredSetting(
+                field="snowflake_database", description="Snowflake database to introspect/query"
+            ),
+            RequiredSetting(
+                field="snowflake_role", description="Snowflake role to assume", required=False
+            ),
+            RequiredSetting(
+                field="snowflake_auth_method",
+                description="'password' (default) or 'key_pair'",
+                required=False,
+            ),
+            RequiredSetting(
+                field="snowflake_password",
+                description="Snowflake password",
+                condition="required when snowflake_auth_method == 'password' (the default)",
+            ),
+            RequiredSetting(
+                field="snowflake_private_key_path",
+                description="Path to a private key file for key-pair auth",
+                required=False,
+                condition="required when snowflake_auth_method == 'key_pair'",
+            ),
+            RequiredSetting(
+                field="snowflake_private_key_passphrase",
+                description="Passphrase for an encrypted private key",
+                required=False,
+                condition="only if the key_pair private key is encrypted",
+            ),
+        ]

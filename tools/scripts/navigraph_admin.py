@@ -29,6 +29,18 @@ Usage:
     python tools/scripts/navigraph_admin.py guardrail set-thresholds --tenant-id acme-corp \\
         --role-row-limits-json '{"analyst": 8000}' --default-role-row-limit 2000
     python tools/scripts/navigraph_admin.py guardrail show --tenant-id acme-corp
+    python tools/scripts/navigraph_admin.py connector list-types
+    python tools/scripts/navigraph_admin.py connector describe --source-type postgres
+
+`connector list-types`/`describe` are NOT tenant-scoped (Phase 6 of the
+configurable-platform build plan) -- they describe a connector TYPE, not
+any specific tenant's registration. `describe` prints
+`Connector.required_settings()`'s real, declarative manifest for the
+given `--source-type`, so `datasource register`'s `--connection-ref-json`
+(`onboard_data_source.py`) can be filled in correctly without guessing or
+reading connector source code -- see `navigraph_connectors.base
+.Connector.required_settings`'s own docstring for why this defaults to an
+empty list for any connector that hasn't declared one.
 
 `guardrail set-thresholds`/`show` manage a tenant's `TenantGuardrailConfig`
 row (Phase 5 of the configurable-platform build plan) -- overrides for
@@ -74,6 +86,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Phase 6 of the configurable-platform build plan: `connector describe`/
+# `list-types` need every real connector's import-side-effect
+# registration to have already run -- the identical bug (and identical
+# fix) Phase 2 found for `onboard_data_source.py`'s `register`/`crawl`.
+import navigraph_connectors.databricks
+import navigraph_connectors.postgres
+import navigraph_connectors.snowflake  # noqa: F401
 from navigraph_catalog.api import (
     get_default_data_source,
     get_tenant_guardrail_config,
@@ -87,6 +106,10 @@ from navigraph_catalog.db import get_engine as get_catalog_engine
 from navigraph_catalog.db import get_session_factory as get_catalog_session_factory
 from navigraph_catalog.db import session_scope as catalog_session_scope
 from navigraph_catalog.settings import MetadataCatalogSettings
+from navigraph_connectors.registry import (
+    get_connector_class,
+    list_registered_source_types,
+)
 from navigraph_lineage.api import get_trace, list_traces
 from navigraph_lineage.db import get_engine as get_lineage_engine
 from navigraph_lineage.db import get_session_factory as get_lineage_session_factory
@@ -300,6 +323,34 @@ def cmd_guardrail_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_connector_list_types(args: argparse.Namespace) -> int:
+    for source_type in list_registered_source_types():
+        print(source_type)
+    return 0
+
+
+def cmd_connector_describe(args: argparse.Namespace) -> int:
+    try:
+        connector_cls = get_connector_class(args.source_type)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    required_settings = connector_cls.required_settings()
+    if not required_settings:
+        print(f"{args.source_type!r} declares no required settings.")
+        return 0
+
+    print(f"Settings for --source-type {args.source_type!r} (see --connection-ref-json):")
+    for setting in required_settings:
+        marker = "required" if setting.required else "optional"
+        line = f"  {setting.env_var} ({marker}): {setting.description}"
+        if setting.condition:
+            line += f" -- {setting.condition}"
+        print(line)
+    return 0
+
+
 def cmd_semantic_model_compile_and_activate(args: argparse.Namespace) -> int:
     draft = json.loads(Path(args.draft).read_text(encoding="utf-8"))
 
@@ -445,6 +496,22 @@ def main() -> int:
     )
     guardrail_show.add_argument("--tenant-id", required=True)
     guardrail_show.set_defaults(func=cmd_guardrail_show)
+
+    connector_parser = subparsers.add_parser(
+        "connector", help="Describe a connector type's real settings manifest (not tenant-scoped)"
+    )
+    connector_subparsers = connector_parser.add_subparsers(dest="action", required=True)
+
+    connector_list_types = connector_subparsers.add_parser(
+        "list-types", help="List every registered connector source_type"
+    )
+    connector_list_types.set_defaults(func=cmd_connector_list_types)
+
+    connector_describe = connector_subparsers.add_parser(
+        "describe", help="Show a connector type's required/optional settings"
+    )
+    connector_describe.add_argument("--source-type", required=True)
+    connector_describe.set_defaults(func=cmd_connector_describe)
 
     args = parser.parse_args()
     return args.func(args)

@@ -89,6 +89,39 @@ class ConnectorCapabilities(BaseModel):
     supports_query_pushdown: bool
 
 
+class RequiredSetting(BaseModel):
+    """One field a connector type needs configured to work for real
+    (Phase 6 of the configurable-platform build plan) -- what
+    `Connector.required_settings()` declares, so onboarding tooling can
+    prompt for the right fields per `source_type` instead of hardcoding
+    per-source UI.
+
+    None of the real connectors' `*Settings` classes use Pydantic-level
+    "no default = required" (every field defaults to `""`/a sane value,
+    so `Settings()` never crashes with zero configuration) -- true
+    per-field requiredness is a business-logic fact this model captures
+    declaratively instead, since the type system alone can't express it.
+
+    `env_var` is derived from `field` (`.upper()`), not stored
+    separately -- every `NaviGraphSettings` subclass in this codebase
+    uses plain `pydantic-settings` env-var mapping with no `env_prefix`,
+    so a field's env var is always its uppercased name; storing both
+    would risk the two silently drifting apart.
+    """
+
+    field: str
+    description: str
+    required: bool = True
+    # e.g. "required when snowflake_auth_method == 'password' (the
+    # default)" -- for a setting whose real requiredness depends on
+    # another field's value, not a fixed yes/no.
+    condition: str | None = None
+
+    @property
+    def env_var(self) -> str:
+        return self.field.upper()
+
+
 class Connector(ABC):
     """The plugin interface every data-source connector implements.
 
@@ -141,3 +174,22 @@ class Connector(ABC):
     def capabilities(self) -> ConnectorCapabilities:
         """Report what this connector's underlying source can do."""
         raise NotImplementedError
+
+    @classmethod
+    def required_settings(cls) -> list[RequiredSetting]:
+        """Declare which settings this connector TYPE needs configured to
+        work for real (Phase 6 of the configurable-platform build plan).
+
+        Deliberately NOT `@abstractmethod`: adding a genuinely required
+        abstract method here would break every existing `Connector`
+        subclass across the whole repo, including test doubles
+        (`FakeConnector`s in `packages/knowledge_graph/tests/`,
+        `packages/metadata_catalog/tests/`, etc.) that have no reason to
+        know about this manifest at all. Defaults to an empty list --
+        "nothing declared" -- so every existing implementation keeps
+        working unchanged; only the three real connectors
+        (Snowflake/Postgres/Databricks) override this with their actual
+        manifest.
+        """
+
+        return []

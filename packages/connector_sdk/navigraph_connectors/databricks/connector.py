@@ -30,6 +30,7 @@ from navigraph_connectors.base import (
     Connector,
     ConnectorCapabilities,
     QueryResult,
+    RequiredSetting,
     SchemaDescriptor,
     TableDescriptor,
 )
@@ -212,3 +213,29 @@ class DatabricksConnector(Connector):
             supports_column_masking=True,
             supports_query_pushdown=True,
         )
+
+    @classmethod
+    def required_settings(cls) -> list[RequiredSetting]:
+        return [
+            RequiredSetting(
+                field="databricks_server_hostname", description="Databricks workspace hostname"
+            ),
+            RequiredSetting(
+                field="databricks_http_path", description="SQL warehouse/cluster HTTP path"
+            ),
+            RequiredSetting(
+                field="databricks_access_token", description="Personal access token"
+            ),
+            RequiredSetting(
+                field="databricks_catalog",
+                description=(
+                    "Unity Catalog name -- information_schema is catalog-scoped, "
+                    "there is no schema-less default to fall back to"
+                ),
+            ),
+            RequiredSetting(
+                field="databricks_schema",
+                description="Restrict introspection to one schema instead of the whole catalog",
+                required=False,
+            ),
+        ]

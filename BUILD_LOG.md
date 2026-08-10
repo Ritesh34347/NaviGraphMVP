@@ -2360,3 +2360,28 @@ Verified: full `pytest packages/` (611 passed, 8 skipped, up from 603),
 `ruff check` clean, `mypy` clean (165 files). New CLI commands run for
 real by hand against invalid JSON, an invalid value type, and a valid
 override.
+
+## 2026-08-10 — Phase 6: connector onboarding hardening
+
+`Connector` gained a `required_settings()` classmethod (a non-breaking
+default of `[]`, not a new `@abstractmethod` -- see `DECISIONS.md`'s
+matching entry for why, after finding seven `Connector` subclasses
+across the repo, four of them test doubles that would have broken).
+Snowflake/Postgres/Databricks each declare their real settings manifest,
+including conditional cases (Snowflake's password-vs-key-pair fields,
+Databricks' runtime-enforced `databricks_catalog`) none of these
+Settings classes express at the type level. New `navigraph_admin.py
+connector list-types`/`describe` pair (not tenant-scoped) surfaces this
+for real.
+
+Real, separate gap NOT closed here, tracked as `LIMITATIONS.md` item
+110: Postgres and Databricks connectors have still never been verified
+against a live instance -- their `*_integration`-marked tests exist but
+are skipped by default, in this session and (per available CI history)
+in CI too. Independent of the manifest work above; needs real
+credentials or live service containers this session doesn't have.
+
+Verified: full `pytest packages/` (621 passed, 8 skipped, up from 611),
+`ruff check` clean, `mypy` clean (165 files). New CLI commands run for
+real by hand for all three registered connector types plus the
+unknown-type error path.

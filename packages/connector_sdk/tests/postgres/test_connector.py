@@ -152,3 +152,22 @@ def test_capabilities_reflect_real_postgres_support() -> None:
         supports_column_masking=False,
         supports_query_pushdown=True,
     )
+
+
+def test_required_settings_declares_the_real_fields() -> None:
+    settings = {s.field: s for s in PostgresConnector.required_settings()}
+
+    assert settings["source_postgres_host"].required is True
+    assert settings["source_postgres_database"].required is True
+    assert settings["source_postgres_user"].required is True
+    assert settings["source_postgres_password"].required is True
+    assert settings["source_postgres_port"].required is False
+    assert settings["source_postgres_sslmode"].required is False
+
+
+def test_required_settings_env_var_is_the_uppercased_field_name() -> None:
+    setting = next(
+        s for s in PostgresConnector.required_settings() if s.field == "source_postgres_host"
+    )
+
+    assert setting.env_var == "SOURCE_POSTGRES_HOST"
