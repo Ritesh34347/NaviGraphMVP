@@ -3891,3 +3891,63 @@ pipeline (Phase 5's job), `authz.rego` (Phase 3's job), and
 `ontology.py`'s `RELATIONSHIP_CONCEPTS` list itself is left in the repo,
 unused once a tenant has an activated model -- deleting it is a separate,
 later decision, not bundled into this change.
+
+### 106. RESOLVED: Phase 2 of the configurable-platform build plan found `onboard_data_source.py`'s `register`/`crawl` completely broken for every real invocation, not just "not yet connected"
+
+**What was found, reading closely rather than assuming the plan's own
+premise**: the build plan's Phase 2 section assumed drafting, compiling,
+and activating a Semantic Model were "four pieces that exist but never
+call each other" -- reading the actual code showed `onboard_data_source.py`
+already chained all five steps (register/crawl/draft/compile/activate).
+The real gaps were two independent, live bugs in that chain, neither
+caught before because `tools/scripts/*.py` is outside CI's mypy scope and
+has no unit tests exercising it as a real subprocess:
+
+1. `crawl` called `navigraph_connectors.registry.build_connector` --
+   a function that never existed anywhere in `connector_sdk`. Every real
+   caller (Data Source Discovery, Data Federation) constructs a connector
+   the documented way instead: `get_connector_class(source_type)()`, with
+   NO arguments -- the class reads its own global, env-var-backed
+   settings. Fixed by matching that pattern.
+2. Even after (1), `register`/`crawl` would still fail: a connector is
+   only ever registered as an IMPORT SIDE EFFECT of importing its own
+   submodule (`navigraph_connectors.snowflake`/`.postgres`/`.databricks`),
+   and this script never did -- so a fresh CLI invocation always hit "No
+   connector registered for source_type='...'". `navigraph_agents.main`
+   had this EXACT bug, already found and fixed there with the identical
+   three-import block; `onboard_data_source.py` never got the same fix.
+   Confirmed live: `get_connector_class("snowflake")` raises in a fresh
+   process without these imports, succeeds with them.
+
+**What was built to close the connective gap the plan actually asked
+for**: a new `navigraph_semantic_model.activation.activate_semantic_model`
+function (validate -> tag PII -> persist -> mark active -> sync OPA, the
+one real sequence "never persist an unvalidated model" depends on),
+refactored into `onboard_data_source.py activate` so that invariant lives
+in one place, not two hand-copies. `tools/scripts/navigraph_admin.py`
+gained a `semantic-model compile-and-activate` command using the same
+function -- the plan's literal ask -- collapsing `compile` (writes a YAML
+file) + `activate` (reads it back) into one step for the common case
+where the draft itself was the human's only edit point.
+
+**Verified, not assumed**: `compile_draft_to_semantic_model` was run for
+real end-to-end against a draft shaped exactly like
+`OntologyDraftingResult.model_dump()` produces (confirmed field-for-field
+match by reading `ontology_drafting/contracts.py` directly); connector
+construction was confirmed generic across all three registered source
+types (`sorted(list_registered_source_types()) ==
+['databricks', 'postgres', 'snowflake']`) once the two bugs above were
+fixed. `test_activation.py` covers the real validate/persist/sync
+sequence's success and validation-failure paths with a mocked catalog
+session and a real `FakeOpaClient`.
+
+**What still requires a live environment, and is explicitly Phase 6's
+job, not blocking here**: this connector-construction mechanism has never
+been run against a LIVE Postgres or Databricks instance (per the plan's
+own text, "if it doesn't yet, that hardening pulls forward from Phase 6
+rather than blocking here") -- only Snowflake has ever been exercised for
+real. There is also still no per-`DataSource` credential-routing layer
+anywhere in this codebase (two `DataSource` rows of the same
+`source_type` are indistinguishable to `crawl`, both reading the same
+global env vars) -- a real, separately-tracked limitation this phase
+surfaced clearly but did not attempt to solve.

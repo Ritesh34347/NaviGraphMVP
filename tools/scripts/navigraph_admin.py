@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """NaviGraph admin CLI (Phase 15.2): tenant-scoped operator commands for
-data sources and lineage search.
+data sources, lineage search, and Semantic Model onboarding.
 
 Mirrors `tools/scripts/onboard_data_source.py`'s established conventions
 exactly: direct, real database access via each package's own
@@ -21,13 +21,32 @@ Usage:
     python tools/scripts/navigraph_admin.py datasource set-default --tenant-id acme-corp --name acme_prod_snowflake
     python tools/scripts/navigraph_admin.py lineage search --tenant-id acme-corp --agent-name query.sql_generation
     python tools/scripts/navigraph_admin.py lineage show --tenant-id acme-corp --trace-id lineage-abc123
+    python tools/scripts/navigraph_admin.py semantic-model compile-and-activate \\
+        --draft draft.json --tenant-id acme-corp --data-source-name acme_prod_snowflake
+
+`semantic-model compile-and-activate` is Phase 2's real connective step:
+`onboard_data_source.py`'s `draft` command still owns drafting (and the
+REQUIRED human review of its output, per that script's own docstring --
+never skipped or automated here either), but once a reviewed `draft.json`
+exists, this single command replaces `onboard_data_source.py`'s separate
+`compile` (writes a YAML file) + `activate` (reads it back) pair with one
+step that never touches an intermediate model file -- compiling straight
+into `navigraph_semantic_model.activation.activate_semantic_model`'s real
+validate -> tag PII -> persist -> mark active -> sync OPA sequence.
+`onboard_data_source.py compile`/`activate` remain available for the
+hand-edit-the-compiled-YAML-before-activating workflow; this command is
+for the common case where the draft itself was the human's only edit
+point.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import sys
 from datetime import datetime
+from pathlib import Path
 
 from navigraph_catalog.api import (
     get_default_data_source,
@@ -43,6 +62,10 @@ from navigraph_lineage.db import get_engine as get_lineage_engine
 from navigraph_lineage.db import get_session_factory as get_lineage_session_factory
 from navigraph_lineage.db import session_scope as lineage_session_scope
 from navigraph_lineage.settings import LineageSettings
+from navigraph_semantic_model.activation import activate_semantic_model
+from navigraph_semantic_model.loader import SemanticModelValidationError
+from navigraph_semantic_model.onboarding import compile_draft_to_semantic_model
+from navigraph_shared.opa import HttpOpaClient
 
 
 def cmd_datasource_list(args: argparse.Namespace) -> int:
@@ -145,6 +168,48 @@ def cmd_lineage_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_semantic_model_compile_and_activate(args: argparse.Namespace) -> int:
+    draft = json.loads(Path(args.draft).read_text(encoding="utf-8"))
+
+    model, warnings = compile_draft_to_semantic_model(
+        draft,
+        tenant_id=args.tenant_id,
+        data_source_name=args.data_source_name,
+        version=args.version,
+    )
+    for warning in warnings:
+        print(f"  [dropped] {warning}", file=sys.stderr)
+
+    session_factory = get_catalog_session_factory(get_catalog_engine(MetadataCatalogSettings()))
+    opa_client = HttpOpaClient()
+
+    with catalog_session_scope(session_factory) as session:
+        try:
+            result = asyncio.run(activate_semantic_model(model, session, opa_client))
+        except SemanticModelValidationError as exc:
+            print(
+                f"Semantic Model for tenant {model.tenant_id!r} failed catalog validation "
+                f"with {len(exc.issues)} issue(s) -- NOT activated:",
+                file=sys.stderr,
+            )
+            for issue in exc.issues:
+                print(f"  - {issue}", file=sys.stderr)
+            return 1
+
+    print(
+        f"Compiled {len(model.entities)} entit(y/ies), {len(model.relationships)} "
+        f"relationship(s), {len(model.metrics)} metric(s) "
+        f"({len(warnings)} proposal(s) dropped, see above)."
+    )
+    print(f"Catalog validation passed. Tagged {result.tagged_pii_columns} column(s) is_pii=true.")
+    print(
+        f"Synced policy_bindings for tenant {model.tenant_id!r} "
+        f"(allowed_roles={model.policy_bindings.allowed_roles}) to OPA."
+    )
+    print(f"Semantic Model v{model.version} for tenant {model.tenant_id!r} is now active.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     subparsers = parser.add_subparsers(dest="resource", required=True)
@@ -180,6 +245,25 @@ def main() -> int:
     lineage_show.add_argument("--tenant-id", required=True)
     lineage_show.add_argument("--trace-id", required=True)
     lineage_show.set_defaults(func=cmd_lineage_show)
+
+    semantic_model_parser = subparsers.add_parser(
+        "semantic-model", help="Compile and activate a reviewed ontology draft"
+    )
+    semantic_model_subparsers = semantic_model_parser.add_subparsers(
+        dest="action", required=True
+    )
+
+    sm_compile_and_activate = semantic_model_subparsers.add_parser(
+        "compile-and-activate",
+        help="Compile a human-reviewed draft and activate it in one step (no intermediate model file)",
+    )
+    sm_compile_and_activate.add_argument(
+        "--draft", required=True, help="Path to a (reviewed) draft JSON file"
+    )
+    sm_compile_and_activate.add_argument("--tenant-id", required=True)
+    sm_compile_and_activate.add_argument("--data-source-name", required=True)
+    sm_compile_and_activate.add_argument("--version", type=int, default=1)
+    sm_compile_and_activate.set_defaults(func=cmd_semantic_model_compile_and_activate)
 
     args = parser.parse_args()
     return args.func(args)

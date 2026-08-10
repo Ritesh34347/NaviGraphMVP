@@ -1735,3 +1735,49 @@ convention this repo already established for `metadata_catalog`/
 **Verification**: full `pytest packages/` (567 passed, 8 skipped, up from
 564 pre-Phase-1), `ruff check` clean, `mypy` clean (158 files) -- all run
 locally in a clean virtualenv, not assumed from a plausible-looking diff.
+
+---
+
+## 2026-08-10 — Phase 2: a shared `activation` module, not a second hand-copy of the validate-persist-sync sequence
+
+The build plan asked for one new thing (a `navigraph_admin.py
+compile-and-activate` command) that needed the exact same validate ->
+tag PII -> persist -> mark active -> sync OPA sequence
+`onboard_data_source.py activate` already ran inline. The real design
+decision was where that sequence should live.
+
+**What we considered and rejected**: copying `cmd_activate`'s body into
+the new `navigraph_admin.py` command, the smallest-diff option. Rejected
+because the real invariant this sequence protects -- "never persist, tag,
+or sync an unvalidated model" -- would then exist in two independently
+editable places; a future fix to one (e.g. reordering PII-tagging after
+persistence, or adding a new post-validation step) could silently miss
+the other. Extracted into `navigraph_semantic_model.activation
+.activate_semantic_model` instead, and refactored `onboard_data_source.py`
+itself to call it -- one definition, two callers, matching this repo's
+"packages own real logic, `tools/scripts/` orchestrates it" convention
+already established everywhere else (`register_data_source`,
+`crawl_and_store`, `compile_draft_to_semantic_model` all live in a
+package, never inline in a CLI script).
+
+**Two real, live bugs found reading `onboard_data_source.py` closely
+instead of trusting its own docstring**: `crawl` called a
+`build_connector` function that never existed anywhere in `connector_sdk`
+(confirmed by grepping the whole repo for its real definition -- there is
+none), and even after fixing that, `register`/`crawl` would still fail
+with "No connector registered" because this script never imported the
+connector submodules whose import IS the registration mechanism --
+`navigraph_agents.main` hit and fixed the identical bug previously; this
+script never got the same fix. Both are the kind of gap that only surfaces
+running the actual CLI as a subprocess, which nothing in this repo's test
+suite does for `tools/scripts/*.py` -- confirmed both failures live in a
+fresh Python process before fixing, confirmed both fixed after.
+
+**Verification**: full `pytest packages/` (569 passed, 8 skipped, up from
+567), `ruff check` clean, `mypy` clean (161 files, now including both
+touched CLI scripts -- checked manually since `tools/scripts/` is outside
+CI's mypy scope). `compile_draft_to_semantic_model` run for real,
+end-to-end, against a draft shaped exactly like `OntologyDraftingResult
+.model_dump()` produces. Connector registration/construction confirmed
+generic across all three registered source types in a fresh process,
+not assumed from reading the registry's own docstring.

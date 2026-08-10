@@ -2229,3 +2229,38 @@ from PyPI).
 Verified for real: full `pytest packages/` (567 passed, 8 skipped, up from
 564), `ruff check` clean, `mypy` clean (158 files) -- run locally in a clean
 virtualenv against this change's actual code.
+
+## 2026-08-10 — Phase 2: onboarding pipeline connected end-to-end, two real live bugs fixed along the way
+
+New `navigraph_semantic_model.activation.activate_semantic_model`: the
+real validate -> tag PII -> persist -> mark active -> sync OPA sequence,
+defined once and used by both `onboard_data_source.py`'s (refactored)
+`activate` command and a new `navigraph_admin.py semantic-model
+compile-and-activate` command -- the plan's literal Phase 2 ask,
+collapsing compile+activate into one step for the common case where a
+reviewed draft was the only human edit point. Full rationale for the
+shared-module design (vs. a second hand-copy) is in `DECISIONS.md`'s
+matching entry; `LIMITATIONS.md` item 106 has the full breakdown.
+
+Reading `onboard_data_source.py` closely (rather than trusting its own
+"five subcommands, meant to be run in this order" docstring) surfaced two
+real, live bugs, both fixed: `crawl` called a `build_connector` function
+that never existed in `connector_sdk` at all (every real caller
+constructs a connector via `get_connector_class(source_type)()` instead,
+with no arguments); and even fixing that, a fresh CLI invocation would
+still fail with "No connector registered" because connector registration
+is an import side effect this script never triggered --
+`navigraph_agents.main` had the identical bug, already found and fixed
+there. `docs/runbooks/data-source-onboarding.md` updated to match reality
+(the credential-routing prerequisites it described never existed; Phase
+1's ingestion wiring and the new combined CLI command are both now
+documented there too).
+
+Verified for real: full `pytest packages/` (569 passed, 8 skipped, up
+from 567), `ruff check` clean, `mypy` clean (161 files, including both
+touched `tools/scripts/*.py` files, checked manually since that directory
+is outside CI's own mypy scope). `compile_draft_to_semantic_model` run
+end-to-end against a real `OntologyDraftingResult`-shaped draft; connector
+registration confirmed generic across Snowflake/Postgres/Databricks in a
+fresh process, both bugs above reproduced live before the fix and
+confirmed gone after.
