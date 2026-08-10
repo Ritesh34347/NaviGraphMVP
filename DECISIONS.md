@@ -1973,3 +1973,63 @@ specifically that none of the seven `Connector` subclasses outside
 suites unmodified. The new `navigraph_admin.py connector list-types`/
 `describe` commands were run for real by hand against all three
 registered types plus an unknown one, not just unit-tested.
+
+---
+
+## 2026-08-10 — Porting per-DataSource credential routing: an optional, additive branch, not a rewrite of the two real call sites
+
+While reviewing an unmerged, independently-evolved branch
+(`claude/navigraph-mvp-architecture-lo35o7`, diverged from the same Phase
+10b ancestor as `main` but pursuing its own separate Phase 11-15 plan) for
+anything genuinely leverageable before archiving it, one piece stood out:
+its commit `0c7c98c` closed LIMITATIONS.md item 21 (global-env-var
+credential routing, not per-`DataSource`) — a gap `main`'s own build plan
+never revisited. Everything else in that branch was independently
+superseded by work `main` had already built on its own (chat UI, MCP
+server, Slack bot, lineage search, schema-drift detection, AAD K8s RBAC —
+see the investigation this decision follows from).
+
+**What we considered and rejected**: porting the branch's mechanism
+verbatim, including its `build_connector()` registry function and its
+direct rewrite of `get_connector_class(source_type)()` call sites to
+`build_connector(...)`. Rejected because `main`'s own two real call
+sites (`DataFederationAgent._execute_via_connector`,
+`DataSourceDiscoveryAgent._check_connectivity`) have extensive existing
+unit test coverage that patches `get_connector_class` directly and
+constructs fixture `DataSource` rows as bare `SimpleNamespace` objects
+with NO `connection_ref` attribute at all -- a verbatim swap to
+`build_connector` would have required rewriting that coverage, and
+risked masking whether the new path was genuinely additive or had
+silently changed default behavior.
+
+**What we did instead**: kept `get_connector_class` as the only way to
+resolve a connector class (unchanged), and added a new,
+independently-optional `get_settings_factory(source_type)` lookup.
+Both real call sites now branch explicitly: `connection_ref.get
+("secret_scope")` present AND a factory registered for that
+`source_type` -> resolve real, per-`DataSource` `Settings` via the new
+`navigraph_shared.secrets.SecretsProvider`; otherwise -> the exact
+original `connector_cls()` zero-argument construction, unchanged. Every
+existing test (11 across both agents) passed with ZERO modification,
+proving the port is additive, not a silent behavior change for any
+`DataSource` registered before this landed.
+
+**Adapted, not copied verbatim**: the branch's own Postgres settings
+factory used field names (`customer_postgres_*`) that don't exist in
+`main`'s `PostgresSettings` (`main` uses `source_postgres_*`, chosen in
+an earlier phase specifically to avoid colliding with NaviGraph's own
+internal catalog database settings — see that class's own docstring).
+The branch also predates `main`'s own Databricks connector entirely, so
+a `build_databricks_settings` factory (following the identical pattern)
+is new work here, not a port.
+
+**Verification**: full `pytest packages/` (646 passed, 8 skipped, up
+from 621 — the two new agent tests exercise the real settings-factory
+resolution path with a `MagicMock` factory and assert it was called with
+the exact `connection_ref`/`SecretsProvider` pair, not just that no
+exception was raised), `ruff check` clean, `mypy` clean (167 files, up
+from 165). Also verified by hand outside pytest: two fake `DataSource`s
+of `source_type="snowflake"` with different `secret_scope`s resolved to
+genuinely distinct `SnowflakeSettings.snowflake_account` values from a
+`FakeSecretsProvider`, and a real `EnvVarSecretsProvider` read an actual
+process env var for a Postgres settings factory — not just mocked.

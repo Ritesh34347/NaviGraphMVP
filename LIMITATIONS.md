@@ -397,23 +397,47 @@ a real `ExecutionPlan` field naming the intended join key(s) explicitly
 which is a documented heuristic, not a real join predicate — see
 `agent.py`'s `_combine_results` docstring).
 
-### 21. Connector credential routing is global-env-var-based, not per-`DataSource`
+### 21. Connector credential routing is global-env-var-based, not per-`DataSource` — RESOLVED
 
-**What's deferred**: Resolving distinct credentials for two `DataSource`
+**What was deferred**: Resolving distinct credentials for two `DataSource`
 rows that share the same `source_type`.
 
-**Why**: `DataSource.connection_ref` is only an opaque pointer (e.g.
-`{"env_prefix": "SNOWFLAKE"}`); every connector this phase constructs is
-built with no arguments (`get_connector_class(source_type)()`), which
-reads that connector class's own global env-var-backed settings. Two
-`DataSource` rows of the same `source_type` are therefore indistinguishable
-to Data Source Discovery and Data Federation — both resolve to a connector
-reading the identical global env vars. Harmless today (exactly one
-Snowflake data source is registered), but a real gap.
+**Why it was deferred**: `DataSource.connection_ref` was only an opaque
+pointer (e.g. `{"env_prefix": "SNOWFLAKE"}`); every connector was built
+with no arguments (`get_connector_class(source_type)()`), which reads that
+connector class's own global env-var-backed settings. Two `DataSource`
+rows of the same `source_type` were therefore indistinguishable to Data
+Source Discovery and Data Federation — both resolved to a connector
+reading the identical global env vars.
 
-**What full version requires**: A per-`DataSource` credential-routing
-layer (e.g. resolving `connection_ref.env_prefix` to a distinct settings
-instance per row) that doesn't exist anywhere in this codebase yet.
+**Resolution**: a new `navigraph_shared.secrets.SecretsProvider` ABC
+(`EnvVarSecretsProvider`, `AzureKeyVaultSecretsProvider`,
+`FakeSecretsProvider` — mirrors `navigraph_shared.opa.client`'s own
+ABC/real/fake triad) plus a per-`source_type` `SettingsFactory` mechanism
+in `navigraph_connectors.registry` (`register_connector`'s new optional
+third argument, `get_settings_factory`) let each real connector
+(Snowflake, Postgres, Databricks — every connector this SDK ships) build
+its own `Settings` instance from a specific `DataSource.connection_ref`'s
+`secret_scope` plus an injected `SecretsProvider`, instead of reading
+process-wide env vars. `DataFederationAgent._execute_via_connector` and
+`DataSourceDiscoveryAgent._check_connectivity` (the two real call sites
+that construct a connector) both resolve this way when a `DataSource`'s
+`connection_ref` carries a `secret_scope`, and fall through unchanged to
+the original `connector_cls()` construction otherwise — so every
+`DataSource` registered before this resolution (with the older
+`{"env_prefix": ...}` shape, or no `connection_ref` shape at all) keeps
+its exact prior real behavior; nothing regresses silently.
+
+**What's still open**: actually migrating a real registered `DataSource`
+(e.g. `navikenz-poc`'s) `connection_ref` to the new `secret_scope` shape,
+and provisioning a real Azure Key Vault for `AzureKeyVaultSecretsProvider`
+to read from in a live deployment, are real, separate follow-ups — this
+resolution is the mechanism, not a migration of existing data. Ported
+from a separate, independently-evolved branch
+(`claude/navigraph-mvp-architecture-lo35o7`, commit `0c7c98c`) that
+solved this same gap; adapted here to this codebase's current connector
+field names (`source_postgres_*`, not that branch's `customer_postgres_*`)
+and extended to cover Databricks, which that branch never had.
 
 ### 22. Caching TTL is a flat, conservative default, not a per-intent policy
 
@@ -4226,9 +4250,6 @@ full entry above remains the authoritative detail.
 - Two `navikenz-poc` `DataSource` registrations for one Snowflake account,
   unreconciled (items 26, 42) — no canonical-registration decision made,
   no `is_default` field added.
-- Per-`DataSource` credential routing is still global-env-var-based, not
-  per-row (item 21) — harmless while exactly one real source per type is
-  registered, real once a second same-type source is added.
 - Several hardcoded numeric policy placeholders remain unconfirmed against
   real business requirements: `ROLE_ROW_LIMITS` (item 24), the anomaly
   z-score threshold (item 29), the evaluation judge's 1-5 scale/regression

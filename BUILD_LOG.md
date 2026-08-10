@@ -2403,3 +2403,51 @@ only the known pre-existing CI failures (`Adversarial Security Tests` /
 `Cloud Security Tests`, and navikenz's `CD Deploy` canary-weight-proof
 job), confirmed via `gh run list` history to fail identically on every
 recent push to `main` regardless of content — not caused by this change.
+
+## 2026-08-10 — Ported per-DataSource credential routing from an unmerged branch, closing LIMITATIONS.md item 21
+
+Investigated an unmerged, independently-evolved branch
+(`origin/claude/navigraph-mvp-architecture-lo35o7`) that diverged from
+`main`'s same Phase 10b ancestor to pursue its own separate Phase 11-15
+plan, to check for anything genuinely leverageable before archiving it.
+Confirmed (via a background research agent) that 8 of its 9 notable
+capabilities (chat UI, MCP server, Slack bot, lineage search + admin
+CLI/web UI, schema-drift detection, ontology drafting, AAD K8s RBAC,
+Postgres connector) are already independently superseded by equivalent
+or more complete work `main` built on its own. The one real exception:
+its commit `0c7c98c` closed item 21 (global-env-var connector
+credentials, not per-`DataSource`) — a gap `main`'s own 7-phase build
+plan never revisited.
+
+Ported that one mechanism, adapted rather than copied verbatim: added
+`navigraph_shared.secrets.SecretsProvider` (`EnvVarSecretsProvider`,
+`AzureKeyVaultSecretsProvider`, `FakeSecretsProvider`) and a
+per-`source_type` `SettingsFactory` registry mechanism
+(`navigraph_connectors.registry.get_settings_factory`,
+`register_connector`'s new optional third argument). Wrote NEW settings
+factories for all three of main's real connectors (`build_snowflake_settings`,
+`build_postgres_settings`, `build_databricks_settings` — Databricks is
+new work; the source branch never had a Databricks connector to begin
+with), using main's own field names (`source_postgres_*`, not the
+branch's `customer_postgres_*`). Wired both real call sites
+(`DataFederationAgent._execute_via_connector`,
+`DataSourceDiscoveryAgent._check_connectivity`) to resolve per-`DataSource`
+settings ONLY when a `DataSource.connection_ref` carries a `secret_scope`,
+falling through unchanged to the original `connector_cls()` construction
+otherwise — every `DataSource` registered before this change keeps its
+exact prior real behavior.
+
+**Verification**: full `pytest packages/` (646 passed, 8 skipped, up from
+621), `ruff check` clean, `mypy` clean (167 files, up from 165). All 11
+pre-existing tests for the two wired agents passed with ZERO
+modification, confirming the port is additive. Two new tests per agent
+exercise the real credential-resolution branch. Verified by hand outside
+pytest too: two fake `DataSource`s of the same `source_type` with
+different `secret_scope`s resolved to genuinely distinct settings from a
+`FakeSecretsProvider`, and a real `EnvVarSecretsProvider` read an actual
+process environment variable for a live settings factory call.
+
+The source branch's other 8 areas, and its remaining unique piece
+(nothing else left to port), are addressed by archiving the branch as a
+tag rather than deleting it outright — see this repo's branch listing/tag
+for `claude/navigraph-mvp-architecture-lo35o7`.
