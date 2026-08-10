@@ -22,6 +22,7 @@ from navigraph_connectors.base import (
     Connector,
     ConnectorCapabilities,
     QueryResult,
+    RequiredSetting,
     SchemaDescriptor,
     TableDescriptor,
 )
@@ -200,3 +201,24 @@ class PostgresConnector(Connector):
             supports_column_masking=False,
             supports_query_pushdown=True,
         )
+
+    @classmethod
+    def required_settings(cls) -> list[RequiredSetting]:
+        return [
+            RequiredSetting(field="source_postgres_host", description="Postgres host to connect to"),
+            RequiredSetting(
+                field="source_postgres_database", description="Database name to introspect/query"
+            ),
+            RequiredSetting(field="source_postgres_user", description="Postgres username"),
+            RequiredSetting(field="source_postgres_password", description="Postgres password"),
+            RequiredSetting(
+                field="source_postgres_port",
+                description="Postgres port (default 5432)",
+                required=False,
+            ),
+            RequiredSetting(
+                field="source_postgres_sslmode",
+                description="SSL mode for the connection (default 'prefer')",
+                required=False,
+            ),
+        ]

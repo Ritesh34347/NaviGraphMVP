@@ -260,3 +260,32 @@ def test_capabilities_reflect_real_snowflake_support() -> None:
         supports_column_masking=True,
         supports_query_pushdown=True,
     )
+
+
+def test_required_settings_declares_the_real_fields() -> None:
+    settings = {s.field: s for s in SnowflakeConnector.required_settings()}
+
+    assert settings["snowflake_account"].required is True
+    assert settings["snowflake_user"].required is True
+    assert settings["snowflake_warehouse"].required is True
+    assert settings["snowflake_database"].required is True
+    assert settings["snowflake_role"].required is False
+    assert settings["snowflake_password"].condition is not None
+    assert settings["snowflake_private_key_path"].required is False
+    assert settings["snowflake_private_key_path"].condition is not None
+
+
+def test_required_settings_env_var_is_the_uppercased_field_name() -> None:
+    setting = next(
+        s for s in SnowflakeConnector.required_settings() if s.field == "snowflake_account"
+    )
+
+    assert setting.env_var == "SNOWFLAKE_ACCOUNT"
+
+
+def test_required_settings_is_callable_without_an_instance() -> None:
+    """A manifest is a fact about the connector TYPE, not a specific
+    configured instance -- callable as a classmethod, no `settings`
+    needed."""
+
+    assert SnowflakeConnector.required_settings() != []

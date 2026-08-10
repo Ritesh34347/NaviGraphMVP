@@ -175,3 +175,23 @@ def test_capabilities_reflect_real_unity_catalog_support() -> None:
         supports_column_masking=True,
         supports_query_pushdown=True,
     )
+
+
+def test_required_settings_declares_the_real_fields() -> None:
+    settings = {s.field: s for s in DatabricksConnector.required_settings()}
+
+    assert settings["databricks_server_hostname"].required is True
+    assert settings["databricks_http_path"].required is True
+    assert settings["databricks_access_token"].required is True
+    assert settings["databricks_catalog"].required is True
+    assert settings["databricks_schema"].required is False
+
+
+def test_required_settings_env_var_is_the_uppercased_field_name() -> None:
+    setting = next(
+        s
+        for s in DatabricksConnector.required_settings()
+        if s.field == "databricks_server_hostname"
+    )
+
+    assert setting.env_var == "DATABRICKS_SERVER_HOSTNAME"

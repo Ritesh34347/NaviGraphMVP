@@ -4143,3 +4143,46 @@ overrides, the fail-safe fallback, and the per-tenant cache, all against
 a mocked catalog session (no live Postgres in this session, same
 caveat as every other phase's new table). The new CLI commands were run
 for real by hand against both invalid and valid inputs.
+
+### 110. NEW: Phase 6 of the configurable-platform build plan -- `Connector.required_settings()` gives onboarding tooling a real settings manifest per connector type; Postgres/Databricks still need a REAL live-instance verification this phase does not provide
+
+**What changed**: `Connector` gained a `required_settings()` classmethod
+(deliberately NOT `@abstractmethod` -- see `base.py`'s own docstring for
+why adding a genuinely required abstract method here would have broken
+every existing `Connector` subclass across the repo, including test
+doubles with no reason to know about this manifest; defaults to `[]`).
+Snowflake/Postgres/Databricks each declare their real fields
+(`RequiredSetting(field=..., description=..., required=..., condition=...)`),
+including the genuinely conditional cases none of these Settings classes
+express at the type level (every field defaults to `""`, so
+`SnowflakeSettings()`/`PostgresSettings()`/`DatabricksSettings()` never
+crash with zero configuration -- true requiredness was previously only
+prose/comments, e.g. Snowflake's password-vs-key-pair-auth fields,
+Databricks' `databricks_catalog` being enforced only at runtime inside
+`_information_schema_table`). A new `navigraph_admin.py connector
+list-types`/`describe` pair (not tenant-scoped -- these describe a
+connector TYPE, not any tenant's registration) surfaces this manifest for
+real, run and confirmed by hand for all three registered types.
+
+**Real, separate gap this phase does NOT close, tracked here rather than
+silently assumed solved**: per the plan's own explicit text, Postgres and
+Databricks connectors are "built/tested but never verified against a
+live instance." Confirmed still true: `postgres_integration`/
+`databricks_integration`-marked tests exist (mirroring Snowflake's own
+real-credentials-skip pattern) but are skipped by default and have never
+been run against a real Postgres/Databricks instance in this session or,
+as far as this session's `gh run list` checks could confirm, in CI either
+(no workflow passes `SOURCE_POSTGRES_*`/`DATABRICKS_*` env vars or spins
+up either service). This is independent of the `required_settings()`
+manifest work above -- a correct, complete manifest doesn't prove the
+connector actually WORKS against a real instance, only that onboarding
+tooling now knows what to ask for. Closing this needs real Postgres/
+Databricks credentials or live service containers, neither available in
+this session -- the same class of gap already tracked for `tests/security/`
+in item 107, not something Phase 6 was able to resolve for real here.
+
+**Verification**: full `pytest packages/` (621 passed, 8 skipped, up
+from 611), `ruff check` clean, `mypy` clean (165 files). The new CLI
+commands (`connector list-types`, `connector describe --source-type
+{postgres,snowflake,databricks,bogus}`) were run for real by hand,
+including the unknown-`source_type` error path.

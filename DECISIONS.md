@@ -1939,3 +1939,37 @@ from 603), `ruff check` clean, `mypy` clean (165 files). The new CLI
 commands were run for real by hand against invalid JSON, an invalid
 value type, and a valid override, confirming each validation path fires
 before any database attempt.
+
+---
+
+## 2026-08-10 — Phase 6: a non-abstract classmethod default, not a breaking new abstract method
+
+The build plan's Phase 6 ask was a small declarative schema (a
+`required_settings()`-shaped method) on the `Connector` ABC, alongside
+its existing `capabilities()`. The real design decision was whether to
+make it a genuinely required abstract method, matching `capabilities()`'s
+own shape, or something softer.
+
+**What we considered and rejected**: `@abstractmethod`, mirroring
+`capabilities()` exactly. Rejected after grepping the whole repo for
+every `class X(Connector):` -- seven files implement it, four of them
+test doubles (`packages/knowledge_graph/tests/`,
+`packages/metadata_catalog/tests/` x2,
+`tests/integration/metadata_catalog/`) that have no reason to know this
+manifest exists. A genuinely required abstract method would have broken
+every one of them (`TypeError: Can't instantiate abstract class`),
+turning a small, additive Phase 6 feature into a repo-wide, multi-package
+test-fixture-editing exercise for zero real benefit -- none of those
+fakes need a settings manifest; they exist purely to satisfy the
+ORIGINAL four-method contract in unit tests. A plain classmethod
+defaulting to `[]` gives every existing implementation Phase 6's feature
+for free, with zero required changes anywhere outside `connector_sdk`
+itself; only the three REAL connectors override it with real content.
+
+**Verification**: full `pytest packages/` (621 passed, 8 skipped, up
+from 611), `ruff check` clean, `mypy` clean (165 files) -- confirmed
+specifically that none of the seven `Connector` subclasses outside
+`connector_sdk` needed any change, by running their own packages' test
+suites unmodified. The new `navigraph_admin.py connector list-types`/
+`describe` commands were run for real by hand against all three
+registered types plus an unknown one, not just unit-tested.
