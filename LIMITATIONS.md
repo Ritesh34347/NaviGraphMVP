@@ -4186,3 +4186,68 @@ from 611), `ruff check` clean, `mypy` clean (165 files). The new CLI
 commands (`connector list-types`, `connector describe --source-type
 {postgres,snowflake,databricks,bogus}`) were run for real by hand,
 including the unknown-`source_type` error path.
+
+### 111. Summary: outstanding items as of Phase 6 completion (all 7 phases of the configurable-platform build plan now merged)
+
+**Purpose of this entry**: a single, current pointer to every item in
+this document still open as of Phase 6's merge (both `origin` PR #8 and
+the `navikenz` mirror PR #7), so a future reader doesn't have to re-derive
+this list by scanning all 110 preceding entries. This entry summarizes;
+it does not supersede or resolve anything listed below — each item's own
+full entry above remains the authoritative detail.
+
+**Explicitly deferred by the build plan itself (not a gap, a scoping decision)**:
+- Phase 7 — deployment topology (shared-multi-tenant vs. dedicated) and
+  per-tenant metering/quotas. The plan's own text says not to start this
+  speculatively; it needs real multi-tenant usage data from Phases 1-6's
+  now-config-driven model before sizing it correctly. No new service or
+  package should be created for this until that data exists.
+
+**Live-infrastructure verification gaps (recurring theme across every phase — "no live infra available in this session")**:
+- Postgres/Databricks connectors never verified against a live instance
+  (item 100, restated as still-open in item 110's own text) — needs real
+  credentials or live service containers.
+- OPA fail-closed behavior never proven via a live adversarial check
+  against a tenant with no synced policy (item 18's Phase 3 verification
+  bar) — only unit/adversarial-suite-against-fakes coverage exists.
+- The non-Azure (generic OIDC) identity verifier built in Phase 4 was
+  never verified end-to-end against a real live token from a real
+  provider — only against fakes/the Azure AD real-JWT test suite.
+- A tenant threshold override (Phase 5's guardrail config) was never
+  proven live, end-to-end, actually diverging from the default tenant's
+  behavior in a real running system — only unit/mocked-catalog coverage.
+- `tests/security/`'s adversarial suite has no live OPA/Postgres in CI
+  (item 107) — this is why "Adversarial Security Tests" / "Cloud Security
+  Tests" has failed on every push to `main` across every phase in this
+  build, confirmed via `gh run list` history each time, not a regression
+  introduced by any specific phase.
+
+**Real, load-bearing gaps flagged along the way, still open (not exhaustive — see each item's own entry for full detail)**:
+- Two `navikenz-poc` `DataSource` registrations for one Snowflake account,
+  unreconciled (items 26, 42) — no canonical-registration decision made,
+  no `is_default` field added.
+- Per-`DataSource` credential routing is still global-env-var-based, not
+  per-row (item 21) — harmless while exactly one real source per type is
+  registered, real once a second same-type source is added.
+- Several hardcoded numeric policy placeholders remain unconfirmed against
+  real business requirements: `ROLE_ROW_LIMITS` (item 24), the anomaly
+  z-score threshold (item 29), the evaluation judge's 1-5 scale/regression
+  threshold (items 34, 36), session TTL/max-turns (item 40).
+- Documentation staleness in `docs/architecture/overview.md`/`data-flow.md`
+  and two module docstrings (items 32, 35) — not addressed by any phase
+  through Phase 6; still needs its own dedicated reconciliation pass.
+- `FAR_TRANS` vs. `STAGING` canonical-schema decision for business-term
+  resolution (item 14) — undecided, relevant to any future SQL Generation
+  work.
+- No mid-pipeline checkpointing/resumability (item 39) — accepted
+  consequence of the Phase 9 plain-Python-orchestrator decision, not
+  revisited since.
+
+**What this means going forward**: nothing above blocks calling the
+7-phase configurable multi-tenant platform build complete — every item
+here was already known, scoped, and deliberately deferred (not
+discovered-and-ignored) at the time its owning phase shipped. The next
+real step, if this project continues, is either (a) real live-infra
+access to close the verification gaps above, or (b) enough real
+multi-tenant usage data to make Phase 7's deployment-topology/metering
+decisions non-speculative.
