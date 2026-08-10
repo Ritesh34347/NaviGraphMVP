@@ -2331,3 +2331,32 @@ explicitly).
 Verified: full `pytest packages/` (603 passed, 8 skipped, up from 569),
 `ruff check` clean, `mypy` clean (165 files). The new CLI commands were
 run for real by hand against both invalid and valid settings JSON.
+
+## 2026-08-10 — Phase 5: tenant-configurable Guardrail thresholds
+
+New `tenant_guardrail_configs` table in `metadata_catalog` (migration
+`0008`, mirroring `TenantIdentityConfig`'s exact shape) plus a
+`navigraph_admin.py guardrail set-thresholds`/`show` pair.
+`QueryCostEstimatorAgent` gained an optional `session_factory`: when
+given (now wired in both `main.py` and `RequestOrchestratorAgent.__init__`,
+which builds its own separate instance), `run()` resolves and caches
+(TTL'd, per tenant -- the same shape Phase 4's `TenantVerifierResolver`
+established) a real per-tenant override for
+`ROLE_ROW_LIMITS`/`DEFAULT_ROLE_ROW_LIMIT`/`MAX_ROWS_CAP`, merging
+`role_row_limits` partially over the hardcoded table. Fails safe to the
+exact hardcoded defaults for any tenant with no row, any field left
+`NULL`, or any lookup failure.
+
+Deliberately scoped to this one agent's one threshold family, not a
+generic per-agent config mechanism -- full rationale (no other Guardrail
+agent has a comparable numeric threshold today) is in `DECISIONS.md`'s
+matching entry; `LIMITATIONS.md` item 109 has the complete breakdown.
+The pre-existing `TestMaxRowsCapIsAHardCeiling` test (which mutates
+`ROLE_ROW_LIMITS` in place) was preserved verbatim by keeping these
+three names real, mutable module globals `_effective_row_limit`'s new
+default parameters still reference by identity.
+
+Verified: full `pytest packages/` (611 passed, 8 skipped, up from 603),
+`ruff check` clean, `mypy` clean (165 files). New CLI commands run for
+real by hand against invalid JSON, an invalid value type, and a valid
+override.

@@ -1,14 +1,23 @@
 """Real unit tests for the Query Cost/Row-Limit Estimator agent.
 
-No mocking needed -- the agent is a pure function of its input, so these
-are real end-to-end tests of `QueryCostEstimatorAgent.run` against
-constructed `QueryCostEstimatorInput` payloads. `asyncio_mode = "auto"` is
-set at the workspace root `packages/pyproject.toml`, so `async def
-test_...` functions run without an explicit `@pytest.mark.asyncio`
-decorator.
+No mocking needed for the no-override case -- the agent is a pure
+function of its input, so most of these are real end-to-end tests of
+`QueryCostEstimatorAgent.run` against constructed
+`QueryCostEstimatorInput` payloads. `TestTenantThresholdOverrides` (Phase
+5 of the configurable-platform build plan) is the exception: it mocks
+`navigraph_catalog.api.get_tenant_guardrail_config` and `agent_module
+.session_scope` (this package has no live Postgres in the unit-test tier
+-- see `packages/metadata_catalog/tests/test_api.py`'s identical
+DB-free-by-mocking rationale) to prove the resolution/merge/fail-safe
+logic, without needing a real database. `asyncio_mode = "auto"` is set at
+the workspace root `packages/pyproject.toml`, so `async def test_...`
+functions run without an explicit `@pytest.mark.asyncio` decorator.
 """
 
 from __future__ import annotations
+
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
 
 from navigraph_shared.contracts import RequestContext
 
@@ -204,3 +213,166 @@ class TestOutputEnvelope:
         assert output.lineage_events[0].trace_id == "trace-1"
         assert output.metadata.latency_ms >= 0
         assert output.result.cost_policy_version == "v1"
+
+
+@contextmanager
+def _fake_session_scope(_session_factory):
+    yield MagicMock()
+
+
+class TestTenantThresholdOverrides:
+    """Phase 5 of the configurable-platform build plan: a real
+    `TenantGuardrailConfig` overrides `_effective_row_limit`'s inputs,
+    additive-only, fail-safe to the hardcoded defaults."""
+
+    async def test_no_session_factory_uses_the_hardcoded_defaults(self) -> None:
+        """The exact prior behavior for any caller that doesn't pass
+        `session_factory` at all -- `main.py`'s real construction is the
+        only thing that opts an agent instance into catalog-backed
+        overrides."""
+
+        agent = QueryCostEstimatorAgent()
+        over_limit = ROLE_ROW_LIMITS["analyst"] + 1
+
+        output = await agent.run(_make_input([_optimized(over_limit)], roles=["analyst"]))
+
+        assert output.result.rejected != []
+
+    async def test_no_configured_row_falls_back_to_defaults(self) -> None:
+        session_factory = MagicMock()
+        agent = QueryCostEstimatorAgent(session_factory=session_factory)
+
+        with (
+            patch(
+                "navigraph_agents.guardrail.query_cost_estimator.agent.session_scope",
+                _fake_session_scope,
+            ),
+            patch("navigraph_catalog.api.get_tenant_guardrail_config", return_value=None),
+        ):
+            output = await agent.run(
+                _make_input([_optimized(ROLE_ROW_LIMITS["analyst"] + 1)], roles=["analyst"])
+            )
+
+        assert output.result.rejected != []
+
+    async def test_a_role_row_limit_override_is_merged_over_the_defaults(self) -> None:
+        """Overriding just `analyst` must not require also repeating
+        `admin`'s default -- a partial merge, not a full replacement."""
+
+        session_factory = MagicMock()
+        agent = QueryCostEstimatorAgent(session_factory=session_factory)
+        raised_limit = ROLE_ROW_LIMITS["analyst"] + 1_000
+        fake_config = MagicMock(
+            role_row_limits={"analyst": raised_limit},
+            default_role_row_limit=None,
+            max_rows_cap=None,
+        )
+
+        with (
+            patch(
+                "navigraph_agents.guardrail.query_cost_estimator.agent.session_scope",
+                _fake_session_scope,
+            ),
+            patch(
+                "navigraph_catalog.api.get_tenant_guardrail_config", return_value=fake_config
+            ),
+        ):
+            output = await agent.run(
+                _make_input(
+                    [_optimized(ROLE_ROW_LIMITS["analyst"] + 1)],
+                    roles=["analyst"],
+                )
+            )
+
+        # Above the OLD analyst default, but below the tenant's raised one.
+        assert output.result.approved != []
+        assert output.result.rejected == []
+        # admin's default is untouched by the analyst-only override.
+        assert output.result.estimates[0].role_row_limit == raised_limit
+
+    async def test_default_role_row_limit_override_applies_to_unlisted_roles(self) -> None:
+        session_factory = MagicMock()
+        agent = QueryCostEstimatorAgent(session_factory=session_factory)
+        raised_default = DEFAULT_ROLE_ROW_LIMIT + 5_000
+        fake_config = MagicMock(
+            role_row_limits=None,
+            default_role_row_limit=raised_default,
+            max_rows_cap=None,
+        )
+
+        with (
+            patch(
+                "navigraph_agents.guardrail.query_cost_estimator.agent.session_scope",
+                _fake_session_scope,
+            ),
+            patch(
+                "navigraph_catalog.api.get_tenant_guardrail_config", return_value=fake_config
+            ),
+        ):
+            # "viewer" has no entry in ROLE_ROW_LIMITS -- the DEFAULT
+            # applies, which is what this override raises.
+            output = await agent.run(_make_input([_optimized(10)], roles=["viewer"]))
+
+        assert output.result.estimates[0].role_row_limit == raised_default
+
+    async def test_max_rows_cap_override_raises_the_hard_ceiling(self) -> None:
+        session_factory = MagicMock()
+        agent = QueryCostEstimatorAgent(session_factory=session_factory)
+        raised_cap = MAX_ROWS_CAP + 50_000
+        # A role limit override deliberately ABOVE the OLD cap -- only
+        # visible in the result if the NEW cap is what actually clamps it.
+        fake_config = MagicMock(
+            role_row_limits={"analyst": raised_cap},
+            default_role_row_limit=None,
+            max_rows_cap=raised_cap,
+        )
+
+        with (
+            patch(
+                "navigraph_agents.guardrail.query_cost_estimator.agent.session_scope",
+                _fake_session_scope,
+            ),
+            patch(
+                "navigraph_catalog.api.get_tenant_guardrail_config", return_value=fake_config
+            ),
+        ):
+            output = await agent.run(_make_input([_optimized(10)], roles=["analyst"]))
+
+        assert output.result.estimates[0].role_row_limit == raised_cap
+
+    async def test_a_raising_lookup_falls_back_to_defaults_not_an_exception(self) -> None:
+        session_factory = MagicMock()
+        agent = QueryCostEstimatorAgent(session_factory=session_factory)
+        over_limit = ROLE_ROW_LIMITS["analyst"] + 1
+
+        with (
+            patch(
+                "navigraph_agents.guardrail.query_cost_estimator.agent.session_scope",
+                _fake_session_scope,
+            ),
+            patch(
+                "navigraph_catalog.api.get_tenant_guardrail_config",
+                side_effect=ConnectionError("catalog unreachable"),
+            ),
+        ):
+            output = await agent.run(_make_input([_optimized(over_limit)], roles=["analyst"]))
+
+        assert output.result.rejected != []
+
+    async def test_result_is_cached_the_lookup_only_runs_once(self) -> None:
+        session_factory = MagicMock()
+        agent = QueryCostEstimatorAgent(session_factory=session_factory)
+
+        with (
+            patch(
+                "navigraph_agents.guardrail.query_cost_estimator.agent.session_scope",
+                _fake_session_scope,
+            ),
+            patch(
+                "navigraph_catalog.api.get_tenant_guardrail_config", return_value=None
+            ) as mock_get_config,
+        ):
+            await agent.run(_make_input([_optimized(10)], roles=["analyst"]))
+            await agent.run(_make_input([_optimized(10)], roles=["analyst"]))
+
+        mock_get_config.assert_called_once()

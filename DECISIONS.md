@@ -1890,3 +1890,52 @@ registered concrete class actually uses). The new admin CLI commands
 were run for real, by hand, against both a deliberately-invalid and a
 valid `--provider-settings-json`, confirming validation fires before any
 database attempt in both directions.
+
+---
+
+## 2026-08-10 — Phase 5: one agent, one threshold family, not a generic per-agent config mechanism
+
+The build plan's Phase 5 goal was letting a tenant override
+`QueryCostEstimatorAgent`'s hardcoded row-limit thresholds, explicitly
+scoped to "thresholds first, not agent skipping." The real design
+decision was how general to make the new config shape.
+
+**What we considered and rejected**: a generic `tenant_pipeline_config`
+table keyed by `(tenant_id, agent_name, setting_name)` or similar,
+anticipating that other Guardrail agents would need the same treatment
+soon. Rejected because reading every other Guardrail agent
+(`pii_exposure_checker`, `policy_authorization`, `schema_constraint_validator`)
+found NONE of them has a comparable hardcoded numeric threshold today --
+building a generic mechanism for a need that doesn't exist yet is
+exactly the kind of premature abstraction this codebase's own
+conventions avoid elsewhere. `tenant_guardrail_configs` instead mirrors
+`TenantIdentityConfig`'s exact one-row-per-tenant shape with THREE named,
+specific columns -- extending it to a second agent's thresholds later is
+a real, separate, easy decision (a new migration, matching this one's
+own pattern), not something this table's shape needs to anticipate
+speculatively now.
+
+**Real constraint that shaped the implementation, not just a design
+preference**: `QueryCostEstimatorAgent` is a process-wide singleton
+(constructed once at agent-runtime startup, reused for every request --
+confirmed by reading `main.py`'s and `RequestOrchestratorAgent.__init__`'s
+real construction sites), so a tenant override cannot be baked into
+`__init__` state. Resolution happens fresh inside `run()`, per request,
+cached per tenant with a TTL -- the identical shape Phase 4's
+`TenantVerifierResolver` already established for exactly this same kind
+of problem (a singleton agent needing per-tenant, live-but-cached config).
+
+**Existing test preserved verbatim, not rewritten, as a deliberate
+constraint**: the pre-existing `TestMaxRowsCapIsAHardCeiling` test
+monkeypatches `agent_module.ROLE_ROW_LIMITS` by mutating the dict IN
+PLACE, not reassigning the module attribute. `_effective_row_limit`'s
+new `role_row_limits: dict = ROLE_ROW_LIMITS` default parameter is bound
+to that same dict object at function-definition time, so it keeps
+tracking in-place mutations correctly -- confirmed by running that exact
+test unchanged, not by re-deriving the reasoning abstractly.
+
+**Verification**: full `pytest packages/` (611 passed, 8 skipped, up
+from 603), `ruff check` clean, `mypy` clean (165 files). The new CLI
+commands were run for real by hand against invalid JSON, an invalid
+value type, and a valid override, confirming each validation path fires
+before any database attempt.

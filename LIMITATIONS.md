@@ -4096,3 +4096,50 @@ using real cryptographic material and fake/injected lookups -- but the
 plan's own Phase 4 verification bar ("a real second identity provider
 verified end to end against a live token") is not yet met for real,
 live infrastructure.
+
+### 109. NEW: Phase 5 of the configurable-platform build plan -- `QueryCostEstimatorAgent`'s row-limit thresholds are now per-tenant, additive-only
+
+**What changed**: `ROLE_ROW_LIMITS`/`DEFAULT_ROLE_ROW_LIMIT`/`MAX_ROWS_CAP`
+were, until this phase, genuinely hardcoded Python module globals with no
+override point at all -- every tenant was held to the identical limits
+forever. A new `tenant_guardrail_configs` table in `metadata_catalog`
+(migration `0008`, mirroring `TenantIdentityConfig`'s exact one-row-per-
+tenant shape) lets a tenant override some or all three, managed via a new
+`navigraph_admin.py guardrail set-thresholds`/`show` pair.
+`QueryCostEstimatorAgent` gained an optional `session_factory` -- when
+given, `run()` resolves (and caches, TTL'd, per tenant -- the exact
+`TenantVerifierResolver` shape Phase 4 already established) that tenant's
+override, merges `role_row_limits` PARTIALLY over the hardcoded table
+(overriding just one role doesn't require repeating every other role's
+default), and falls back to the hardcoded defaults verbatim for any
+tenant with no row, any field left `NULL`, or if the lookup fails for
+any reason -- fails SAFE, never closed, the same standing philosophy
+every per-tenant override in this build plan has followed since Phase 4.
+
+**Deliberately scoped to ONE agent's ONE threshold family, not a generic
+"any Guardrail agent, any number" mechanism**: per the plan's own
+explicit instruction, agent enable/disable and thresholds for
+`pii_exposure_checker`/`policy_authorization`/`schema_constraint_validator`
+are out of scope here -- none of those three has a comparable hardcoded
+numeric threshold today (`pii_exposure_checker` is a boolean catalog
+lookup, `policy_authorization` delegates entirely to OPA, and
+`schema_constraint_validator` is a column-existence check), and the
+19-agent orchestration sequence's real inter-agent data dependencies have
+not been audited for which stages are actually safe to skip -- shipping
+arbitrary skip logic before that audit exists is explicitly deferred, not
+forgotten. `execution_planning.agent`'s own separate, duplicated
+`MAX_ROWS_CAP` (Query domain, not Guardrail) is the same pattern and will
+likely need identical treatment later, but is a different agent this
+phase's plan text never named.
+
+**Verification**: full `pytest packages/` (611 passed, 8 skipped, up
+from 603), `ruff check` clean, `mypy` clean (165 files). The existing
+`query_cost_estimator` test suite's monkeypatch test (which mutates the
+module-level `ROLE_ROW_LIMITS` dict IN PLACE) was preserved verbatim,
+not rewritten, by keeping these three names real, mutable module
+globals that `_effective_row_limit`'s own default parameter values
+still reference by identity. New tests cover the merge, both scalar
+overrides, the fail-safe fallback, and the per-tenant cache, all against
+a mocked catalog session (no live Postgres in this session, same
+caveat as every other phase's new table). The new CLI commands were run
+for real by hand against both invalid and valid inputs.
