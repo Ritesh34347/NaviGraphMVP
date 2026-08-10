@@ -155,19 +155,49 @@ def test_capabilities_reflect_real_postgres_support() -> None:
 
 
 def test_required_settings_declares_the_real_fields() -> None:
+    # Field names match what `settings_factory.build_postgres_settings`
+    # actually reads via `secrets.get(scope=scope, field=name)` -- short
+    # names, not `PostgresSettings`' own field names. A real bug, found
+    # live wiring up self-service onboarding's dynamic connection form:
+    # every credential a caller posted under the old, longer names was
+    # silently ignored.
     settings = {s.field: s for s in PostgresConnector.required_settings()}
 
-    assert settings["source_postgres_host"].required is True
-    assert settings["source_postgres_database"].required is True
-    assert settings["source_postgres_user"].required is True
-    assert settings["source_postgres_password"].required is True
-    assert settings["source_postgres_port"].required is False
-    assert settings["source_postgres_sslmode"].required is False
+    assert settings["host"].required is True
+    assert settings["database"].required is True
+    assert settings["user"].required is True
+    assert settings["password"].required is True
+    assert settings["port"].required is False
+    assert settings["sslmode"].required is False
+
+
+def test_required_settings_field_names_match_the_settings_factory() -> None:
+    """The real regression test: every field this manifest declares must
+    be a name `build_postgres_settings` actually resolves via
+    `secrets.get(scope=..., field=name)`, or a self-service caller's
+    posted credentials silently vanish."""
+
+    from navigraph_shared.secrets import FakeSecretsProvider
+
+    from navigraph_connectors.postgres.settings_factory import build_postgres_settings
+
+    fields = {s.field for s in PostgresConnector.required_settings()}
+    secrets = FakeSecretsProvider(
+        {
+            ("scope-x", field): ("5433" if field == "port" else f"value-{field}")
+            for field in fields
+        }
+    )
+
+    settings = build_postgres_settings({"secret_scope": "scope-x"}, secrets)
+
+    assert settings.source_postgres_host == "value-host"
+    assert settings.source_postgres_database == "value-database"
+    assert settings.source_postgres_user == "value-user"
+    assert settings.source_postgres_password == "value-password"
 
 
 def test_required_settings_env_var_is_the_uppercased_field_name() -> None:
-    setting = next(
-        s for s in PostgresConnector.required_settings() if s.field == "source_postgres_host"
-    )
+    setting = next(s for s in PostgresConnector.required_settings() if s.field == "host")
 
-    assert setting.env_var == "SOURCE_POSTGRES_HOST"
+    assert setting.env_var == "HOST"

@@ -58,6 +58,29 @@ class SecretsProvider(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def set(self, *, scope: str, field: str, value: str) -> None:
+        """Persist one secret field within `scope`.
+
+        This is the write half `get()` never needed until self-service data
+        source onboarding: a client entering their own credentials in a form
+        has to land somewhere durable before `register_data_source()` can
+        store a `connection_ref` pointing at it. Every concrete subclass
+        must make an explicit, reviewed decision about what "write a
+        secret" means for its backend -- there is deliberately no default
+        no-op implementation here, because a silent no-op would let a
+        provider that can't really persist anything (see
+        `EnvVarSecretsProvider`) pretend to succeed and lose the client's
+        credential on the next process restart.
+
+        MUST raise (not return silently) if the write fails or the backend
+        is unreachable -- a caller building a new `DataSource` on top of
+        this call needs to know definitively that the secret never landed,
+        rather than discovering it days later as an inexplicable "credential
+        not found" on the first crawl.
+        """
+        raise NotImplementedError
+
 
 class EnvVarSecretsProvider(SecretsProvider):
     """Real implementation backed by process environment variables.
@@ -78,6 +101,15 @@ class EnvVarSecretsProvider(SecretsProvider):
     def get(self, *, scope: str, field: str) -> str | None:
         env_var = f"{scope}_{field}".upper()
         return os.environ.get(env_var) or None
+
+    def set(self, *, scope: str, field: str, value: str) -> None:
+        raise NotImplementedError(
+            "EnvVarSecretsProvider is read-only: a process cannot durably "
+            "rewrite its own future environment variables. Self-service "
+            "credential writes require AzureKeyVaultSecretsProvider (or "
+            "another real secrets-manager-backed provider) -- configure "
+            "one before enabling data source self-service onboarding."
+        )
 
 
 class AzureKeyVaultSecretsProvider(SecretsProvider):
@@ -123,15 +155,29 @@ class AzureKeyVaultSecretsProvider(SecretsProvider):
         except ResourceNotFoundError:
             return None
 
+    def set(self, *, scope: str, field: str, value: str) -> None:
+        # Imported lazily -- see the identical note on `get()` above.
+        from azure.identity import DefaultAzureCredential
+        from azure.keyvault.secrets import SecretClient
+
+        credential = self._credential or DefaultAzureCredential()
+        client = SecretClient(vault_url=self._vault_url, credential=credential)
+        # Must exactly match get()'s naming, or a value written via set()
+        # becomes unreadable via get() -- there is no test for "these two
+        # methods agree" other than construction being identical here.
+        secret_name = f"{scope}-{field}".replace("_", "-")
+        client.set_secret(secret_name, value)
+
 
 class FakeSecretsProvider(SecretsProvider):
     """No-network test double for `SecretsProvider`.
 
     Construct with a `{(scope, field): value}` dict, or build one up via
-    `.set(scope, field, value)`. Every call is recorded in `self.calls`
-    (mirroring `FakeOpaClient`'s identical call-recording convention) so
-    tests can assert on exactly what was looked up. Pass `raise_exc` to
-    simulate a backend outage on every call.
+    `.set(scope=..., field=..., value=...)`. Every call -- `get` and `set`
+    alike -- is recorded in `self.calls` (mirroring `FakeOpaClient`'s
+    identical call-recording convention) so tests can assert on exactly
+    what was looked up or written. Pass `raise_exc` to simulate a backend
+    outage on every `get`/`set` call.
     """
 
     def __init__(
@@ -144,11 +190,14 @@ class FakeSecretsProvider(SecretsProvider):
         self._raise_exc = raise_exc
         self.calls: list[dict[str, str]] = []
 
-    def set(self, scope: str, field: str, value: str) -> None:
+    def set(self, *, scope: str, field: str, value: str) -> None:
+        self.calls.append({"op": "set", "scope": scope, "field": field})
+        if self._raise_exc is not None:
+            raise self._raise_exc
         self._values[(scope, field)] = value
 
     def get(self, *, scope: str, field: str) -> str | None:
-        self.calls.append({"scope": scope, "field": field})
+        self.calls.append({"op": "get", "scope": scope, "field": field})
         if self._raise_exc is not None:
             raise self._raise_exc
         return self._values.get((scope, field))

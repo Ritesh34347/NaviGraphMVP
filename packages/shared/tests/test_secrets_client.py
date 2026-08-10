@@ -37,6 +37,15 @@ def test_env_var_provider_returns_none_for_unset_field(monkeypatch) -> None:
     assert provider.get(scope="navikenz_poc_snowflake", field="role") is None
 
 
+def test_env_var_provider_set_raises_not_implemented() -> None:
+    """A process cannot durably rewrite its own future env vars -- this
+    must fail loudly, not silently no-op and lose the credential."""
+    provider = EnvVarSecretsProvider()
+
+    with pytest.raises(NotImplementedError, match="read-only"):
+        provider.set(scope="navikenz_poc_snowflake", field="account", value="acct-1")
+
+
 def test_env_var_provider_scopes_are_independent(monkeypatch) -> None:
     """The real point of item 21/this module: two DataSources of the same
     source_type must resolve to genuinely distinct credentials, not one
@@ -56,23 +65,40 @@ def test_fake_provider_returns_configured_values_and_records_calls() -> None:
     assert provider.get(scope="scope-1", field="password") == "hunter2"
     assert provider.get(scope="scope-1", field="missing") is None
     assert provider.calls == [
-        {"scope": "scope-1", "field": "password"},
-        {"scope": "scope-1", "field": "missing"},
+        {"op": "get", "scope": "scope-1", "field": "password"},
+        {"op": "get", "scope": "scope-1", "field": "missing"},
     ]
 
 
-def test_fake_provider_set_builds_up_values() -> None:
+def test_fake_provider_set_builds_up_values_and_records_calls() -> None:
     provider = FakeSecretsProvider()
-    provider.set("scope-1", "user", "alice")
+    provider.set(scope="scope-1", field="user", value="alice")
 
     assert provider.get(scope="scope-1", field="user") == "alice"
+    assert provider.calls == [
+        {"op": "set", "scope": "scope-1", "field": "user"},
+        {"op": "get", "scope": "scope-1", "field": "user"},
+    ]
 
 
-def test_fake_provider_raises_configured_exception() -> None:
+def test_fake_provider_set_does_not_leak_value_into_calls_log() -> None:
+    """The secret VALUE must never land in `.calls` -- it's a plain list
+    tests assert equality on, and a real (or copy-pasted) test failure
+    message could otherwise print a credential to CI logs."""
+    provider = FakeSecretsProvider()
+    provider.set(scope="scope-1", field="password", value="hunter2")
+
+    assert "hunter2" not in str(provider.calls)
+
+
+def test_fake_provider_raises_configured_exception_on_get_and_set() -> None:
     provider = FakeSecretsProvider(raise_exc=RuntimeError("vault unreachable"))
 
     with pytest.raises(RuntimeError, match="vault unreachable"):
         provider.get(scope="scope-1", field="password")
+
+    with pytest.raises(RuntimeError, match="vault unreachable"):
+        provider.set(scope="scope-1", field="password", value="x")
 
 
 def test_azure_key_vault_provider_builds_hyphenated_secret_name_and_returns_value() -> None:
@@ -110,6 +136,47 @@ def test_azure_key_vault_provider_returns_none_when_secret_not_found() -> None:
         result = provider.get(scope="scope-1", field="missing")
 
     assert result is None
+
+
+def test_azure_key_vault_provider_set_writes_hyphenated_secret_name() -> None:
+    mock_client = MagicMock()
+
+    with (
+        patch("azure.keyvault.secrets.SecretClient", return_value=mock_client) as mock_ctor,
+        patch("azure.identity.DefaultAzureCredential", return_value=MagicMock()),
+    ):
+        provider = AzureKeyVaultSecretsProvider("https://navigraph-dev-kv.vault.azure.net")
+        provider.set(
+            scope="navikenz_poc_snowflake", field="private_key_passphrase", value="s3cr3t"
+        )
+
+    mock_ctor.assert_called_once()
+    mock_client.set_secret.assert_called_once_with(
+        "navikenz-poc-snowflake-private-key-passphrase", "s3cr3t"
+    )
+
+
+def test_azure_key_vault_provider_set_and_get_agree_on_secret_name() -> None:
+    """set() and get() must compute the identical secret name for the same
+    (scope, field) -- otherwise a value written via set() becomes
+    unreadable via get()."""
+    mock_client = MagicMock()
+    mock_secret = MagicMock()
+    mock_secret.value = "s3cr3t"
+    mock_client.get_secret.return_value = mock_secret
+
+    with (
+        patch("azure.keyvault.secrets.SecretClient", return_value=mock_client),
+        patch("azure.identity.DefaultAzureCredential", return_value=MagicMock()),
+    ):
+        provider = AzureKeyVaultSecretsProvider("https://navigraph-dev-kv.vault.azure.net")
+        provider.set(scope="tenant_a_postgres", field="password", value="s3cr3t")
+        result = provider.get(scope="tenant_a_postgres", field="password")
+
+    set_name = mock_client.set_secret.call_args.args[0]
+    get_name = mock_client.get_secret.call_args.args[0]
+    assert set_name == get_name == "tenant-a-postgres-password"
+    assert result == "s3cr3t"
 
 
 def test_azure_key_vault_provider_uses_injected_credential_not_default() -> None:

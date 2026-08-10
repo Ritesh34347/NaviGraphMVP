@@ -7,10 +7,12 @@ from navigraph_shared.secrets.client import (
     FakeSecretsProvider,
     SecretsProvider,
 )
+from navigraph_shared.secrets.scoping import build_secret_scope
 
 __all__ = [
     "AzureKeyVaultSecretsProvider",
     "EnvVarSecretsProvider",
     "FakeSecretsProvider",
     "SecretsProvider",
+    "build_secret_scope",
 ]

@@ -178,20 +178,48 @@ def test_capabilities_reflect_real_unity_catalog_support() -> None:
 
 
 def test_required_settings_declares_the_real_fields() -> None:
+    # Field names match what `settings_factory.build_databricks_settings`
+    # actually reads via `secrets.get(scope=scope, field=name)` -- short
+    # names, not `DatabricksSettings`' own field names. See
+    # `postgres/test_connector.py`'s identical fix for the full story.
     settings = {s.field: s for s in DatabricksConnector.required_settings()}
 
-    assert settings["databricks_server_hostname"].required is True
-    assert settings["databricks_http_path"].required is True
-    assert settings["databricks_access_token"].required is True
-    assert settings["databricks_catalog"].required is True
-    assert settings["databricks_schema"].required is False
+    assert settings["server_hostname"].required is True
+    assert settings["http_path"].required is True
+    assert settings["access_token"].required is True
+    assert settings["catalog"].required is True
+    assert settings["schema"].required is False
+
+
+def test_required_settings_field_names_match_the_settings_factory() -> None:
+    """The real regression test: every field this manifest declares must
+    be a name `build_databricks_settings` actually resolves, or a
+    self-service caller's posted credentials silently vanish."""
+
+    from navigraph_shared.secrets import FakeSecretsProvider
+
+    from navigraph_connectors.databricks.settings_factory import build_databricks_settings
+
+    secrets = FakeSecretsProvider(
+        {
+            ("scope-x", "server_hostname"): "host-1",
+            ("scope-x", "http_path"): "/sql/1.0/warehouses/abc",
+            ("scope-x", "access_token"): "tok",
+            ("scope-x", "catalog"): "main",
+        }
+    )
+
+    settings = build_databricks_settings({"secret_scope": "scope-x"}, secrets)
+
+    assert settings.databricks_server_hostname == "host-1"
+    assert settings.databricks_http_path == "/sql/1.0/warehouses/abc"
+    assert settings.databricks_access_token == "tok"
+    assert settings.databricks_catalog == "main"
 
 
 def test_required_settings_env_var_is_the_uppercased_field_name() -> None:
     setting = next(
-        s
-        for s in DatabricksConnector.required_settings()
-        if s.field == "databricks_server_hostname"
+        s for s in DatabricksConnector.required_settings() if s.field == "server_hostname"
     )
 
-    assert setting.env_var == "DATABRICKS_SERVER_HOSTNAME"
+    assert setting.env_var == "SERVER_HOSTNAME"

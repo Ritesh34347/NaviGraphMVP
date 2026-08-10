@@ -4326,3 +4326,62 @@ only manifest against the real AKS cluster and its real Postgres:
   every `app: X` egress policy has a matching `app: X`-selecting ingress
   policy (or vice versa) would catch this mechanically instead of relying
   on a human noticing during a demo.
+
+### 113. Self-service data source onboarding routes carry the same self-declared-tenant-id gap as `/ask`/`/lineage` (items 23/63), but with real write side effects
+
+**What was added**: a client-facing self-service flow —
+`GET/POST /admin/data-sources`, `POST /admin/data-sources/test-connection`,
+`POST /admin/data-sources/{id}/crawl`, `POST
+/admin/data-sources/{id}/draft-ontology`, and `POST
+/admin/semantic-models/compile-and-activate` on the gateway, pure proxies
+to new business-logic routes on agent-runtime
+(`navigraph_agents.onboarding_routes`) — lets a client register their own
+data source, crawl it, review an AI-drafted ontology, and activate it,
+entirely through a web UI instead of a Navikenz engineer running CLI
+scripts by hand. Also closed a real, separate bug while adding this: the
+crawl route resolves per-`DataSource` credentials via the existing
+`get_settings_factory()` mechanism (item 21) exactly like
+`data_source_discovery.agent._check_connectivity` already does correctly
+— `tools/scripts/onboard_data_source.py`'s `cmd_crawl` still has the old,
+unfixed zero-arg `connector_cls()` bug and was deliberately left
+unchanged (out of scope for this change).
+
+**What's NOT resolved, and is worse here than on existing routes**: every
+new route reuses the exact same `_verify_identity_for_tenant` gate
+`/ask`/`/lineage` already use — a no-op passthrough while
+`azure_ad_enabled=False` (the platform-wide default today). `tenant_id`
+stays caller-declared, not cryptographically verified. On `/ask`/`/lineage`
+this means an unverified caller can read/query a tenant's data; on these
+NEW routes it additionally means an unverified caller can:
+- write real credentials into the configured secrets backend (Azure Key
+  Vault, once `AZURE_KEY_VAULT_URL` is configured) under an arbitrary
+  `tenant_id`'s computed secret scope,
+- register a `DataSource` row and trigger a real crawl against any
+  reachable database using those credentials,
+- activate a semantic model for any `tenant_id`, which syncs real OPA
+  policy bindings for that tenant.
+
+This is a strictly larger blast radius than the existing gap, not a new
+category of gap — deliberately: no bespoke "looks more secure" check was
+added just for this feature, since two different auth postures in one
+codebase would make the one real, singular fix (enable Azure AD) easier to
+overlook. **Do not expose these routes outside a trusted network boundary
+until Azure AD is enabled.**
+
+**Also new**: `SecretsProvider.set()` (the write half `get()` never
+needed until now) requires a real backend to actually work —
+`EnvVarSecretsProvider.set()` raises `NotImplementedError` by design (a
+process can't durably rewrite its own future env vars), so self-service
+registration's credential-write step will fail loudly, at registration
+time, on any deployment without `AZURE_KEY_VAULT_URL` configured. This is
+the intended behavior, not a bug to fix — see
+`navigraph_shared.secrets.client`'s module docstring.
+
+**What's deliberately out of scope for this change**: no server-side
+"drafts" table exists — the ontology draft a human reviews round-trips
+through the browser's own state between drafting and
+compile-and-activate, matching the CLI's existing file-based
+draft/hand-edit/compile flow. A page refresh mid-review loses the draft
+(a harmless, low-cost redraft, not data loss of anything already
+activated). Revisit if/when a real async job queue exists in this
+codebase for an unrelated reason.
