@@ -263,24 +263,54 @@ def test_capabilities_reflect_real_snowflake_support() -> None:
 
 
 def test_required_settings_declares_the_real_fields() -> None:
+    # Field names match what `settings_factory.build_snowflake_settings`
+    # actually reads via `secrets.get(scope=scope, field=name)` -- short
+    # names, not `SnowflakeSettings`' own field names. See
+    # `postgres/test_connector.py`'s identical fix for the full story.
     settings = {s.field: s for s in SnowflakeConnector.required_settings()}
 
-    assert settings["snowflake_account"].required is True
-    assert settings["snowflake_user"].required is True
-    assert settings["snowflake_warehouse"].required is True
-    assert settings["snowflake_database"].required is True
-    assert settings["snowflake_role"].required is False
-    assert settings["snowflake_password"].condition is not None
-    assert settings["snowflake_private_key_path"].required is False
-    assert settings["snowflake_private_key_path"].condition is not None
+    assert settings["account"].required is True
+    assert settings["user"].required is True
+    assert settings["warehouse"].required is True
+    assert settings["database"].required is True
+    assert settings["role"].required is False
+    assert settings["password"].condition is not None
+    assert settings["private_key_path"].required is False
+    assert settings["private_key_path"].condition is not None
+
+
+def test_required_settings_field_names_match_the_settings_factory() -> None:
+    """The real regression test: every field this manifest declares must
+    be a name `build_snowflake_settings` actually resolves, or a
+    self-service caller's posted credentials silently vanish."""
+
+    from navigraph_shared.secrets import FakeSecretsProvider
+
+    from navigraph_connectors.snowflake.settings_factory import build_snowflake_settings
+
+    secrets = FakeSecretsProvider(
+        {
+            ("scope-x", "account"): "acct-1",
+            ("scope-x", "user"): "svc",
+            ("scope-x", "warehouse"): "wh",
+            ("scope-x", "database"): "db",
+            ("scope-x", "password"): "pw",
+        }
+    )
+
+    settings = build_snowflake_settings({"secret_scope": "scope-x"}, secrets)
+
+    assert settings.snowflake_account == "acct-1"
+    assert settings.snowflake_user == "svc"
+    assert settings.snowflake_warehouse == "wh"
+    assert settings.snowflake_database == "db"
+    assert settings.snowflake_password == "pw"
 
 
 def test_required_settings_env_var_is_the_uppercased_field_name() -> None:
-    setting = next(
-        s for s in SnowflakeConnector.required_settings() if s.field == "snowflake_account"
-    )
+    setting = next(s for s in SnowflakeConnector.required_settings() if s.field == "account")
 
-    assert setting.env_var == "SNOWFLAKE_ACCOUNT"
+    assert setting.env_var == "ACCOUNT"
 
 
 def test_required_settings_is_callable_without_an_instance() -> None:

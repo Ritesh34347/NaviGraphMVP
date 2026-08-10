@@ -216,25 +216,24 @@ class DatabricksConnector(Connector):
 
     @classmethod
     def required_settings(cls) -> list[RequiredSetting]:
+        # `field` here MUST match the short names `settings_factory.py`'s
+        # `build_databricks_settings` actually reads via `secrets.get(
+        # scope=scope, field=name)` ("server_hostname", not
+        # "databricks_server_hostname") -- see `postgres/connector.py`'s
+        # identical `required_settings` fix for the full story.
         return [
+            RequiredSetting(field="server_hostname", description="Databricks workspace hostname"),
+            RequiredSetting(field="http_path", description="SQL warehouse/cluster HTTP path"),
+            RequiredSetting(field="access_token", description="Personal access token"),
             RequiredSetting(
-                field="databricks_server_hostname", description="Databricks workspace hostname"
-            ),
-            RequiredSetting(
-                field="databricks_http_path", description="SQL warehouse/cluster HTTP path"
-            ),
-            RequiredSetting(
-                field="databricks_access_token", description="Personal access token"
-            ),
-            RequiredSetting(
-                field="databricks_catalog",
+                field="catalog",
                 description=(
                     "Unity Catalog name -- information_schema is catalog-scoped, "
                     "there is no schema-less default to fall back to"
                 ),
             ),
             RequiredSetting(
-                field="databricks_schema",
+                field="schema",
                 description="Restrict introspection to one schema instead of the whole catalog",
                 required=False,
             ),

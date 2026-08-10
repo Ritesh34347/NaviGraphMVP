@@ -187,36 +187,40 @@ class SnowflakeConnector(Connector):
 
     @classmethod
     def required_settings(cls) -> list[RequiredSetting]:
+        # `field` here MUST match the short names `settings_factory.py`'s
+        # `build_snowflake_settings` actually reads via `secrets.get(scope=
+        # scope, field=name)` ("account", not "snowflake_account") -- see
+        # `postgres/connector.py`'s identical `required_settings` fix for
+        # the full story: this manifest previously declared the
+        # `SnowflakeSettings` FIELD names instead of the `SecretsProvider`
+        # FIELD names, so a caller's posted credentials were silently
+        # ignored.
         return [
-            RequiredSetting(field="snowflake_account", description="Snowflake account identifier"),
-            RequiredSetting(field="snowflake_user", description="Snowflake username"),
+            RequiredSetting(field="account", description="Snowflake account identifier"),
+            RequiredSetting(field="user", description="Snowflake username"),
             RequiredSetting(
-                field="snowflake_warehouse", description="Snowflake warehouse to run queries against"
+                field="warehouse", description="Snowflake warehouse to run queries against"
             ),
+            RequiredSetting(field="database", description="Snowflake database to introspect/query"),
+            RequiredSetting(field="role", description="Snowflake role to assume", required=False),
             RequiredSetting(
-                field="snowflake_database", description="Snowflake database to introspect/query"
-            ),
-            RequiredSetting(
-                field="snowflake_role", description="Snowflake role to assume", required=False
-            ),
-            RequiredSetting(
-                field="snowflake_auth_method",
+                field="auth_method",
                 description="'password' (default) or 'key_pair'",
                 required=False,
             ),
             RequiredSetting(
-                field="snowflake_password",
+                field="password",
                 description="Snowflake password",
-                condition="required when snowflake_auth_method == 'password' (the default)",
+                condition="required when auth_method == 'password' (the default)",
             ),
             RequiredSetting(
-                field="snowflake_private_key_path",
+                field="private_key_path",
                 description="Path to a private key file for key-pair auth",
                 required=False,
-                condition="required when snowflake_auth_method == 'key_pair'",
+                condition="required when auth_method == 'key_pair'",
             ),
             RequiredSetting(
-                field="snowflake_private_key_passphrase",
+                field="private_key_passphrase",
                 description="Passphrase for an encrypted private key",
                 required=False,
                 condition="only if the key_pair private key is encrypted",

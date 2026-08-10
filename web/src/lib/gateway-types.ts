@@ -93,3 +93,176 @@ export interface LineageTraceResponse {
   tenant_id: string;
   events: LineageEventRecord[];
 }
+
+/**
+ * Mirrors `navigraph_agents.onboarding_contracts`/`onboarding_routes`'s
+ * self-service data source onboarding shapes, proxied through the gateway's
+ * `/admin/data-sources/*` and `/admin/semantic-models/compile-and-activate`
+ * routes. See `navigraph_connectors.base.RequiredSetting`/
+ * `ConnectorCapabilities` for the Python side of the connector-manifest
+ * types, and `understanding.ontology_drafting.contracts` for the `Draft*`
+ * shapes -- the ontology draft itself is never redefined server-side by
+ * this feature, so these mirror that agent's contracts exactly, not a new
+ * shape invented for this UI.
+ */
+
+export interface RequiredSetting {
+  field: string;
+  description: string;
+  required: boolean;
+  condition?: string | null;
+}
+
+export interface ConnectorCapabilities {
+  supports_row_level_security: boolean;
+  supports_column_masking: boolean;
+  supports_query_pushdown: boolean;
+}
+
+export interface ConnectorTypeInfo {
+  source_type: string;
+  required_settings: RequiredSetting[];
+  capabilities: ConnectorCapabilities;
+}
+
+export interface ConnectorTypesResponse {
+  source_types: ConnectorTypeInfo[];
+}
+
+export interface TestConnectionRequestBody {
+  source_type: string;
+  credential_fields: Record<string, string>;
+}
+
+export interface ConnectionTestResult {
+  success: boolean;
+  message: string;
+  latency_ms?: number | null;
+}
+
+export interface RegisterDataSourceRequestBody {
+  tenant_id: string;
+  name: string;
+  source_type: string;
+  is_default?: boolean;
+  credential_fields: Record<string, string>;
+}
+
+export interface RegisteredDataSource {
+  id: string;
+  tenant_id: string;
+  name: string;
+  source_type: string;
+  is_default: boolean;
+}
+
+export interface AdminDataSourceSummary {
+  id: string;
+  name: string;
+  source_type: string;
+  is_default: boolean;
+  last_crawled_at?: string | null;
+}
+
+export interface AdminDataSourcesResponse {
+  tenant_id: string;
+  semantic_model_active_version?: number | null;
+  data_sources: AdminDataSourceSummary[];
+}
+
+export interface CrawlRequestBody {
+  tenant_id: string;
+}
+
+export interface CrawlResponse {
+  data_source_id: string;
+  tables_synced: number;
+  new_table_names: string[];
+}
+
+export interface DraftOntologyRequestBody {
+  tenant_id: string;
+  user_id: string;
+  roles?: string[];
+  claims?: Record<string, unknown>;
+}
+
+// Mirrors `understanding.ontology_drafting.contracts`'s `Draft*` models
+// field-for-field. Every proposal carries a `rationale` so a human
+// reviewing it can see WHY the agent made it, not just the proposal
+// itself -- these fields are shown, not just stored, in the review step.
+export interface DraftEntityBinding {
+  table_name: string;
+  schema_name: string;
+  key_column: string;
+}
+
+export interface DraftEntity {
+  name: string;
+  bindings: DraftEntityBinding[];
+  synonyms: string[];
+  description?: string | null;
+  rationale: string;
+}
+
+export interface DraftRelationship {
+  name: string;
+  subject: string;
+  predicate: string;
+  object: string;
+  realizing_table: string;
+  realizing_schema: string;
+  subject_key_column: string;
+  object_key_column: string;
+  rationale: string;
+}
+
+export interface DraftSensitiveColumn {
+  table_name: string;
+  column_name: string;
+  rationale: string;
+}
+
+export type DraftAggregation = 'SUM' | 'COUNT' | 'AVG' | 'MIN' | 'MAX';
+
+export interface DraftMetric {
+  name: string;
+  entity: string;
+  aggregation: DraftAggregation;
+  column?: string | null;
+  rationale: string;
+}
+
+export interface OntologyDraftingResult {
+  data_source_id: string;
+  entities: DraftEntity[];
+  relationships: DraftRelationship[];
+  sensitive_columns: DraftSensitiveColumn[];
+  metrics: DraftMetric[];
+}
+
+export interface OntologyDraftingResponse {
+  result: OntologyDraftingResult;
+  confidence?: number | null;
+}
+
+export interface CompileAndActivateRequestBody {
+  tenant_id: string;
+  data_source_name: string;
+  version?: number;
+  draft: OntologyDraftingResult;
+}
+
+export interface CompileAndActivateResponse {
+  tenant_id: string;
+  version: number;
+  tagged_pii_columns: number;
+  compile_warnings: string[];
+}
+
+// The gateway forwards agent-runtime's 422 body verbatim for this one
+// route -- see `packages/gateway/navigraph_gateway/main.py`'s
+// `compile_and_activate_semantic_model` docstring for why.
+export interface CompileAndActivateValidationError {
+  issues: string[];
+}

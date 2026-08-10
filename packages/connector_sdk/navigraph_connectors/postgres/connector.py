@@ -204,20 +204,27 @@ class PostgresConnector(Connector):
 
     @classmethod
     def required_settings(cls) -> list[RequiredSetting]:
+        # `field` here MUST match the short names `settings_factory.py`'s
+        # `build_postgres_settings` actually reads via `secrets.get(scope=
+        # scope, field=name)` ("host", not "source_postgres_host") -- a
+        # real bug, found live wiring up self-service onboarding's dynamic
+        # connection form: this manifest previously declared the
+        # `PostgresSettings` FIELD names instead of the `SecretsProvider`
+        # FIELD names, so every credential a caller posted under these
+        # names was silently ignored (looked up under a key nothing ever
+        # wrote to), and every connection attempt used empty defaults.
         return [
-            RequiredSetting(field="source_postgres_host", description="Postgres host to connect to"),
+            RequiredSetting(field="host", description="Postgres host to connect to"),
+            RequiredSetting(field="database", description="Database name to introspect/query"),
+            RequiredSetting(field="user", description="Postgres username"),
+            RequiredSetting(field="password", description="Postgres password"),
             RequiredSetting(
-                field="source_postgres_database", description="Database name to introspect/query"
-            ),
-            RequiredSetting(field="source_postgres_user", description="Postgres username"),
-            RequiredSetting(field="source_postgres_password", description="Postgres password"),
-            RequiredSetting(
-                field="source_postgres_port",
+                field="port",
                 description="Postgres port (default 5432)",
                 required=False,
             ),
             RequiredSetting(
-                field="source_postgres_sslmode",
+                field="sslmode",
                 description="SSL mode for the connection (default 'prefer')",
                 required=False,
             ),
