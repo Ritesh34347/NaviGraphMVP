@@ -16,19 +16,18 @@ factory"), `run()` opens one `session_scope` per invocation, and every
 `navigraph_catalog.api` call within that `with` block receives an
 already-open `Session`.
 
-Connector-credential gap (documented, not solved here): `DataSource.
+Connector-credential resolution (LIMITATIONS.md item 21): `DataSource.
 connection_ref` is an opaque pointer to where real per-source connection
-details live (e.g. `{"env_prefix": "SNOWFLAKE"}`), but this project does not
-yet have per-`DataSource` credential resolution beyond "the connector class
-reads its own global env vars" -- see e.g. `SnowflakeConnector.__init__`,
-which defaults to a real env-var-backed `SnowflakeSettings()` when
-constructed with no arguments. This agent therefore constructs every
-connector with no arguments (`get_connector_class(source_type)()`), which
-means two `DataSource` rows of the same `source_type` are indistinguishable
-to it -- both would resolve to a connector reading the SAME global env vars.
-That is a real limitation, out of scope to fix here (it needs a
-per-`DataSource` credential-routing layer that doesn't exist yet anywhere in
-this codebase).
+details live. When it carries a `secret_scope`, `_check_connectivity`
+resolves that `source_type`'s registered
+`navigraph_connectors.registry.get_settings_factory` and builds this
+specific `DataSource`'s own real `Settings` via an injected
+`navigraph_shared.secrets.SecretsProvider`, so two `DataSource` rows of the
+same `source_type` can now hold genuinely distinct real credentials. A
+`connection_ref` with no `secret_scope` (e.g. the older `{"env_prefix":
+"SNOWFLAKE"}` shape) falls through to the original, global-env-var-backed
+`connector_cls()` construction -- unchanged real behavior for every
+`DataSource` registered before this resolution existed.
 
 SAFETY-RELEVANT DEVIATION FROM THE USUAL AGENT CONTRACT: every other agent
 built so far treats every `AgentError` as a soft, recoverable-by-default
@@ -55,8 +54,9 @@ from navigraph_catalog.api import list_data_sources, list_tables
 from navigraph_catalog.db import session_scope
 from navigraph_catalog.models import DataSource
 from navigraph_connectors.base import ConnectionTestResult
-from navigraph_connectors.registry import get_connector_class
+from navigraph_connectors.registry import get_connector_class, get_settings_factory
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
+from navigraph_shared.secrets import EnvVarSecretsProvider, SecretsProvider
 from navigraph_shared.telemetry import (
     get_tracer,
     record_agent_error,
@@ -83,9 +83,11 @@ class DataSourceDiscoveryAgent:
         self,
         session_factory: sessionmaker[Session],
         tracer: Tracer | None = None,
+        secrets: SecretsProvider | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._tracer = tracer or get_tracer("navigraph-agent-runtime")
+        self._secrets = secrets or EnvVarSecretsProvider()
 
     async def run(self, input: DataSourceDiscoveryInput) -> DataSourceDiscoveryOutput:
         start = time.perf_counter()
@@ -256,8 +258,7 @@ class DataSourceDiscoveryAgent:
 
         return matched, unresolved_tables
 
-    @staticmethod
-    def _check_connectivity(data_source: DataSource) -> ConnectionTestResult:
+    def _check_connectivity(self, data_source: DataSource) -> ConnectionTestResult:
         """Construct a real connector for `data_source` and probe it for real.
 
         `get_connector_class` raises `ValueError` for an unregistered
@@ -269,11 +270,33 @@ class DataSourceDiscoveryAgent:
         "unreachable" `ConnectionTestResult` shape the rest of this agent
         already treats as ordinary data, not as an exception to handle
         specially.
+
+        Real per-DataSource credential resolution (LIMITATIONS.md item
+        21): when `data_source.connection_ref` carries a `secret_scope`,
+        the registered settings factory builds THIS DataSource's own real
+        Settings via `self._secrets`; otherwise falls through to the
+        original, global-env-var-backed `connector_cls()` construction,
+        unchanged.
         """
 
         try:
             connector_cls = get_connector_class(data_source.source_type)
-            connector = connector_cls()
+            connection_ref = getattr(data_source, "connection_ref", None) or {}
+            secret_scope = connection_ref.get("secret_scope")
+            settings_factory = (
+                get_settings_factory(data_source.source_type) if secret_scope else None
+            )
+            if settings_factory is not None:
+                # `Connector`'s own base ABC has no `settings` constructor
+                # parameter (each subclass declares its own) -- real at
+                # runtime for every connector this SDK ships, but mypy
+                # can't verify it through the `type[Connector]` return of
+                # `get_connector_class`.
+                connector = connector_cls(  # type: ignore[call-arg]
+                    settings=settings_factory(connection_ref, self._secrets)
+                )
+            else:
+                connector = connector_cls()
             return connector.test_connection()
         except Exception as exc:  # noqa: BLE001 - fold any construction failure into "unreachable"
             return ConnectionTestResult(

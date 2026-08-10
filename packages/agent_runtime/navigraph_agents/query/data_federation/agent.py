@@ -27,13 +27,16 @@ identical constructor pattern -- needed here to resolve a `direct_connector`
 plan's `data_source_id` to the real `DataSource` row that tells this agent
 which connector class to construct (`DataSource.source_type`).
 
-Connector-credential gap (documented, not solved here -- same gap
-`DataSourceDiscoveryAgent`'s module docstring already calls out): every
-connector is constructed with no arguments
-(`get_connector_class(source_type)()`), which means it reads its own global
-env-var-backed settings rather than anything specific to the resolved
-`DataSource` row. That is a real, pre-existing limitation of this codebase,
-not something introduced here.
+Connector-credential resolution (LIMITATIONS.md item 21): when a resolved
+`DataSource.connection_ref` carries a `secret_scope`, `_execute_via_connector`
+resolves that `source_type`'s registered `navigraph_connectors.registry
+.get_settings_factory` and builds this specific `DataSource`'s own real
+`Settings` from an injected `navigraph_shared.secrets.SecretsProvider`, so
+two `DataSource` rows of the same `source_type` can hold genuinely distinct
+real credentials. A `connection_ref` with no `secret_scope` (every
+`DataSource` registered before this resolution) falls through to the
+original `get_connector_class(source_type)()` construction, unchanged --
+same real behavior as before, not a silent regression.
 
 Catalog-lookup gap (documented, not solved here): `navigraph_catalog.api`
 has no direct "get `DataSource` by id" function, only
@@ -67,10 +70,11 @@ from navigraph_catalog.api import list_data_sources
 from navigraph_catalog.db import session_scope
 from navigraph_catalog.models import DataSource
 from navigraph_connectors.base import QueryResult
-from navigraph_connectors.registry import get_connector_class
+from navigraph_connectors.registry import get_connector_class, get_settings_factory
 from navigraph_federation.dialect import rewrite_sql_for_trino
 from navigraph_federation.trino_client import TrinoClient
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
+from navigraph_shared.secrets import EnvVarSecretsProvider, SecretsProvider
 from navigraph_shared.telemetry import (
     get_tracer,
     record_agent_error,
@@ -98,8 +102,10 @@ class DataFederationAgent:
         catalog_session_factory: sessionmaker[Session],
         trino_client: TrinoClient | None = None,
         tracer: Tracer | None = None,
+        secrets: SecretsProvider | None = None,
     ) -> None:
         self._session_factory = catalog_session_factory
+        self._secrets = secrets or EnvVarSecretsProvider()
         # Lazily constructed if not passed -- matches this project's
         # established lazy-client convention (see `TrinoClient.__init__`
         # itself, and `Neo4jClient.__init__`/`_get_driver`) and, more
@@ -235,9 +241,27 @@ class DataFederationAgent:
                 session, data_source_id=plan.data_source_id, tenant_id=tenant_id
             )
             source_type = data_source.source_type
+            connection_ref = getattr(data_source, "connection_ref", None) or {}
 
         connector_cls = get_connector_class(source_type)
-        connector = connector_cls()
+        secret_scope = connection_ref.get("secret_scope")
+        settings_factory = get_settings_factory(source_type) if secret_scope else None
+        if settings_factory is not None:
+            # Real per-DataSource credential resolution (LIMITATIONS.md
+            # item 21) -- only taken when this DataSource's own
+            # connection_ref carries a secret_scope; otherwise falls
+            # through to the original, global-env-var-backed construction
+            # below, unchanged.
+            # `Connector`'s own base ABC has no `settings` constructor
+            # parameter (each subclass declares its own) -- real at
+            # runtime for every connector this SDK ships, but mypy can't
+            # verify it through the `type[Connector]` return of
+            # `get_connector_class`.
+            connector = connector_cls(  # type: ignore[call-arg]
+                settings=settings_factory(connection_ref, self._secrets)
+            )
+        else:
+            connector = connector_cls()
         return connector.execute_query(plan.sql, plan.params or None)
 
     def _execute_via_trino(self, plan: ExecutionPlan) -> QueryResult:

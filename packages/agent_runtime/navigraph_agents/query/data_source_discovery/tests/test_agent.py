@@ -295,3 +295,38 @@ async def test_tie_break_picks_first_data_source_when_table_name_collides() -> N
     assert output.result.resolved[0].data_source_id == str(ds1_id)
     assert output.result.is_multi_source is False
     assert connector_cls.call_count == 1
+
+
+async def test_connection_ref_with_secret_scope_resolves_per_datasource_settings() -> None:
+    """LIMITATIONS.md item 21: a DataSource whose connection_ref carries a
+    secret_scope gets its connector constructed with THAT DataSource's own
+    resolved Settings, not a bare zero-argument construction."""
+
+    ds_id = uuid.uuid4()
+    data_source = SimpleNamespace(
+        id=ds_id,
+        source_type="snowflake",
+        tenant_id="tenant-acme",
+        connection_ref={"secret_scope": "tenant_acme_snowflake"},
+    )
+    fake_connector = MagicMock()
+    fake_connector.test_connection.return_value = ConnectionTestResult(success=True, message="ok")
+    fake_connector_cls = MagicMock(return_value=fake_connector)
+    fake_settings_factory = MagicMock(return_value="built-settings")
+
+    agent = DataSourceDiscoveryAgent(session_factory=MagicMock())
+
+    with (
+        patch(f"{_AGENT_MODULE}.session_scope", _fake_session_scope),
+        patch(f"{_AGENT_MODULE}.list_data_sources", return_value=[data_source]),
+        patch(f"{_AGENT_MODULE}.list_tables", return_value=[_table("STAGING_TRANSACTIONS")]),
+        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=fake_connector_cls),
+        patch(f"{_AGENT_MODULE}.get_settings_factory", return_value=fake_settings_factory),
+    ):
+        output = await agent.run(_make_input(["staging_transactions"]))
+
+    assert output.errors == []
+    fake_settings_factory.assert_called_once_with(
+        {"secret_scope": "tenant_acme_snowflake"}, agent._secrets
+    )
+    fake_connector_cls.assert_called_once_with(settings="built-settings")

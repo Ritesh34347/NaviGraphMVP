@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from navigraph_connectors.registry import register_connector
 from navigraph_connectors.snowflake.connector import SnowflakeConnector
+from navigraph_connectors.snowflake.settings_factory import build_snowflake_settings
 
-register_connector("snowflake", SnowflakeConnector)
+register_connector("snowflake", SnowflakeConnector, build_snowflake_settings)
 
 __all__ = ["SnowflakeConnector"]

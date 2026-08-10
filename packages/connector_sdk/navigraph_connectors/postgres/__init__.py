@@ -11,8 +11,9 @@ once anyone (a startup script, a test, another package) has imported
 from __future__ import annotations
 
 from navigraph_connectors.postgres.connector import PostgresConnector
+from navigraph_connectors.postgres.settings_factory import build_postgres_settings
 from navigraph_connectors.registry import register_connector
 
-register_connector("postgres", PostgresConnector)
+register_connector("postgres", PostgresConnector, build_postgres_settings)
 
 __all__ = ["PostgresConnector"]

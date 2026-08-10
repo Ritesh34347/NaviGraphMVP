@@ -311,3 +311,42 @@ async def test_combine_results_falls_back_to_union_when_no_shared_columns() -> N
     assert output.result.federated is True
     assert set(output.result.final_columns) == {"a_col", "b_col"}
     assert output.result.final_rows == [{"a_col": 1}, {"b_col": 2}]
+
+
+async def test_connection_ref_with_secret_scope_resolves_per_datasource_settings() -> None:
+    """LIMITATIONS.md item 21: a DataSource whose connection_ref carries a
+    secret_scope gets its connector constructed with THAT DataSource's own
+    resolved Settings, not a bare zero-argument construction."""
+
+    query_result = QueryResult(columns=["id"], rows=[{"id": 1}], row_count=1)
+    fake_connector_cls = MagicMock(return_value=_FakeConnector(query_result=query_result))
+    fake_settings_factory = MagicMock(return_value="built-settings")
+
+    agent = _agent()
+    input_ = DataFederationInput(
+        request_context=_request_context(),
+        payload=DataFederationPayload(plans=[_plan(_SOURCE_A)]),
+    )
+
+    with (
+        patch(f"{_AGENT_MODULE}.session_scope", _fake_session_scope),
+        patch.object(
+            DataFederationAgent,
+            "_get_data_source",
+            staticmethod(
+                lambda session, *, data_source_id, tenant_id: SimpleNamespace(
+                    source_type="fake_source",
+                    connection_ref={"secret_scope": "tenant_a_fake_source"},
+                )
+            ),
+        ),
+        patch(f"{_AGENT_MODULE}.get_connector_class", return_value=fake_connector_cls),
+        patch(f"{_AGENT_MODULE}.get_settings_factory", return_value=fake_settings_factory),
+    ):
+        output = await agent.run(input_)
+
+    assert output.errors == []
+    fake_settings_factory.assert_called_once_with(
+        {"secret_scope": "tenant_a_fake_source"}, agent._secrets
+    )
+    fake_connector_cls.assert_called_once_with(settings="built-settings")

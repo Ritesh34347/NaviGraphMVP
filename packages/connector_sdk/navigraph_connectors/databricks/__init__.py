@@ -11,8 +11,9 @@ once anyone (a startup script, a test, another package) has imported
 from __future__ import annotations
 
 from navigraph_connectors.databricks.connector import DatabricksConnector
+from navigraph_connectors.databricks.settings_factory import build_databricks_settings
 from navigraph_connectors.registry import register_connector
 
-register_connector("databricks", DatabricksConnector)
+register_connector("databricks", DatabricksConnector, build_databricks_settings)
 
 __all__ = ["DatabricksConnector"]
