@@ -132,11 +132,30 @@ class AzureKeyVaultSecretsProvider(SecretsProvider):
     vault shared across every tenant; callers resolve it from the specific
     `DataSource.connection_ref` being processed (see
     `navigraph_connectors`' settings factories), not from a global setting.
+
+    When no explicit `credential` is passed, the default `DefaultAzureCredential()`
+    is built with `managed_identity_client_id=os.environ.get("AZURE_CLIENT_ID")`.
+    This is a REAL, not hypothetical, requirement: the AKS node pool this
+    runs on has multiple user-assigned managed identities attached, and a
+    bare `DefaultAzureCredential()`'s `ManagedIdentityCredential` step
+    cannot disambiguate between them via IMDS alone -- confirmed live via
+    `ClientAuthenticationError: ... Multiple user assigned identities
+    exist, please specify the clientId / resourceId`. `AZURE_CLIENT_ID` is
+    `None` (i.e. unset) in single-identity environments, where passing
+    `managed_identity_client_id=None` is a harmless no-op.
     """
 
     def __init__(self, vault_url: str, *, credential: Any | None = None) -> None:
         self._vault_url = vault_url
         self._credential = credential
+
+    def _resolve_credential(self) -> Any:
+        if self._credential is not None:
+            return self._credential
+
+        from azure.identity import DefaultAzureCredential
+
+        return DefaultAzureCredential(managed_identity_client_id=os.environ.get("AZURE_CLIENT_ID"))
 
     def get(self, *, scope: str, field: str) -> str | None:
         # Imported lazily, mirroring SnowflakeConnector/PostgresConnector's
@@ -144,11 +163,9 @@ class AzureKeyVaultSecretsProvider(SecretsProvider):
         # module should never require azure-identity/azure-keyvault-secrets
         # to be installed unless this class is actually instantiated.
         from azure.core.exceptions import ResourceNotFoundError
-        from azure.identity import DefaultAzureCredential
         from azure.keyvault.secrets import SecretClient
 
-        credential = self._credential or DefaultAzureCredential()
-        client = SecretClient(vault_url=self._vault_url, credential=credential)
+        client = SecretClient(vault_url=self._vault_url, credential=self._resolve_credential())
         secret_name = f"{scope}-{field}".replace("_", "-")
         try:
             return client.get_secret(secret_name).value
@@ -157,11 +174,9 @@ class AzureKeyVaultSecretsProvider(SecretsProvider):
 
     def set(self, *, scope: str, field: str, value: str) -> None:
         # Imported lazily -- see the identical note on `get()` above.
-        from azure.identity import DefaultAzureCredential
         from azure.keyvault.secrets import SecretClient
 
-        credential = self._credential or DefaultAzureCredential()
-        client = SecretClient(vault_url=self._vault_url, credential=credential)
+        client = SecretClient(vault_url=self._vault_url, credential=self._resolve_credential())
         # Must exactly match get()'s naming, or a value written via set()
         # becomes unreadable via get() -- there is no test for "these two
         # methods agree" other than construction being identical here.

@@ -7,6 +7,17 @@
 # credentials here too, not just read the pre-existing ones the CSI driver
 # syncs -- two independent access paths to the one real vault, not two
 # vaults.
+#
+# AZURE_CLIENT_ID: this AKS node pool has MULTIPLE user-assigned managed
+# identities attached, so `DefaultAzureCredential()`'s IMDS lookup can't
+# pick one on its own -- confirmed live via a real `ClientAuthenticationError:
+# ManagedIdentityCredential authentication unavailable ... Multiple user
+# assigned identities exist, please specify the clientId / resourceId`
+# inside the agent-runtime pod. Setting AZURE_CLIENT_ID makes
+# DefaultAzureCredential's ManagedIdentityCredential step disambiguate to
+# this same identity (002030c6-3c35-451f-86c0-4041554413f2) that already
+# holds both Key Vault roles above -- no new identity, just telling the SDK
+# which of the node's several identities to use.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,3 +25,4 @@ metadata:
   namespace: navigraph
 data:
   AZURE_KEY_VAULT_URL: https://navigraph-dev-kv.vault.azure.net/
+  AZURE_CLIENT_ID: 002030c6-3c35-451f-86c0-4041554413f2
