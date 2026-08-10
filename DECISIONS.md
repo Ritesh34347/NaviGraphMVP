@@ -1781,3 +1781,56 @@ end-to-end, against a draft shaped exactly like `OntologyDraftingResult
 .model_dump()` produces. Connector registration/construction confirmed
 generic across all three registered source types in a fresh process,
 not assumed from reading the registry's own docstring.
+
+---
+
+## 2026-08-10 — Phase 3: fail-closed for an unconfigured tenant, not a fallback allow-list
+
+The build plan's Phase 3 goal was making `authz.rego`'s `allowed_roles`
+read the real per-tenant OPA document `sync_policy_bindings` already
+wrote. The real design decision was what a tenant with NO synced document
+should resolve to.
+
+**What we considered and rejected**: a generic default allow-list (e.g.
+the old static `{"analyst", "pii_viewer", "admin"}` literal, kept as a
+fallback for any tenant without a real document) -- this is what an
+earlier version of `opa_sync.py`'s own docstring described, written
+ahead of `authz.rego` actually being changed to match it. Rejected
+because it silently grants access to any tenant nobody has explicitly
+configured yet, the opposite of this policy's own stated
+"deny-by-default: nothing is authorized unless `allow` fires" principle.
+Implemented `default allowed_roles := []` instead: an unconfigured tenant
+gets an empty set, denying every role, indistinguishable from (and
+exactly as correct as) a tenant that deliberately locked itself out with
+an explicit empty `allowed_roles` list.
+
+**Verified against a real OPA engine, not just reasoned about**: no
+Docker was available in this session, so the official `opa` static
+binary was downloaded directly and run locally via `opa eval` against
+every real scenario `tests/security/test_opa_policy_adversarial.py`
+already asserts -- the control case with and without a synced document,
+all 5 adversarial cases, the documented role-escalation gap, and an
+explicit-lockout document. Every result matched. This is the same
+"verify against the real thing, don't assume a Rego change is correct
+because it reads right" standard `tests/security/README.md` already
+holds this policy to.
+
+**Real, separate gap surfaced while addressing the plan's own named
+regression risk, deliberately not fixed here**: writing the
+`tests/security/conftest.py` fixture required understanding how these
+`opa_integration`-marked tests actually get a live OPA to run against in
+CI -- they don't. `adversarial-tests.yml` has never started a real OPA or
+Postgres service; these tests have never run for real in any CI workflow,
+despite their own docstrings and `README.md` saying otherwise. This is a
+distinct, larger infra task (real service containers, likely GitHub
+Actions `services:`, plus loading `infra/opa/policies/` and running
+catalog migrations before tests execute) from "make the policy
+data-driven" -- logged in `LIMITATIONS.md` item 107 as a real, separate,
+still-open gap rather than silently left undiscovered or wrongly assumed
+solved by this phase.
+
+**Verification**: full `pytest packages/` (569 passed, 8 skipped),
+`ruff check` clean, `mypy` clean (162 files). `opa check` confirmed the
+final `authz.rego` compiles; `opa eval` confirmed its real decisions
+match every existing adversarial test's assertions, by hand, against the
+actual policy engine.

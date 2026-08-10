@@ -1,17 +1,22 @@
 """Compile a `SemanticModel`'s `policy_bindings` into a real per-tenant
 OPA data document, and push it via `OpaClient.set_data`.
 
-`infra/opa/policies/authz.rego`'s `allowed_roles` rule reads
-`data.navigraph.tenants[input.tenant_id].allowed_roles`, falling back to a
-generic `default_allowed_roles` set when no document exists for a given
-tenant -- see that policy file's own comment for the full design
-rationale (LIMITATIONS.md item 38's structural fix, Phase 12.3). This
-module is the one real place that writes to that path; the Rego policy
-itself never needs a second, per-tenant copy.
+`infra/opa/policies/authz.rego`'s `allowed_roles` rule (Phase 3 of the
+configurable-platform build plan) reads
+`data.navigraph.tenants[input.tenant_id].allowed_roles` -- a tenant with
+no synced document resolves to an EMPTY set (fail-closed), NOT a generic
+default allow-list; see that policy file's own comment for the full
+rationale, corrected here from an earlier, inaccurate version of this
+docstring that described a "generic default_allowed_roles fallback" which
+was never actually implemented. This module is the one real place that
+writes to that path; the Rego policy itself never needs a second,
+per-tenant copy.
 
 This is a management/onboarding-time operation -- called once per tenant
 whenever its Semantic Model is compiled/activated, never on the
-per-request hot path `PolicyAuthorizationAgent` runs.
+per-request hot path `PolicyAuthorizationAgent` runs. Every tenant relying
+on the OLD static `authz.rego` literal needed a real sync BEFORE Phase 3
+went live -- see `tools/scripts/seed_semantic_model_from_ontology.py`.
 """
 
 from __future__ import annotations

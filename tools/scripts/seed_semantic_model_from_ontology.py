@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """One-time migration: seed a persisted, activated SemanticModel from
 `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` for a real tenant -- Phase 1
-of the configurable-platform build plan.
+of the configurable-platform build plan, extended in Phase 3 to also sync
+that tenant's OPA policy bindings.
 
 WHY THIS EXISTS: `navigraph_kg.ingestion.pipeline._sync_relationship_concepts`
 now reads a tenant's ACTIVATED SemanticModel first (via
@@ -11,6 +12,16 @@ onboarded one. Run this once per real tenant to migrate today's exact
 ingestion output into persisted, tenant-owned config, so later removing
 `ontology.py`'s hardcoded list doesn't silently change what an existing
 tenant's ingestion produces.
+
+PHASE 3 ADDITION, NOT OPTIONAL BEFORE DEPLOYING THAT CHANGE:
+`infra/opa/policies/authz.rego`'s `allowed_roles` rule now reads a
+per-tenant OPA data document instead of a static literal, and resolves to
+an EMPTY set (fail-closed) for any tenant with no synced document. This
+script's model uses `PolicyBindings`' own default
+(`["analyst", "pii_viewer", "admin"]`) -- identical to the OLD static
+literal -- and syncs it via `sync_policy_bindings`, so running this for
+every real tenant BEFORE that Rego change deploys is what keeps them from
+locking themselves out on deploy day.
 
 DELIBERATELY PRESERVES TODAY'S (ARGUABLY ACCIDENTAL) BEHAVIOR: the real
 `_sync_relationship_concepts` has always synced ALL 18 `RELATIONSHIP_CONCEPTS`
@@ -40,6 +51,7 @@ register --set-default`):
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 
 from navigraph_catalog.api import (
@@ -57,6 +69,8 @@ from navigraph_semantic_model.contracts import (
     RelationshipBinding,
     SemanticModel,
 )
+from navigraph_semantic_model.opa_sync import sync_policy_bindings
+from navigraph_shared.opa import HttpOpaClient
 
 
 def _derive_entities(
@@ -146,10 +160,13 @@ def main() -> int:
         )
         activate_semantic_model(session, tenant_id=model.tenant_id, version=model.version)
 
+    asyncio.run(sync_policy_bindings(HttpOpaClient(), model))
+
     print(
         f"Seeded and activated SemanticModel v{model.version} for tenant {args.tenant_id!r}: "
         f"{len(model.entities)} entit(y/ies), {len(model.relationships)} relationship(s) "
-        f"(matches ontology.RELATIONSHIP_CONCEPTS exactly, {len(RELATIONSHIP_CONCEPTS)} total)."
+        f"(matches ontology.RELATIONSHIP_CONCEPTS exactly, {len(RELATIONSHIP_CONCEPTS)} total). "
+        f"Synced policy_bindings (allowed_roles={model.policy_bindings.allowed_roles}) to OPA."
     )
     return 0
 
