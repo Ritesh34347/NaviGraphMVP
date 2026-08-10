@@ -368,6 +368,17 @@ def _redis_url() -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     llm_client = _build_llm_client()
+    # Built once, up front, and threaded into every agent that resolves
+    # real per-DataSource credentials (DataSourceDiscoveryAgent below and
+    # inside RequestOrchestratorAgent) -- REAL BUG FIX: both previously
+    # constructed their DataSourceDiscoveryAgent with no `secrets=` at all,
+    # silently defaulting to `EnvVarSecretsProvider()` regardless of this
+    # value, so every DataSource using the newer `secret_scope` credential
+    # mechanism (see onboarding_routes.py) failed live connectivity checks
+    # in the real /ask pipeline with a blank-credentials error, even though
+    # its Key Vault secrets were written and readable. Also assigned to
+    # `app.state.secrets_provider` below -- one real instance, not two.
+    secrets_provider = _build_secrets_provider()
 
     intent_understanding_agent = IntentUnderstandingAgent(llm_client=llm_client, tracer=tracer)
     register(INTENT_UNDERSTANDING_AGENT_NAME, intent_understanding_agent.run)
@@ -406,7 +417,7 @@ async def lifespan(app: FastAPI):
 
     # Query-domain agents (Phase 5).
     data_source_discovery_agent = DataSourceDiscoveryAgent(
-        session_factory=catalog_session_factory, tracer=tracer
+        session_factory=catalog_session_factory, tracer=tracer, secrets=secrets_provider
     )
     register(DATA_SOURCE_DISCOVERY_AGENT_NAME, data_source_discovery_agent.run)
 
@@ -543,6 +554,7 @@ async def lifespan(app: FastAPI):
         opa_client=opa_client,
         cache_client=cast(SessionCacheClientProtocol, redis_client),
         trino_client=trino_client,
+        secrets=secrets_provider,
         tracer=tracer,
     )
     register(REQUEST_ORCHESTRATOR_AGENT_NAME, request_orchestrator_agent.run)
@@ -557,8 +569,10 @@ async def lifespan(app: FastAPI):
     # Self-service data source onboarding (`onboarding_routes.py`): the one
     # new external dependency this feature adds, real Azure Key Vault by
     # default -- see `_build_secrets_provider`'s own docstring for the
-    # fallback behavior when no vault is configured.
-    app.state.secrets_provider = _build_secrets_provider()
+    # fallback behavior when no vault is configured. Same instance built at
+    # the top of this function and already threaded into
+    # DataSourceDiscoveryAgent/RequestOrchestratorAgent above.
+    app.state.secrets_provider = secrets_provider
     yield
 
     neo4j_client.close()

@@ -80,6 +80,7 @@ from navigraph_shared.contracts import (
 )
 from navigraph_shared.llm import LLMClient
 from navigraph_shared.opa import OpaClient
+from navigraph_shared.secrets import SecretsProvider
 from navigraph_shared.telemetry import (
     configure_logging,
     get_tracer,
@@ -321,6 +322,7 @@ class RequestOrchestratorAgent:
         opa_client: OpaClient,
         cache_client: CacheClientProtocol,
         trino_client: TrinoClient | None = None,
+        secrets: SecretsProvider | None = None,
         tracer: Tracer | None = None,
     ) -> None:
         self._catalog_session_factory = catalog_session_factory
@@ -340,7 +342,7 @@ class RequestOrchestratorAgent:
 
         # Query domain
         self._data_source_discovery_agent = DataSourceDiscoveryAgent(
-            session_factory=catalog_session_factory, tracer=tracer
+            session_factory=catalog_session_factory, tracer=tracer, secrets=secrets
         )
         self._sql_generation_agent = SqlGenerationAgent(llm_client=llm_client, tracer=tracer)
         self._sql_optimization_agent = SqlOptimizationAgent(tracer=tracer)
