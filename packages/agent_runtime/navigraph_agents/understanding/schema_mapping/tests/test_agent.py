@@ -1548,3 +1548,90 @@ class TestIdentifierColumnNeverBecomesAMeasureUnlessCounting:
         output = await agent.run(input_)
 
         assert output.result.columns[0].role == "measure"
+
+
+class TestDenormalizedSharedDimensionKeyDoesNotBlockARealParentChildJoin:
+    """SEVENTH REAL BUG, found live: "What is the total revenue generated
+    across all completed orders?" resolves FACT_ORDER_ITEMS (revenue) and
+    FACT_ORDERS (completed orders) together. FACT_ORDER_ITEMS denormalizes
+    copies of FACT_ORDERS' own DATE_ID/CHANNEL_ID onto itself, so "Order
+    occurs on Date" and "Order uses Channel" (both realizing_table=
+    FACT_ORDERS) each also find FACT_ORDER_ITEMS as their sole DATE_ID/
+    CHANNEL_ID candidate -- landing on the SAME (FACT_ORDERS,
+    FACT_ORDER_ITEMS) pair "Order contains OrderItem" (key=ORDER_ID)
+    already proposed. Three keys, one pair, tripping the pre-existing
+    ambiguity guard and dropping the join entirely, even though ORDER_ID
+    is unambiguously the real relationship: it's the only one where
+    subject_key_column != object_key_column (a genuine parent/child link),
+    while the other two are the classic "both sides share this exact
+    dimension key" shape."""
+
+    async def test_distinct_keyed_relationship_wins_over_shared_dimension_keys(self) -> None:
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            original_question="What is the total revenue generated across all completed orders?",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="total revenue",
+                    resolved=True,
+                    catalog_column_id="col-revenue",
+                    column_name="LINE_TOTAL",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Order",
+                    predicate="CONTAINS",
+                    object_label="OrderItem",
+                    realizing_table="FACT_ORDER_ITEMS",
+                    subject_key_column="ORDER_ID",
+                    object_key_column="ORDER_ITEM_ID",
+                ),
+                RelationshipResolution(
+                    subject_label="Order",
+                    predicate="OCCURS_ON",
+                    object_label="Date",
+                    realizing_table="FACT_ORDERS",
+                    subject_key_column="DATE_ID",
+                    object_key_column="DATE_ID",
+                ),
+                RelationshipResolution(
+                    subject_label="Order",
+                    predicate="USES",
+                    object_label="Channel",
+                    realizing_table="FACT_ORDERS",
+                    subject_key_column="CHANNEL_ID",
+                    object_key_column="CHANNEL_ID",
+                ),
+            ],
+            semantic_matches=[
+                TermMatch(
+                    term="completed orders",
+                    matched=True,
+                    catalog_column_id="col-status",
+                    column_name="ORDER_STATUS",
+                ),
+            ],
+            catalog_inventory=[
+                _catalog_entry("col-revenue", "FACT_ORDER_ITEMS", "LINE_TOTAL", "NUMBER"),
+                _catalog_entry("col-status", "FACT_ORDERS", "ORDER_STATUS", "TEXT"),
+                _catalog_entry("col-oi-order-id", "FACT_ORDER_ITEMS", "ORDER_ID", "NUMBER"),
+                _catalog_entry("col-oi-date-id", "FACT_ORDER_ITEMS", "DATE_ID", "NUMBER"),
+                _catalog_entry("col-oi-channel-id", "FACT_ORDER_ITEMS", "CHANNEL_ID", "NUMBER"),
+                _catalog_entry("col-o-order-id", "FACT_ORDERS", "ORDER_ID", "NUMBER"),
+                _catalog_entry("col-o-date-id", "FACT_ORDERS", "DATE_ID", "NUMBER"),
+                _catalog_entry("col-o-channel-id", "FACT_ORDERS", "CHANNEL_ID", "NUMBER"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert set(output.result.tables) == {"FACT_ORDERS", "FACT_ORDER_ITEMS"}
+        assert len(output.result.joins) == 1
+        join = output.result.joins[0]
+        assert {join.left_column, join.right_column} == {"ORDER_ID"}
+        assert output.result.unmapped_terms == []
