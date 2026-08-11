@@ -22,42 +22,11 @@ from __future__ import annotations
 import time
 
 from navigraph_kg.api import (
-    entity_matches_reference_node,
     list_business_concepts,
     list_relationship_concepts,
     resolve_business_term,
 )
 from navigraph_kg.client import Neo4jClient
-from navigraph_kg.ontology import (
-    NODE_ASSET,
-    NODE_CHANNEL,
-    NODE_CUSTOMER_TYPE,
-    NODE_EXCHANGE,
-    NODE_INDUSTRY,
-    NODE_INVESTMENT_CAPACITY_BAND,
-    NODE_MARKET,
-    NODE_RISK_LEVEL,
-    NODE_SECTOR,
-)
-
-# Labels that correspond to real, crawled Tier-1 reference-data node types
-# (see `navigraph_kg.ingestion.pipeline._sync_reference_data`) -- these are
-# the only labels `entity_matches_reference_node` is ever worth querying
-# for; "Customer"/"Transaction" (the other subject labels seen in
-# `RELATIONSHIP_CONCEPTS`) are deliberately excluded from the graph
-# entirely (customer/transaction-cardinality data), so no such node type
-# exists to match against.
-_REFERENCE_NODE_LABELS = {
-    NODE_ASSET,
-    NODE_MARKET,
-    NODE_EXCHANGE,
-    NODE_SECTOR,
-    NODE_INDUSTRY,
-    NODE_CHANNEL,
-    NODE_CUSTOMER_TYPE,
-    NODE_RISK_LEVEL,
-    NODE_INVESTMENT_CAPACITY_BAND,
-}
 from navigraph_shared.contracts import AgentError, AgentMetadata, LineageEvent
 from navigraph_shared.telemetry import (
     get_tracer,
@@ -77,30 +46,11 @@ from navigraph_agents.understanding.ontology.contracts import (
 AGENT_NAME = "understanding.ontology"
 
 
-def _normalize_label(text: str) -> str:
-    """Strip everything but letters/digits and lowercase, so "RiskLevel"
-    and "risk level" (or "risk-level") compare equal. REAL BUG, found
-    live: `_label_matches_entities` used to compare `label.lower()`
-    against `entity.lower()` verbatim, so a real extracted entity like
-    "risk level" (the natural two-word phrasing a real question and this
-    project's own golden set both use) never matched the seed data's
-    single-token canonical label "RiskLevel" -- the space is the only
-    difference, but substring matching alone can never bridge it. This
-    silently dropped the "Customer has RiskLevel" relationship for every
-    real question phrased with a space, which meant Schema Mapping never
-    got the join it needed.
-    """
-
-    return "".join(ch for ch in text.lower() if ch.isalnum())
-
-
 def _tokenize(text: str) -> list[str]:
     """Split into lowercase alphanumeric-run word tokens, e.g. "Units
     Traded" / "units-traded" -> `["units", "traded"]`.
 
-    Unlike `_normalize_label` (which concatenates everything into one
-    blob, deliberately erasing word boundaries for the label-vs-entity
-    substring check above), this PRESERVES word boundaries -- needed for
+    Deliberately PRESERVES word boundaries -- needed for
     `_glossary_term_matches_entity` below, where erasing boundaries would
     let a short glossary synonym accidentally match as a substring of an
     unrelated, longer word purely by coincidence (found while designing
@@ -141,30 +91,6 @@ def _glossary_term_matches_entity(term: str, entity_tokens: list[str]) -> bool:
 
     term_tokens = _tokenize(term)
     return bool(term_tokens) and _contains_token_subsequence(entity_tokens, term_tokens)
-
-
-def _label_matches_entities(label: str, entities: list[str]) -> bool:
-    """Case-insensitive, whitespace/punctuation-insensitive match of a
-    relationship concept's subject/object label against the input
-    entities.
-
-    Uses substring matching in either direction (label-in-entity OR
-    entity-in-label), not just exact equality: Intent Understanding's
-    extracted entities are free-text spans from the user's question (e.g.
-    "risk level" or "the customer's risk"), whereas `RELATIONSHIP_CONCEPTS`
-    labels are canonical single tokens (e.g. "RiskLevel", "Customer"). An
-    exact-match-only comparison would almost never fire in practice. This is
-    a deliberate judgement call, not a proven-correct heuristic -- it can
-    over-match on short/generic labels, but under-matching (missing a real
-    relationship) is the worse failure mode here since a false-negative
-    silently drops a join the Schema Mapping agent needs downstream.
-    """
-
-    label_norm = _normalize_label(label)
-    return any(
-        label_norm in _normalize_label(entity) or _normalize_label(entity) in label_norm
-        for entity in entities
-    )
 
 
 class OntologyAgent:
@@ -302,8 +228,7 @@ class OntologyAgent:
         confirmed via the live glossary) that would otherwise risk
         matching as an accidental substring of a completely unrelated
         longer word (e.g. `"state"` inside `"real estate"`) if word
-        boundaries were erased the way `_normalize_label` does for the
-        (much smaller, curated) relationship-label matching above.
+        boundaries were erased.
 
         If the fuzzy fallback matches 2+ glossary concepts mapping to
         DIFFERENT columns for the same one entity string, this is a real
@@ -368,35 +293,6 @@ class OntologyAgent:
 
         return concept_resolutions, unresolved_terms
 
-    def _label_or_instance_matches(
-        self, label: str, entities: list[str], *, tenant_id: str
-    ) -> bool:
-        """A relationship concept's label matches if either (a) the label
-        word itself appears among the extracted entities (the original
-        check), or (b) -- REAL BUG, found live -- an entity names a real,
-        specific instance of that category instead of the category word
-        (e.g. "Athens Exchange" rather than "market"). `_label_matches_entities`
-        alone can never bridge that gap; a real question naming a specific
-        market/asset/channel/risk level/etc. by name would otherwise never
-        resolve the relationship it needs. (b) is only ever checked for
-        labels that correspond to a real, crawled reference-data node type
-        (`_REFERENCE_NODE_LABELS`) -- "Customer"/"Transaction" have no such
-        node type at all (customer/transaction-cardinality data is
-        deliberately excluded from the graph), so querying for them would
-        just waste a call.
-        """
-
-        if _label_matches_entities(label, entities):
-            return True
-        if label not in _REFERENCE_NODE_LABELS:
-            return False
-        return any(
-            entity_matches_reference_node(
-                self._client, tenant_id=tenant_id, label=label, entity=entity
-            )
-            for entity in entities
-        )
-
     def _resolve_relationships(
         self,
         entities: list[str],
@@ -404,83 +300,55 @@ class OntologyAgent:
         *,
         tenant_id: str,
     ) -> list[RelationshipResolution]:
-        """Scan every hand-curated `RelationshipConcept` seed for one whose
-        subject AND object label both appear among the input entities
-        (directly, or via a named real instance -- see
-        `_label_or_instance_matches`), and resolve each match against the
-        real graph.
+        """Return every `RelationshipConcept` synced for the tenant,
+        unconditionally -- no label-matching or "is the realizing table
+        implied by my own concept resolutions" gate at all.
 
-        REAL BUG, found live testing the e-commerce data source, in two
-        stages. First: every e-commerce `RelationshipConcept`'s
-        `subject_label` is `"Order"` or `"OrderItem"` (see
-        `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`'s e-commerce block)
-        -- a table-role word real users almost never say. A question like
-        "What is the total revenue by channel?" mentions "channel"
-        (matches `object_label`) but never "order" in any form, so
-        `_label_or_instance_matches(subject_label=...)` never matched,
-        "Order uses Channel" never fired, and Schema Mapping's
-        `_build_joins` -- which only ever considers relationships Ontology
-        actually resolved -- never got a join to build, even though
-        `FACT_ORDERS` (the concept's own `realizing_table`) was ALREADY
-        one of the resolved tables once "revenue" resolved via the
-        glossary. Second, found live re-testing after the first fix
-        shipped: the SAME problem recurs on the OBJECT side -- "What are
-        the top 5 categories by revenue?" mentions "categories" (which
-        resolves to `DIM_PRODUCT.CATEGORY`) but never the word "product",
-        so "OrderItem involves Product" (`object_label="Product"`) never
-        fired either, even after "revenue" correctly implied
-        `FACT_ORDER_ITEMS`. No amount of literal-word or reference-node
-        matching on "Order"/"Product" themselves can fix either direction
-        -- these are table-role words, and there is no bound on how many
-        different real column/dimension names could refer to "that
-        table" without ever saying its role name.
+        HISTORY: earlier versions of this method tried to guess relevance
+        here, first via literal/named-instance label matching against
+        `entities` (`_label_or_instance_matches` -- now dead code, see the
+        prior version of this docstring in git history), then via an
+        "implied table" relaxation once a concept resolution already
+        pointed at the concept's `realizing_table`. Both were real,
+        incremental fixes for real live bugs, but each one only patched
+        ONE specific way this agent's guess could be wrong.
 
-        Fix: once the concept's `realizing_table` is already implied by a
-        resolved business concept (some entity in this question resolved,
-        via the deterministic glossary path, to a column on that exact
-        table -- matched by core table name, `STAGING_` prefix ignored,
-        same normalization `schema_mapping._build_joins` already uses),
-        BOTH the subject and object literal/instance checks are skipped
-        entirely -- the relationship fires unconditionally. This is safe
-        specifically because `_build_joins` is the actual correctness
-        gate, not this method: it independently re-verifies, against the
-        real live catalog, that the relationship's `subject_key_column`
-        exists on both the realizing table AND exactly one other resolved
-        table before ever emitting a `JoinSpec` (its own ambiguity guard,
-        item 87) -- a relationship_resolution that turns out to be
-        irrelevant (its `realizing_table` was never actually resolved, or
-        no other table shares its join key) is simply skipped there as a
-        no-op, never a wrong join. This requires a real `ColumnGlossary`
-        entry for the measure/dimension term to exist (Semantic
-        Retrieval's LLM-fallback resolutions don't feed back into
-        `concept_resolutions`, only Ontology's own glossary path does) --
-        see BUILD_LOG.md's e-commerce ColumnGlossary entry for why that
-        glossary is a necessary companion to this fix. When the realizing
-        table is NOT implied, behavior is unchanged: both labels must
-        still match literally or via a named reference-node instance,
-        exactly as before.
+        REAL BUG, found live testing the e-commerce data source, that no
+        amount of further guessing here can fix: "How many orders were
+        placed in the last 30 days?" resolves "orders" to
+        `FACT_ORDERS.ORDER_ID` ONLY via Semantic Retrieval's separate LLM
+        fallback -- which runs AFTER this agent in the real request
+        pipeline (see `request_orchestrator.agent`'s call order). This
+        method's own `concept_resolutions` parameter is Ontology's
+        glossary-only view, so `implied_tables` could never have included
+        `FACT_ORDERS` for that question no matter how the relaxation logic
+        was written -- the information this method would need already
+        doesn't exist yet at the point this agent runs.
+
+        The actual fix: stop guessing here at all. `navigraph_agents.
+        understanding.schema_mapping.agent._build_joins` is the REAL
+        correctness gate, not this method -- it runs downstream, after
+        BOTH Ontology's and Semantic Retrieval's resolutions have been
+        merged into one final resolved-column set, and it independently
+        re-verifies (against the real live catalog) that a relationship's
+        `subject_key_column` exists on both the realizing table AND
+        exactly one other resolved table before ever emitting a
+        `JoinSpec` (its own ambiguity guard). A relationship concept that
+        turns out irrelevant to a given question (its `realizing_table`
+        was never actually resolved by anything, or no other resolved
+        table shares its join key) is simply skipped there as a no-op --
+        never a wrong join. Returning every relationship concept
+        unconditionally removes an entire class of "Ontology didn't know
+        what Semantic Retrieval would later find" bugs at the source,
+        rather than patching each new instance of it as it's discovered.
+        A real tenant's relationship-concept set is small (on the order of
+        a dozen), so returning it all every time is cheap.
         """
 
-        def _core_name(table_name: str) -> str:
-            return table_name.upper().removeprefix("STAGING_")
-
-        implied_tables = {
-            _core_name(cr.table_name)
-            for cr in concept_resolutions
-            if cr.resolved and cr.table_name
-        }
+        del entities, concept_resolutions  # no longer used -- see docstring
 
         relationship_resolutions: list[RelationshipResolution] = []
 
-        # Queries the graph directly for every RelationshipConcept synced
-        # for this tenant, rather than iterating the hardcoded
-        # `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` Python list and
-        # querying once per entry -- see `list_relationship_concepts`'s
-        # own docstring for the real bug this replacement closes (a
-        # tenant's activated Semantic Model can name a real join with
-        # different subject/predicate/object labels than the static
-        # list's fixed triples, which then never matched at query time
-        # even though ingestion had synced the relationship correctly).
         for concept in list_relationship_concepts(self._client, tenant_id=tenant_id):
             subject_label = concept.get("subject_label")
             predicate = concept.get("predicate")
@@ -504,18 +372,6 @@ class OntologyAgent:
                 or object_key_column is None
             ):
                 continue
-
-            realizing_table_implied = _core_name(realizing_table) in implied_tables
-
-            if not realizing_table_implied:
-                if not self._label_or_instance_matches(
-                    subject_label, entities, tenant_id=tenant_id
-                ):
-                    continue
-                if not self._label_or_instance_matches(
-                    object_label, entities, tenant_id=tenant_id
-                ):
-                    continue
 
             relationship_resolutions.append(
                 RelationshipResolution(

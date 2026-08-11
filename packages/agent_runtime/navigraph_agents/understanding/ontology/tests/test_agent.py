@@ -409,309 +409,67 @@ class TestFuzzyConceptResolutionFallback:
 
 
 class TestRelationshipResolution:
-    async def test_relationship_fires_when_both_labels_present(self) -> None:
+    """Since `_resolve_relationships` now returns every `RelationshipConcept`
+    synced for the tenant unconditionally (see that method's own docstring
+    for why: Schema Mapping's `_build_joins` is the real correctness gate,
+    running downstream after Ontology's and Semantic Retrieval's
+    resolutions are merged, which this agent alone can never see), these
+    tests cover that it genuinely does return everything the graph has --
+    regardless of what entities were extracted -- and still defends
+    against a malformed/incomplete `RelationshipConcept` node."""
+
+    async def test_every_synced_relationship_concept_is_returned(self) -> None:
         client = MagicMock()
         agent = OntologyAgent(client=client)
 
-        relationship_record = {
-            "name": "Customer has RiskLevel",
-            "subject_label": "Customer",
-            "predicate": "HAS",
-            "object_label": "RiskLevel",
-            "realizing_table": "CUSTOMER_INFORMATION",
-            "subject_key_column": "CUSTOMERID",
-            "object_key_column": "RISKLEVEL",
-        }
-
-        with (
-            patch(
-                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
-                return_value=[],
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
-                return_value=False,
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
-                return_value=[relationship_record],
-            ) as mock_list_rel,
-        ):
-            output = await agent.run(_make_input(["Customer", "RiskLevel"]))
-
-        assert len(output.result.relationship_resolutions) == 1
-        relationship = output.result.relationship_resolutions[0]
-        assert relationship.subject_label == "Customer"
-        assert relationship.object_label == "RiskLevel"
-        assert relationship.realizing_table == "CUSTOMER_INFORMATION"
-        assert relationship.subject_key_column == "CUSTOMERID"
-        assert relationship.object_key_column == "RISKLEVEL"
-        # The whole tenant's relationship-concept set is fetched once per
-        # run, then filtered in Python -- not once per candidate.
-        assert mock_list_rel.call_count == 1
-
-    async def test_relationship_fires_for_a_real_two_word_entity_phrasing(self) -> None:
-        """REAL BUG, live-reproduced: golden questions gq_005/gq_009 both
-        extract the entity as "risk level" (a real, natural two-word
-        phrasing -- see eval/golden_set/gq_005_risk_level_distribution.yaml),
-        not the seed data's single-token canonical label "RiskLevel". The
-        space was the only difference, but substring matching alone could
-        never bridge it -- this must now match via `_normalize_label`."""
-
-        client = MagicMock()
-        agent = OntologyAgent(client=client)
-
-        relationship_record = {
-            "name": "Customer has RiskLevel",
-            "subject_label": "Customer",
-            "predicate": "HAS",
-            "object_label": "RiskLevel",
-            "realizing_table": "CUSTOMER_INFORMATION",
-            "subject_key_column": "CUSTOMERID",
-            "object_key_column": "RISKLEVEL",
-        }
-
-        with (
-            patch(
-                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
-                return_value=[],
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
-                return_value=False,
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
-                return_value=[relationship_record],
-            ),
-        ):
-            output = await agent.run(_make_input(["customer", "risk level"]))
-
-        assert len(output.result.relationship_resolutions) == 1
-        assert output.result.relationship_resolutions[0].object_label == "RiskLevel"
-
-    async def test_relationship_fires_for_a_real_named_instance_not_the_category_word(
-        self,
-    ) -> None:
-        """REAL BUG, live-reproduced: "What is driving the high transaction
-        volume in the Athens Exchange S.A. Cash Market?" names a SPECIFIC
-        market rather than saying "market" -- `_label_matches_entities`
-        alone can never match "Market" against "Athens Exchange", so
-        "Transaction happens in Market" silently never fired for any
-        question naming a real market by name. Must now match via
-        `entity_matches_reference_node` finding a real Market node whose
-        name overlaps the extracted entity."""
-
-        client = MagicMock()
-        agent = OntologyAgent(client=client)
-
-        relationship_record = {
-            "name": "Transaction happens in Market",
-            "subject_label": "Transaction",
-            "predicate": "HAPPENS_IN",
-            "object_label": "Market",
-            "realizing_table": "TRANSACTIONS",
-            "subject_key_column": "MARKETID",
-            "object_key_column": "MARKETID",
-        }
-
-        def fake_instance_match(_client, *, tenant_id, label, entity):
-            return label == "Market" and entity == "Athens Exchange"
-
-        with (
-            patch(
-                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
-                return_value=[],
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
-                side_effect=fake_instance_match,
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
-                return_value=[relationship_record],
-            ),
-        ):
-            output = await agent.run(
-                _make_input(["transaction volume", "Athens Exchange"])
-            )
-
-        assert len(output.result.relationship_resolutions) == 1
-        assert output.result.relationship_resolutions[0].object_label == "Market"
-
-    async def test_relationship_fires_when_realizing_table_is_already_implied_by_a_resolved_concept(
-        self,
-    ) -> None:
-        """REAL BUG, found building the e-commerce data source: "What is
-        the total revenue by channel?" mentions "channel" (the object
-        label) but never "order" in any form -- every e-commerce
-        `RelationshipConcept`'s `subject_label` is "Order"/"OrderItem", a
-        table-role word real users don't say. The literal-or-instance
-        subject check alone can never bridge "revenue" to "Order"; they
-        share no lexical or instance overlap. Must now fire because
-        "revenue" resolves via the glossary to `FACT_ORDERS.TOTAL_AMOUNT`,
-        and `FACT_ORDERS` is exactly this concept's `realizing_table`.
-
-        Once `FACT_ORDERS` is implied, EVERY concept realized by that
-        table fires unconditionally (not just "Order uses Channel") --
-        this is intentional, not over-matching: `_build_joins` is the
-        real correctness gate (it only ever emits a join for a
-        relationship whose OTHER side is genuinely, unambiguously
-        resolved), so firing extra candidates that turn out irrelevant is
-        a safe no-op downstream, not a risk."""
-
-        client = MagicMock()
-        agent = OntologyAgent(client=client)
-
-        def fake_resolve(_client, *, tenant_id, term):
-            if term == "revenue":
-                return [
-                    {
-                        "business_concept": "Revenue",
-                        "catalog_column_id": "col-total-amount",
-                        "column_name": "TOTAL_AMOUNT",
-                        "table_name": "FACT_ORDERS",
-                        "preferred": True,
-                        "source": "manual_ecommerce_poc",
-                    }
-                ]
-            return []
-
-        # All 3 FACT_ORDERS-realized concepts a real tenant might have --
-        # since the realizing table is implied by the resolved "revenue"
-        # concept, all 3 should fire unconditionally (not just "Order uses
-        # Channel"), matching this test's original intent.
-        candidate_concepts = [
+        relationship_records = [
             {
-                "name": "Order involves Customer",
-                "subject_label": "Order",
-                "predicate": "INVOLVES",
-                "object_label": "Customer",
-                "realizing_table": "FACT_ORDERS",
-                "subject_key_column": "CUSTOMER_ID",
-                "object_key_column": "CUSTOMER_ID",
+                "name": "Customer has RiskLevel",
+                "subject_label": "Customer",
+                "predicate": "HAS",
+                "object_label": "RiskLevel",
+                "realizing_table": "CUSTOMER_INFORMATION",
+                "subject_key_column": "CUSTOMERID",
+                "object_key_column": "RISKLEVEL",
             },
             {
-                "name": "Order happens on Date",
+                "name": "Order occurs on Date",
                 "subject_label": "Order",
-                "predicate": "HAPPENS_ON",
+                "predicate": "OCCURS_ON",
                 "object_label": "Date",
                 "realizing_table": "FACT_ORDERS",
                 "subject_key_column": "DATE_ID",
                 "object_key_column": "DATE_ID",
-            },
-            {
-                "name": "Order uses Channel",
-                "subject_label": "Order",
-                "predicate": "USES",
-                "object_label": "Channel",
-                "realizing_table": "FACT_ORDERS",
-                "subject_key_column": "CHANNEL_ID",
-                "object_key_column": "CHANNEL_ID",
             },
         ]
 
         with (
             patch(
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
-                side_effect=fake_resolve,
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
-                return_value=False,
+                return_value=[],
             ),
             patch(
                 "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
-                return_value=candidate_concepts,
+                return_value=relationship_records,
             ) as mock_list_rel,
         ):
-            output = await agent.run(_make_input(["revenue", "channel"]))
+            # Entities name neither "Customer"/"RiskLevel" nor "Order"/"Date"
+            # at all -- REAL BUG this closes: a term like "orders" that only
+            # resolves via Semantic Retrieval's separate LLM fallback (which
+            # runs AFTER this agent) previously meant NEITHER relationship
+            # could ever fire, since this agent had no way to know either
+            # table was actually relevant yet.
+            output = await agent.run(_make_input(["revenue", "gibberish"]))
 
-        # All 3 FACT_ORDERS-realized concepts fire (Order involves
-        # Customer/Order happens on Date/Order uses Channel) -- assert the
-        # specific one this test cares about is among them, correctly
-        # resolved.
+        assert len(output.result.relationship_resolutions) == 2
         by_object = {r.object_label: r for r in output.result.relationship_resolutions}
-        assert "Channel" in by_object
-        relationship = by_object["Channel"]
-        assert relationship.subject_label == "Order"
-        assert relationship.realizing_table == "FACT_ORDERS"
-        assert len(output.result.relationship_resolutions) == 3
+        assert "RiskLevel" in by_object
+        assert "Date" in by_object
         mock_list_rel.assert_called_once()
 
-    async def test_relationship_fires_when_the_object_side_table_is_implied_not_the_subject(
-        self,
-    ) -> None:
-        """REAL BUG, found live re-testing after the fix above shipped:
-        "What are the top 5 categories by revenue?" mentions "revenue"
-        (implying `FACT_ORDER_ITEMS`, matching the subject side of
-        "OrderItem involves Product") but never the word "product" --
-        only "categories", which resolves to `DIM_PRODUCT.CATEGORY`. The
-        object side never got the same relaxation the subject side did,
-        so this fired for the subject check but still failed the object
-        check. Both sides must relax together once the realizing table is
-        implied -- see the method's own docstring for why this is safe."""
-
+    async def test_no_relationships_synced_means_none_returned(self) -> None:
         client = MagicMock()
         agent = OntologyAgent(client=client)
-
-        def fake_resolve(_client, *, tenant_id, term):
-            if term == "revenue":
-                return [
-                    {
-                        "business_concept": "Revenue",
-                        "catalog_column_id": "col-line-total",
-                        "column_name": "LINE_TOTAL",
-                        "table_name": "FACT_ORDER_ITEMS",
-                        "preferred": True,
-                        "source": "manual_ecommerce_poc",
-                    }
-                ]
-            return []
-
-        relationship_record = {
-            "name": "OrderItem involves Product",
-            "subject_label": "OrderItem",
-            "predicate": "INVOLVES",
-            "object_label": "Product",
-            "realizing_table": "FACT_ORDER_ITEMS",
-            "subject_key_column": "PRODUCT_ID",
-            "object_key_column": "PRODUCT_ID",
-        }
-
-        with (
-            patch(
-                "navigraph_agents.understanding.ontology.agent.resolve_business_term",
-                side_effect=fake_resolve,
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
-                return_value=False,
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
-                return_value=[relationship_record],
-            ),
-        ):
-            output = await agent.run(_make_input(["revenue", "categories"]))
-
-        by_object = {r.object_label: r for r in output.result.relationship_resolutions}
-        assert "Product" in by_object
-        assert by_object["Product"].realizing_table == "FACT_ORDER_ITEMS"
-
-    async def test_relationship_does_not_fire_with_only_one_label_present(self) -> None:
-        client = MagicMock()
-        agent = OntologyAgent(client=client)
-
-        relationship_record = {
-            "name": "Customer has RiskLevel",
-            "subject_label": "Customer",
-            "predicate": "HAS",
-            "object_label": "RiskLevel",
-            "realizing_table": "CUSTOMER_INFORMATION",
-            "subject_key_column": "CUSTOMERID",
-            "object_key_column": "RISKLEVEL",
-        }
 
         with (
             patch(
@@ -719,15 +477,11 @@ class TestRelationshipResolution:
                 return_value=[],
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
-                return_value=False,
-            ),
-            patch(
                 "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
-                return_value=[relationship_record],
+                return_value=[],
             ),
         ):
-            output = await agent.run(_make_input(["Customer", "revenue"]))
+            output = await agent.run(_make_input(["Customer", "RiskLevel"]))
 
         assert output.result.relationship_resolutions == []
 
@@ -754,10 +508,6 @@ class TestRelationshipResolution:
             patch(
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
                 return_value=[],
-            ),
-            patch(
-                "navigraph_agents.understanding.ontology.agent.entity_matches_reference_node",
-                return_value=False,
             ),
             patch(
                 "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
