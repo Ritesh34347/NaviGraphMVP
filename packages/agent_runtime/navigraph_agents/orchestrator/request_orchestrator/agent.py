@@ -657,6 +657,7 @@ class RequestOrchestratorAgent:
                     request_context=request_context,
                     payload=SchemaMappingPayload(
                         intent=actual_intent,
+                        original_question=resolved_question,
                         concept_resolutions=[
                             ConceptResolution(**r.model_dump())
                             for r in ontology_result.concept_resolutions

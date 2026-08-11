@@ -112,11 +112,23 @@ class CatalogInventoryEntry(BaseModel):
 class SchemaMappingPayload(BaseModel):
     """Everything upstream understanding agents (Ontology, Semantic
     Retrieval) plus the catalog inventory (Metadata Discovery) contribute
-    to this agent's schema-mapping decision."""
+    to this agent's schema-mapping decision.
+
+    `original_question` (added for the real temporal-filter-column
+    injection fix -- see `agent.py`'s `_find_temporal_filter_column`):
+    entity extraction frequently never names "date" at all for a question
+    like "orders in the last 30 days" (the entity is "orders"), so no date
+    column ever reaches `concept_resolutions`/`semantic_matches` for this
+    agent to resolve -- the date-range phrase silently produces no filter
+    downstream. This agent needs the raw text to detect that case
+    deterministically, the same way `sql_generation.agent`'s own temporal-
+    trigger heuristic already does.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     intent: IntentLabel
+    original_question: str
     concept_resolutions: list[ConceptResolution]
     relationship_resolutions: list[RelationshipResolution] = Field(default_factory=list)
     semantic_matches: list[TermMatch] = Field(default_factory=list)

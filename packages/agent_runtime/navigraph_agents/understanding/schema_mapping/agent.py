@@ -47,6 +47,48 @@ _NUMERIC_DATA_TYPES = {"NUMBER", "FLOAT", "INTEGER", "DECIMAL", "NUMERIC", "DOUB
 # than a dimension -- see `_assign_role`.
 _MEASURE_INTENTS = {"metric_lookup", "comparison", "trend_analysis"}
 
+# REAL BUG, found live (e-commerce eval): a question like "How many orders
+# were placed in the last 30 days?" names "orders" as its entity, never
+# "date" -- so no date/timestamp column ever reaches `concept_resolutions`
+# or `semantic_matches` for this agent to resolve, and the date-range
+# phrase silently produces no WHERE filter downstream (SQL Generation's
+# predicate-resolution LLM call is correctly triggered by the temporal
+# phrase, but has no date column in its candidate list to bind a filter
+# to). Mirrors `sql_generation.agent`'s own `_TEMPORAL_TRIGGER_PHRASES`
+# heuristic -- duplicated rather than cross-imported, per this module's
+# own "no cross-agent-package contract imports" convention (see
+# contracts.py's module docstring).
+_TEMPORAL_TRIGGER_PHRASES = (
+    "last ",
+    "this ",
+    "previous ",
+    "quarter",
+    "month",
+    "year",
+    "week",
+    "since ",
+    "between ",
+    "compared to",
+    " vs ",
+    " vs.",
+    "versus",
+    "ago",
+    "recent",
+    "current ",
+    "today",
+    "yesterday",
+)
+
+# Data types treated as date/timestamp-shaped for `_inject_temporal_filter_column`'s
+# purposes -- a real, deliberately narrow Snowflake/Postgres-catalog-style
+# set, mirroring `_NUMERIC_DATA_TYPES`'s identical convention above.
+_DATE_DATA_TYPES = {"DATE", "TIMESTAMP", "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ", "DATETIME"}
+
+
+def _has_temporal_trigger(question: str) -> bool:
+    lowered = question.lower()
+    return any(phrase in lowered for phrase in _TEMPORAL_TRIGGER_PHRASES)
+
 
 def _assign_role(data_type: str, intent: str) -> Literal["measure", "dimension", "filter"]:
     """Assign a resolved column's query role.
@@ -97,6 +139,7 @@ class SchemaMappingAgent:
             columns = self._collapse_redundant_key_only_tables(
                 columns, payload.catalog_inventory
             )
+            columns = self._inject_temporal_filter_column(payload, columns)
 
             tables = sorted({column.table_name for column in columns})
 
@@ -207,6 +250,79 @@ class SchemaMappingAgent:
             )
 
         return columns, unmapped_terms
+
+    @staticmethod
+    def _inject_temporal_filter_column(
+        payload: SchemaMappingPayload, columns: list[ResolvedColumnRef]
+    ) -> list[ResolvedColumnRef]:
+        """When the question has temporal phrasing but no date/timestamp
+        column was otherwise resolved, add one as a `role="filter"` column
+        -- see this module's `_TEMPORAL_TRIGGER_PHRASES` docstring for the
+        real bug this closes.
+
+        Finds the date dimension via `relationship_resolutions` (already
+        fixed to reflect a tenant's real, activated relationships -- see
+        `navigraph_kg.api.list_relationship_concepts`): a relationship
+        whose subject/object label is "Date" and whose `realizing_table`
+        is already among the resolved columns' tables names the real FK
+        column shared with the date dimension table; that FK column name
+        is then looked up in `catalog_inventory` to find the OTHER
+        (non-realizing) table that has it, and that table's own
+        date/timestamp-typed column is what gets injected -- e.g.
+        `FACT_ORDERS.DATE_ID` -> `DIM_DATE.FULL_DATE`. Deliberately does
+        NOT invent a filter value here; it only makes the date column
+        available as a Schema Mapping candidate so SQL Generation's
+        predicate-resolution LLM call (already correctly triggered by the
+        same temporal phrasing) has something real to bind a `WHERE`
+        clause to.
+        """
+
+        if not _has_temporal_trigger(payload.original_question):
+            return columns
+        if any(c.data_type.upper() in _DATE_DATA_TYPES for c in columns):
+            return columns
+
+        def _core_name(table_name: str) -> str:
+            return table_name.upper().removeprefix("STAGING_")
+
+        resolved_core_tables = {_core_name(c.table_name) for c in columns}
+
+        for rel in payload.relationship_resolutions:
+            if _core_name(rel.realizing_table) not in resolved_core_tables:
+                continue
+            if rel.subject_label.lower() == "date":
+                fk_column = rel.subject_key_column
+            elif rel.object_label.lower() == "date":
+                fk_column = rel.object_key_column
+            else:
+                continue
+
+            candidate_tables = {
+                entry.table_name
+                for entry in payload.catalog_inventory
+                if entry.column_name.upper() == fk_column.upper()
+                and _core_name(entry.table_name) != _core_name(rel.realizing_table)
+            }
+            for table_name in candidate_tables:
+                for entry in payload.catalog_inventory:
+                    if (
+                        entry.table_name == table_name
+                        and entry.data_type.upper() in _DATE_DATA_TYPES
+                    ):
+                        return [
+                            *columns,
+                            ResolvedColumnRef(
+                                term="<temporal filter>",
+                                catalog_column_id=entry.catalog_column_id,
+                                table_name=entry.table_name,
+                                schema_name=entry.schema_name,
+                                column_name=entry.column_name,
+                                data_type=entry.data_type,
+                                role="filter",
+                            ),
+                        ]
+
+        return columns
 
     @staticmethod
     def _merge_staging_schema_duplicate_tables(

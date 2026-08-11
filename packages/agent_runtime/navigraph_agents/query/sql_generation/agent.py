@@ -729,7 +729,17 @@ class SqlGenerationAgent:
         data_source_id = next(iter(relevant_ids))
 
         measure_columns = [c for c in columns if c.role == "measure"]
-        dimension_columns = [c for c in columns if c.role != "measure"]
+        # REAL BUG, found live wiring schema_mapping's new temporal-filter-
+        # column injection (see that agent's `_inject_temporal_filter_column`):
+        # `role="filter"` was previously never actually produced anywhere in
+        # the live pipeline (a reserved-for-future-use enum value only), so
+        # this "everything that isn't a measure is a dimension" definition
+        # was never actually exercised for it. A `role="filter"` column
+        # (e.g. an injected date column meant ONLY to bind a WHERE clause)
+        # must never be selected or grouped by -- doing so would silently
+        # change the result's grouping shape (e.g. "how many orders in the
+        # last 30 days" would group by date instead of returning one row).
+        dimension_columns = [c for c in columns if c.role == "dimension"]
 
         schema_by_table: dict[str, str] = {}
         for column in columns:

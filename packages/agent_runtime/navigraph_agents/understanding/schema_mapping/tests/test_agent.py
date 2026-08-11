@@ -57,6 +57,7 @@ class TestAllResolvedSingleTable:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="revenue",
@@ -115,6 +116,7 @@ class TestMergeStagingSchemaDuplicateTables:
 
         payload = SchemaMappingPayload(
             intent="trend_analysis",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="risk level",
@@ -197,6 +199,7 @@ class TestCollapseRedundantKeyOnlyTables:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[],
             relationship_resolutions=[],
             semantic_matches=[
@@ -247,6 +250,7 @@ class TestCollapseRedundantKeyOnlyTables:
 
         payload = SchemaMappingPayload(
             intent="comparison",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="revenue",
@@ -295,6 +299,7 @@ class TestJoinAcrossTwoTables:
 
         payload = SchemaMappingPayload(
             intent="comparison",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="revenue",
@@ -362,6 +367,7 @@ class TestJoinAcrossTwoTables:
 
         payload = SchemaMappingPayload(
             intent="comparison",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="revenue",
@@ -426,6 +432,7 @@ class TestJoinAcrossTwoTables:
 
         payload = SchemaMappingPayload(
             intent="comparison",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="revenue",
@@ -505,6 +512,7 @@ class TestJoinAcrossTwoTables:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="transaction volume",
@@ -584,6 +592,7 @@ class TestJoinAcrossTwoTables:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="transaction value",
@@ -644,6 +653,7 @@ class TestJoinAcrossTwoTables:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="revenue",
@@ -682,6 +692,7 @@ class TestJoinAcrossTwoTables:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="risk level",
@@ -736,6 +747,7 @@ class TestBridgeTableJoin:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="average closing price",
@@ -847,6 +859,7 @@ class TestBridgeTableJoin:
 
         payload = SchemaMappingPayload(
             intent="comparison",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="transaction volume",
@@ -920,6 +933,7 @@ class TestBridgeTableJoin:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="closing price",
@@ -963,6 +977,7 @@ class TestBridgeTableJoin:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="closing price",
@@ -1060,6 +1075,7 @@ class TestUnmappedTerms:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(term="gibberish_term", resolved=False),
             ],
@@ -1080,6 +1096,7 @@ class TestUnmappedTerms:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(term="revenue", resolved=False),
             ],
@@ -1110,6 +1127,7 @@ class TestUnmappedTerms:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="revenue",
@@ -1140,6 +1158,7 @@ class TestRoleAssignment:
         for intent in ("metric_lookup", "comparison", "trend_analysis"):
             payload = SchemaMappingPayload(
                 intent=intent,  # type: ignore[arg-type]
+                original_question="What is the total transaction volume by market?",
                 concept_resolutions=[
                     ConceptResolution(
                         term="revenue",
@@ -1166,6 +1185,7 @@ class TestRoleAssignment:
 
         payload = SchemaMappingPayload(
             intent="metric_lookup",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="channel",
@@ -1192,6 +1212,7 @@ class TestRoleAssignment:
 
         payload = SchemaMappingPayload(
             intent="unknown",
+            original_question="What is the total transaction volume by market?",
             concept_resolutions=[
                 ConceptResolution(
                     term="revenue",
@@ -1212,3 +1233,155 @@ class TestRoleAssignment:
         output = await agent.run(input_)
 
         assert output.result.columns[0].role == "dimension"
+
+
+class TestTemporalFilterColumnInjection:
+    """REAL BUG, found live (e-commerce eval): "How many orders were placed
+    in the last 30 days?" names "orders" as its entity, never "date" -- no
+    date column ever reached `concept_resolutions`/`semantic_matches`, so
+    the date-range phrase silently produced no WHERE filter downstream.
+    `_inject_temporal_filter_column` closes this by adding the real date
+    dimension column as a `role="filter"` candidate whenever the question
+    has temporal phrasing but no date/timestamp column was otherwise
+    resolved."""
+
+    async def test_date_column_injected_and_joined_for_a_temporal_question(self) -> None:
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            original_question="How many orders were placed in the last 30 days?",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="orders",
+                    resolved=True,
+                    catalog_column_id="col-order-id",
+                    column_name="ORDER_ID",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Order",
+                    predicate="OCCURS_ON",
+                    object_label="Date",
+                    realizing_table="FACT_ORDERS",
+                    subject_key_column="DATE_ID",
+                    object_key_column="DATE_ID",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-order-id", "FACT_ORDERS", "ORDER_ID", "TEXT"),
+                _catalog_entry("col-order-date-fk", "FACT_ORDERS", "DATE_ID", "TEXT"),
+                _catalog_entry("col-date-pk", "DIM_DATE", "DATE_ID", "TEXT"),
+                _catalog_entry("col-full-date", "DIM_DATE", "FULL_DATE", "DATE"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        filter_columns = [c for c in output.result.columns if c.role == "filter"]
+        assert len(filter_columns) == 1
+        assert filter_columns[0].table_name == "DIM_DATE"
+        assert filter_columns[0].column_name == "FULL_DATE"
+
+        assert set(output.result.tables) == {"FACT_ORDERS", "DIM_DATE"}
+        assert len(output.result.joins) == 1
+        join = output.result.joins[0]
+        assert {join.left_table, join.right_table} == {"FACT_ORDERS", "DIM_DATE"}
+        assert join.left_column == "DATE_ID"
+        assert join.right_column == "DATE_ID"
+
+    async def test_no_injection_when_question_has_no_temporal_phrase(self) -> None:
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            original_question="How many orders have we received?",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="orders",
+                    resolved=True,
+                    catalog_column_id="col-order-id",
+                    column_name="ORDER_ID",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Order",
+                    predicate="OCCURS_ON",
+                    object_label="Date",
+                    realizing_table="FACT_ORDERS",
+                    subject_key_column="DATE_ID",
+                    object_key_column="DATE_ID",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-order-id", "FACT_ORDERS", "ORDER_ID", "TEXT"),
+                _catalog_entry("col-order-date-fk", "FACT_ORDERS", "DATE_ID", "TEXT"),
+                _catalog_entry("col-date-pk", "DIM_DATE", "DATE_ID", "TEXT"),
+                _catalog_entry("col-full-date", "DIM_DATE", "FULL_DATE", "DATE"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.tables == ["FACT_ORDERS"]
+        assert all(c.role != "filter" for c in output.result.columns)
+
+    async def test_no_injection_when_a_date_column_is_already_resolved(self) -> None:
+        """If a date-shaped column was already resolved some other way
+        (e.g. "this year" resolving to DIM_DATE.YEAR via the glossary),
+        the injection must not add a second, redundant date column."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            original_question="How many orders were placed this year?",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="orders",
+                    resolved=True,
+                    catalog_column_id="col-order-id",
+                    column_name="ORDER_ID",
+                    preferred=True,
+                ),
+                ConceptResolution(
+                    term="year",
+                    resolved=True,
+                    catalog_column_id="col-full-date",
+                    column_name="FULL_DATE",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[
+                RelationshipResolution(
+                    subject_label="Order",
+                    predicate="OCCURS_ON",
+                    object_label="Date",
+                    realizing_table="FACT_ORDERS",
+                    subject_key_column="DATE_ID",
+                    object_key_column="DATE_ID",
+                ),
+            ],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-order-id", "FACT_ORDERS", "ORDER_ID", "TEXT"),
+                _catalog_entry("col-order-date-fk", "FACT_ORDERS", "DATE_ID", "TEXT"),
+                _catalog_entry("col-date-pk", "DIM_DATE", "DATE_ID", "TEXT"),
+                _catalog_entry("col-full-date", "DIM_DATE", "FULL_DATE", "DATE"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        date_columns = [c for c in output.result.columns if c.table_name == "DIM_DATE"]
+        assert len(date_columns) == 1
+        assert date_columns[0].role == "dimension"
