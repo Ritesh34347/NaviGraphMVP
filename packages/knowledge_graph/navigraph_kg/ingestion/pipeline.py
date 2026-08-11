@@ -602,7 +602,18 @@ def _load_relationship_concepts(
             "subject_label": relationship.subject,
             "predicate": relationship.predicate,
             "object_label": relationship.object,
-            "realizing_table": relationship.via.table,
+            # `relationship.via.table` is schema-qualified ("CORE.FACT_ORDERS"
+            # -- needed elsewhere, e.g. catalog validation), but stage 1
+            # (`_sync_schema_structure`) stores bare table names as `Table.name`
+            # (matching `ontology.RELATIONSHIP_CONCEPTS`' own bare-name
+            # convention) -- confirmed live: passing the qualified form
+            # straight through here made stage 4's `MERGE (t:Table {name:
+            # ...})` create an orphan placeholder Table node instead of
+            # matching the real one, so real relationships never actually got
+            # a resolvable join. Same `.split(".", 1)[-1]` convention
+            # `compile_draft_to_semantic_model`'s sensitive-column matching
+            # already uses for this exact schema-qualified-vs-bare mismatch.
+            "realizing_table": relationship.via.table.split(".", 1)[-1],
             "subject_key_column": relationship.via.subject_key,
             "object_key_column": relationship.via.object_key,
         }
