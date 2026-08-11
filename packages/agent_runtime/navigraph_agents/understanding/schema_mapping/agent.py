@@ -181,6 +181,57 @@ def _assign_role(
     return "dimension"
 
 
+def _normalize_for_table_match(text: str) -> str:
+    """Strip underscores/`FACT_`/`DIM_`/`STAGING_` prefixes and a trailing
+    plural `S`, then uppercase -- so "OrderItem" and "FACT_ORDER_ITEMS"
+    (or "Order" and "FACT_ORDERS") compare equal. Used only by
+    `_relationship_labels_match_pair` -- see that function's docstring for
+    the real ambiguity this resolves."""
+
+    normalized = text.upper().replace("_", "")
+    for prefix in ("FACT", "DIM", "STAGING"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+            break
+    if normalized.endswith("S"):
+        normalized = normalized[:-1]
+    return normalized
+
+
+def _relationship_labels_match_pair(
+    subject_label: str, object_label: str, table_a: str, table_b: str
+) -> bool:
+    """Does this relationship's OWN subject/object labels actually
+    correspond to the two tables it was matched against (in either
+    direction), rather than one of the labels being conceptually unrelated
+    to both tables?
+
+    REAL BUG, found live via "What is the total revenue generated across
+    all completed orders?": once "Order contains OrderItem" (a genuine
+    parent/child link, subject_key_column != object_key_column) is
+    correctly preferred over shared-dimension-style relationships for the
+    (FACT_ORDERS, FACT_ORDER_ITEMS) pair, "Customer places Order" turns out
+    to ALSO be distinct-keyed (`CUSTOMER_ID != ORDER_ID`) -- and
+    FACT_ORDER_ITEMS also denormalizes CUSTOMER_ID, so it independently
+    lands on the SAME pair via a totally unrelated relationship (its real
+    target is DIM_CUSTOMER, not FACT_ORDER_ITEMS at all). Being
+    distinct-keyed alone isn't a strong enough signal -- "Customer places
+    Order"'s own labels ("Customer", "Order") don't actually name either
+    table in THIS pair once you check: "Order" already corresponds to
+    FACT_ORDERS (the realizing table), and "Customer" corresponds to
+    neither FACT_ORDERS nor FACT_ORDER_ITEMS. "Order contains OrderItem"'s
+    labels DO both correspond, one to each table, in some order.
+    """
+
+    norm_subject = _normalize_for_table_match(subject_label)
+    norm_object = _normalize_for_table_match(object_label)
+    norm_a = _normalize_for_table_match(table_a)
+    norm_b = _normalize_for_table_match(table_b)
+    return (norm_subject == norm_a and norm_object == norm_b) or (
+        norm_subject == norm_b and norm_object == norm_a
+    )
+
+
 class SchemaMappingAgent:
     """Assembles resolved concepts, relationships, and semantic matches into
     concrete tables, columns, and joins. Pure function of its input -- no
@@ -851,7 +902,7 @@ class SchemaMappingAgent:
         # existing per-relationship checks below. Each survivor is a
         # candidate `JoinSpec`, grouped by the unordered (other_table,
         # realizing_table) pair it would connect.
-        candidate_joins: list[tuple[JoinSpec, frozenset[str], bool]] = []
+        candidate_joins: list[tuple[JoinSpec, frozenset[str], bool, bool]] = []
         key_columns_by_pair: dict[frozenset[str], set[str]] = {}
 
         for rel in payload.relationship_resolutions:
@@ -910,6 +961,9 @@ class SchemaMappingAgent:
                     ),
                     pair_key,
                     rel.subject_key_column != rel.object_key_column,
+                    _relationship_labels_match_pair(
+                        rel.subject_label, rel.object_label, real_realizing_table, other_table
+                    ),
                 )
             )
 
@@ -953,8 +1007,8 @@ class SchemaMappingAgent:
                 continue
             distinct_keyed_keys = {
                 join_spec.left_column
-                for join_spec, jk, is_distinct in candidate_joins
-                if is_distinct and jk == pair_key
+                for join_spec, jk, is_distinct, labels_match in candidate_joins
+                if is_distinct and labels_match and jk == pair_key
             }
             if len(distinct_keyed_keys) != 1:
                 continue
@@ -993,7 +1047,7 @@ class SchemaMappingAgent:
             return seen
 
         pass1_adjacency: dict[str, set[str]] = {}
-        for _, pair_key, _ in candidate_joins:
+        for _, pair_key, _, _ in candidate_joins:
             left, right = tuple(pair_key)
             pass1_adjacency.setdefault(left, set()).add(right)
             pass1_adjacency.setdefault(right, set()).add(left)
@@ -1093,6 +1147,7 @@ class SchemaMappingAgent:
                     ),
                     hop1_pair,
                     rel.subject_key_column != rel.object_key_column,
+                    False,
                 )
             )
 
@@ -1108,6 +1163,7 @@ class SchemaMappingAgent:
                         relationship_concept=f"bridge via {bridge_table}",
                     ),
                     hop2_pair,
+                    False,
                     False,
                 )
             )
@@ -1144,7 +1200,7 @@ class SchemaMappingAgent:
         joins: list[JoinSpec] = []
         seen_joins: set[tuple[str, str, str, str]] = set()
 
-        for join_spec, pair_key, _ in candidate_joins:
+        for join_spec, pair_key, _, _ in candidate_joins:
             if len(key_columns_by_pair[pair_key]) != 1:
                 continue
 

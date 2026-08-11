@@ -1606,6 +1606,22 @@ class TestDenormalizedSharedDimensionKeyDoesNotBlockARealParentChildJoin:
                     subject_key_column="CHANNEL_ID",
                     object_key_column="CHANNEL_ID",
                 ),
+                # REAL BUG this specific entry catches: "Customer places
+                # Order" is ALSO distinct-keyed (CUSTOMER_ID != ORDER_ID),
+                # and FACT_ORDER_ITEMS ALSO denormalizes CUSTOMER_ID, so it
+                # independently lands on the exact same (FACT_ORDERS,
+                # FACT_ORDER_ITEMS) pair via a totally unrelated
+                # relationship (its real target is DIM_CUSTOMER). Being
+                # distinct-keyed alone isn't enough to disambiguate -- this
+                # is exactly why _relationship_labels_match_pair exists.
+                RelationshipResolution(
+                    subject_label="Customer",
+                    predicate="PLACES",
+                    object_label="Order",
+                    realizing_table="FACT_ORDERS",
+                    subject_key_column="CUSTOMER_ID",
+                    object_key_column="ORDER_ID",
+                ),
             ],
             semantic_matches=[
                 TermMatch(
@@ -1621,9 +1637,11 @@ class TestDenormalizedSharedDimensionKeyDoesNotBlockARealParentChildJoin:
                 _catalog_entry("col-oi-order-id", "FACT_ORDER_ITEMS", "ORDER_ID", "NUMBER"),
                 _catalog_entry("col-oi-date-id", "FACT_ORDER_ITEMS", "DATE_ID", "NUMBER"),
                 _catalog_entry("col-oi-channel-id", "FACT_ORDER_ITEMS", "CHANNEL_ID", "NUMBER"),
+                _catalog_entry("col-oi-customer-id", "FACT_ORDER_ITEMS", "CUSTOMER_ID", "NUMBER"),
                 _catalog_entry("col-o-order-id", "FACT_ORDERS", "ORDER_ID", "NUMBER"),
                 _catalog_entry("col-o-date-id", "FACT_ORDERS", "DATE_ID", "NUMBER"),
                 _catalog_entry("col-o-channel-id", "FACT_ORDERS", "CHANNEL_ID", "NUMBER"),
+                _catalog_entry("col-o-customer-id", "FACT_ORDERS", "CUSTOMER_ID", "NUMBER"),
             ],
         )
         input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
