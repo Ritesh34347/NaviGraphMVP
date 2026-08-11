@@ -25,10 +25,7 @@ from navigraph_kg.ontology import (
     REL_COLUMN_OF,
     REL_IN_SECTOR,
     REL_MAPS_TO,
-    REL_OBJECT_KEY,
     REL_PART_OF_EXCHANGE,
-    REL_REALIZES,
-    REL_SUBJECT_KEY,
 )
 
 
@@ -205,6 +202,14 @@ def get_relationship_concept(
     concept describes, since the graph itself never materializes
     customer-cardinality relationship data (see
     `navigraph_kg.ingestion.pipeline`'s module docstring).
+
+    Reads `realizing_table`/`subject_key_column`/`object_key_column`
+    directly from properties on the `RelationshipConcept` node itself, NOT
+    via the `REALIZES`/`SUBJECT_KEY`/`OBJECT_KEY` edge traversals -- see
+    `ingestion.pipeline._sync_relationship_concepts`'s docstring for the
+    real cartesian-fan-out bug this avoids (a `Column` node name like
+    `CUSTOMER_ID` is never unique across a real schema, so `MERGE`-matching
+    by bare name against those edges can bind to multiple nodes at once).
     """
 
     records = client.run(
@@ -215,13 +220,10 @@ def get_relationship_concept(
             predicate: $predicate,
             object_label: $object_label
         }})
-        OPTIONAL MATCH (t:{NODE_TABLE})-[:{REL_REALIZES}]->(rc)
-        OPTIONAL MATCH (rc)-[:{REL_SUBJECT_KEY}]->(sc:{NODE_COLUMN})
-        OPTIONAL MATCH (rc)-[:{REL_OBJECT_KEY}]->(oc:{NODE_COLUMN})
         RETURN rc.name AS name,
-               t.name AS realizing_table,
-               sc.name AS subject_key_column,
-               oc.name AS object_key_column
+               rc.realizing_table AS realizing_table,
+               rc.subject_key_column AS subject_key_column,
+               rc.object_key_column AS object_key_column
         LIMIT 1
         """,
         tenant_id=tenant_id,
@@ -254,21 +256,26 @@ def list_relationship_concepts(client: Neo4jClient, *, tenant_id: str) -> list[d
     relationship-concept set (which `_load_relationship_concepts` already
     keeps as the real source of truth, hardcoded-list fallback included)
     removes the static list as a second, driftable source entirely.
+
+    Reads `realizing_table`/`subject_key_column`/`object_key_column`
+    directly from properties on each `RelationshipConcept` node, NOT via
+    edge traversals -- see `get_relationship_concept`'s docstring and
+    `ingestion.pipeline._sync_relationship_concepts`'s for the real
+    cartesian-fan-out bug this avoids (confirmed live: a single real
+    relationship concept came back duplicated 6+ times from the
+    edge-traversal version of this query).
     """
 
     return client.run(
         f"""
         MATCH (rc:{NODE_RELATIONSHIP_CONCEPT} {{tenant_id: $tenant_id}})
-        OPTIONAL MATCH (t:{NODE_TABLE})-[:{REL_REALIZES}]->(rc)
-        OPTIONAL MATCH (rc)-[:{REL_SUBJECT_KEY}]->(sc:{NODE_COLUMN})
-        OPTIONAL MATCH (rc)-[:{REL_OBJECT_KEY}]->(oc:{NODE_COLUMN})
         RETURN rc.name AS name,
                rc.subject_label AS subject_label,
                rc.predicate AS predicate,
                rc.object_label AS object_label,
-               t.name AS realizing_table,
-               sc.name AS subject_key_column,
-               oc.name AS object_key_column
+               rc.realizing_table AS realizing_table,
+               rc.subject_key_column AS subject_key_column,
+               rc.object_key_column AS object_key_column
         """,
         tenant_id=tenant_id,
     )

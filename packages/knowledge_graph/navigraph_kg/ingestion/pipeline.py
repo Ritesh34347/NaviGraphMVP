@@ -632,32 +632,47 @@ def _sync_relationship_concepts(
     relationship concepts -- see `_load_relationship_concepts` for where
     those come from.
 
-    TRADEOFF, DELIBERATE AND NOTED: the realizing `Table`/subject-and-object
-    `Column` nodes are matched by `name` alone, NOT by `catalog_table_id`/
-    `catalog_column_id` (the properties `SCHEMA_CONSTRAINTS` actually
-    constrains uniqueness on). In practice this usually still resolves to
-    the exact same node stage 1 already created -- stage 1 also sets a
-    `name` property on every `Table`/`Column` it upserts, and real table/
-    column names in this dataset (e.g. `TRANSACTIONS`, `CUSTOMERID`) are
-    unambiguous enough in the common case. But it is NOT guarded by a
-    uniqueness constraint on `name` the way `catalog_table_id`/
-    `catalog_column_id` are, so: (a) if the referenced table was never
-    crawled into the Postgres catalog (e.g. `CUSTOMER_ASSET_AGG`, which is
-    plausibly excluded from a crawl since it's customer-cardinality-adjacent
-    data this graph otherwise avoids), this creates a new, minimal
-    placeholder `Table`/`Column` node instead of failing outright; and
-    (b) a column name that happens to repeat across multiple real tables
-    (e.g. `CUSTOMERID` appears in several) could, in principle, `MATCH`
-    whichever same-named `Column` node Neo4j finds first, rather than the
-    one from the specific table this concept intends. Both are accepted at
-    this hand-curated, small-cardinality layer: `RelationshipConcept` exists
-    to describe *how* to join tables for SQL generation, not to be a
-    perfectly-disambiguated foreign-key graph -- a real callback: it means
-    when the metadata catalog crawl runs before this stage, the previously
-    upserted Table/Column node from Stage 1 is reused; if the ordering
-    happens the other way around (which the pipeline never allows in
-    practice, since stage 1 always precedes stage 4), the placeholder is
-    what's left behind.
+    REAL BUG, found live, that the "TRADEOFF, DELIBERATE AND NOTED" note
+    below underestimated: matching `Column` nodes by bare `name` alone
+    doesn't just risk resolving to the "wrong" same-named node -- when
+    MULTIPLE `Column` nodes already share that name (a near-certainty for
+    common FK names like `CUSTOMER_ID`, which genuinely exists on
+    `DIM_CUSTOMER`, `FACT_ORDERS`, AND `FACT_ORDER_ITEMS` in this real
+    dataset), Cypher's `MERGE (sc:Column {name: $x})` matches and binds to
+    *every* existing node satisfying the pattern, not just one -- so
+    `MERGE (rc)-[r2:SUBJECT_KEY]->(sc)` fans out into one edge per
+    same-named `Column` node in the entire graph, and `(rc:RelationshipConcept)-
+    [:REALIZES]-(t:Table)` can fan out the same way if two Table nodes ever
+    end up sharing a name (e.g. a stale schema-qualified placeholder
+    alongside the real bare-named node). Confirmed live: a single real
+    relationship concept came back duplicated 6+ times from
+    `list_relationship_concepts`, each duplicate a distinct cartesian
+    combination of these fanned-out edges -- completely swamping the real,
+    correct relationships among a wall of noise, and in the placeholder-
+    Table case, sometimes returning the WRONG (unmatchable) `realizing_table`
+    string for what should have been one unambiguous relationship.
+
+    FIX: `rc.realizing_table`/`rc.subject_key_column`/`rc.object_key_column`
+    are now also stored as plain properties directly ON the `RelationshipConcept`
+    node itself (see the `SET` clause below) -- `get_relationship_concept`/
+    `list_relationship_concepts` read from these properties now, never via
+    the `REALIZES`/`SUBJECT_KEY`/`OBJECT_KEY` edge traversals, so the
+    cartesian fan-out these edges are prone to can no longer affect a read.
+    The edges themselves are left in place (harmless, and useful for anyone
+    visually exploring the graph), not removed -- this is an additive fix,
+    not a schema migration.
+
+    TRADEOFF, DELIBERATE AND NOTED (now only relevant to the edges
+    themselves, not to any consumer's read path): the realizing `Table`/
+    subject-and-object `Column` nodes are still matched by `name` alone,
+    NOT by `catalog_table_id`/`catalog_column_id` (the properties
+    `SCHEMA_CONSTRAINTS` actually constrains uniqueness on). If the
+    referenced table was never crawled into the Postgres catalog (e.g.
+    `CUSTOMER_ASSET_AGG`, which is plausibly excluded from a crawl since
+    it's customer-cardinality-adjacent data this graph otherwise avoids),
+    this still creates a new, minimal placeholder `Table`/`Column` node
+    instead of failing outright -- accepted since these edges are no longer
+    read for correctness, only for graph visualization.
     """
 
     synced = 0
@@ -670,6 +685,9 @@ def _sync_relationship_concepts(
             SET rc.subject_label = $subject_label,
                 rc.predicate = $predicate,
                 rc.object_label = $object_label,
+                rc.realizing_table = $realizing_table,
+                rc.subject_key_column = $subject_key_column,
+                rc.object_key_column = $object_key_column,
                 rc.active = true,
                 rc.last_synced_at = $synced_at
             MERGE (t:{NODE_TABLE} {{name: $realizing_table}})
