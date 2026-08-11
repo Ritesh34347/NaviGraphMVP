@@ -25,6 +25,7 @@ from navigraph_shared.contracts import AgentMetadata, LineageEvent
 from navigraph_shared.telemetry import get_tracer, record_agent_invocation
 from opentelemetry.trace import Tracer
 
+from navigraph_agents.query.sql_generation.agent import _is_count_question
 from navigraph_agents.understanding.schema_mapping.contracts import (
     CatalogInventoryEntry,
     JoinSpec,
@@ -122,25 +123,57 @@ def _is_calendar_part_column(column_name: str) -> bool:
     return column_name.upper() in _CALENDAR_PART_COLUMN_NAMES
 
 
+# REAL BUG, found live (e-commerce eval): "List the top 10 customers by
+# total lifetime spend" resolved `CUSTOMER_ID` (numeric, under a
+# measure-implying intent) as a `role="measure"` column exactly like
+# `_assign_role`'s v1 rule already did for calendar-part columns before
+# that fix -- so it was aggregated (`COUNT(FACT_ORDERS.CUSTOMER_ID) AS
+# CUSTOMER_ID_TOTAL`) into ONE overall count instead of becoming the
+# `GROUP BY` key needed to break the result out per customer. Confirmed
+# live: the question came back as a single grand-total row with a
+# narrative admitting "the data provided does not break down individual
+# customers". An identifier-shaped column is a row-identity/grouping key,
+# never a quantity to add up -- same category of fix as the calendar-part
+# one, and the identical definition `sql_generation.agent
+# ._is_identifier_column` already uses for the same reason (forcing
+# `COUNT` instead of `SUM`/`AVG` over an ID-shaped column there).
+#
+# Exception: a genuine "how many X" / "number of X" / "count of X"
+# question (`sql_generation.agent._is_count_question`) really is asking to
+# aggregate the identifier column down to one number, not group by it --
+# reusing that SAME phrase-trigger check here (rather than inventing a
+# second one) keeps the two agents' notion of "this question wants a
+# count" in sync.
+def _is_identifier_column(column_name: str) -> bool:
+    return column_name.upper().endswith("ID")
+
+
 def _assign_role(
-    column_name: str, data_type: str, intent: str
+    column_name: str, data_type: str, intent: str, original_question: str
 ) -> Literal["measure", "dimension", "filter"]:
     """Assign a resolved column's query role.
 
     v1 rule: a numeric-looking `data_type` (case-insensitive match against
     `_NUMERIC_DATA_TYPES`) combined with an intent that actually asks for a
     quantity (`_MEASURE_INTENTS`) makes it a `"measure"` -- UNLESS the
-    column is a calendar-part column (`_is_calendar_part_column`), which is
-    never a valid `SUM`/`AVG` target regardless of intent or numeric
-    storage type. Everything else is a `"dimension"`. There is no
-    `"filter"` assignment logic in this phase from HERE -- the
-    `Literal["measure", "dimension", "filter"]` on `ResolvedColumnRef.role`
-    also gets `"filter"` values from `_inject_temporal_filter_column`
-    separately.
+    column is a calendar-part column (`_is_calendar_part_column`, never a
+    valid `SUM`/`AVG` target regardless of intent or numeric storage type)
+    or an identifier-shaped column that isn't part of an explicit count
+    question (`_is_identifier_column` -- see that function's own docstring
+    for the real "top 10 customers" bug this fixes). Everything else is a
+    `"dimension"`. There is no `"filter"` assignment logic in this phase
+    from HERE -- the `Literal["measure", "dimension", "filter"]` on
+    `ResolvedColumnRef.role` also gets `"filter"` values from
+    `_inject_temporal_filter_column` separately.
     """
+
+    is_identifier_measure_exception = _is_identifier_column(
+        column_name
+    ) and not _is_count_question(original_question)
 
     if (
         not _is_calendar_part_column(column_name)
+        and not is_identifier_measure_exception
         and data_type.upper() in _NUMERIC_DATA_TYPES
         and intent in _MEASURE_INTENTS
     ):
@@ -285,7 +318,9 @@ class SchemaMappingAgent:
                     schema_name=entry.schema_name,
                     column_name=entry.column_name,
                     data_type=entry.data_type,
-                    role=_assign_role(entry.column_name, entry.data_type, intent),
+                    role=_assign_role(
+                        entry.column_name, entry.data_type, intent, payload.original_question
+                    ),
                 )
             )
 

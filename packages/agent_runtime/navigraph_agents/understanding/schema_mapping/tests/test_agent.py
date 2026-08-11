@@ -1479,3 +1479,72 @@ class TestCalendarPartColumnNeverBecomesAMeasure:
         output = await agent.run(input_)
 
         assert output.result.columns[0].role == "measure"
+
+
+class TestIdentifierColumnNeverBecomesAMeasureUnlessCounting:
+    """REAL BUG, found live (e-commerce eval): "List the top 10 customers
+    by total lifetime spend" resolved CUSTOMER_ID (numeric, under a
+    measure-implying intent) as role="measure" -- aggregated into one
+    overall COUNT instead of becoming the GROUP BY key needed to break the
+    result out per customer. Confirmed live: came back as a single
+    grand-total row."""
+
+    async def test_identifier_column_is_a_dimension_for_a_listing_question(self) -> None:
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            original_question="List the top 10 customers by total lifetime spend.",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="top 10 customers",
+                    resolved=True,
+                    catalog_column_id="col-customer",
+                    column_name="CUSTOMER_ID",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-customer", "FACT_ORDERS", "CUSTOMER_ID", "NUMBER"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.columns[0].role == "dimension"
+
+    async def test_identifier_column_stays_a_measure_for_an_explicit_count_question(
+        self,
+    ) -> None:
+        """The fix must not over-correct -- "how many distinct customers"
+        genuinely wants the identifier column aggregated down to one
+        number, not grouped by."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            original_question="How many customers made a purchase in Q2?",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="customers",
+                    resolved=True,
+                    catalog_column_id="col-customer",
+                    column_name="CUSTOMER_ID",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-customer", "FACT_ORDERS", "CUSTOMER_ID", "NUMBER"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.columns[0].role == "measure"
