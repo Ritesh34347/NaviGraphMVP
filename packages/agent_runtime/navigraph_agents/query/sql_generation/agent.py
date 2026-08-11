@@ -33,6 +33,7 @@ Two things this agent does that its siblings don't:
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -183,6 +184,37 @@ def _is_average_question(question: str) -> bool:
 
     lowered = " ".join(question.lower().split()[:_AVERAGE_TRIGGER_WORD_WINDOW])
     return any(phrase in lowered for phrase in _AVERAGE_QUESTION_TRIGGER_PHRASES)
+
+
+# REAL GAP, found live (e-commerce eval): no mechanism anywhere in this
+# pipeline ever emitted `ORDER BY`/`LIMIT` at all -- a real "top 10
+# customers by total lifetime spend" or "bottom 10 products by sales
+# volume" question always returned the full, unsorted result set (capped
+# only by SQL Optimization's generic downstream safety limit, never the
+# user's actual requested N). Deterministic phrase + number extraction,
+# same style as every other heuristic in this module: "top"/"best"/
+# "highest" imply DESC, "bottom"/"worst"/"lowest" imply ASC, the number
+# immediately following is the LIMIT.
+_TOP_N_PATTERN = re.compile(
+    r"\b(top|bottom|best|worst|highest|lowest)\s+(\d+)\b", re.IGNORECASE
+)
+_ASCENDING_RANKING_WORDS = {"bottom", "worst", "lowest"}
+
+
+def _extract_top_n(question: str) -> tuple[str, int] | None:
+    """Return `(direction, n)` for a "top N"/"bottom N"/"best N"/"worst
+    N"/"highest N"/"lowest N" question, or `None` if the question doesn't
+    name a ranking size at all. Only the FIRST such phrase is honored --
+    a question naming two (e.g. "top 10 ... bottom 5 ...") is a compound
+    request this deterministic heuristic doesn't attempt to split, same
+    honesty as every other narrow heuristic in this module.
+    """
+
+    match = _TOP_N_PATTERN.search(question)
+    if match is None:
+        return None
+    direction = "ASC" if match.group(1).lower() in _ASCENDING_RANKING_WORDS else "DESC"
+    return direction, int(match.group(2))
 
 
 def _load_system_prompt() -> str:
@@ -780,19 +812,25 @@ class SqlGenerationAgent:
         select_parts = [_qualified_col(c) for c in dimension_columns]
         is_count_question = _is_count_question(payload.original_question)
         is_average_question = _is_average_question(payload.original_question)
+        # Tracks the single aggregate's own SELECT alias, so a "top N"/
+        # "bottom N" question (see `_extract_top_n`) has an unambiguous
+        # target to ORDER BY -- only ever set when there's exactly one
+        # aggregate in the SELECT list, never guessed among several.
+        sole_aggregate_alias: str | None = None
         if is_count_question:
             # A "how many"/"number of"/"count of" question always means
             # COUNT(*) -- never a SUM over whatever measure column upstream
             # happened to resolve (see this constant's own docstring and
             # LIMITATIONS.md item 38 for the real, live failure this fixes).
             select_parts.append("COUNT(*) AS RECORD_COUNT")
+            sole_aggregate_alias = "RECORD_COUNT"
         else:
             for measure in measure_columns:
                 agg = _aggregation_function(measure, payload.intent, is_average_question=is_average_question)
                 alias_suffix = "AVG" if agg == "AVG" else "TOTAL"
-                select_parts.append(
-                    f"{agg}({_qualified_col(measure)}) AS {measure.column_name}_{alias_suffix}"
-                )
+                alias = f"{measure.column_name}_{alias_suffix}"
+                select_parts.append(f"{agg}({_qualified_col(measure)}) AS {alias}")
+                sole_aggregate_alias = alias if len(measure_columns) == 1 else None
 
         columns_by_name = {c.column_name: c for c in columns}
         where_clause, params = _build_where_clause(predicate_resolutions, columns_by_name)
@@ -805,6 +843,12 @@ class SqlGenerationAgent:
             sql_lines.append(
                 f"GROUP BY {', '.join(_qualified_col(c) for c in dimension_columns)}"
             )
+
+        top_n = _extract_top_n(payload.original_question)
+        if top_n is not None and sole_aggregate_alias is not None:
+            direction, n = top_n
+            sql_lines.append(f"ORDER BY {sole_aggregate_alias} {direction}")
+            sql_lines.append(f"LIMIT {n}")
 
         statement = GeneratedSql(
             data_source_id=data_source_id,

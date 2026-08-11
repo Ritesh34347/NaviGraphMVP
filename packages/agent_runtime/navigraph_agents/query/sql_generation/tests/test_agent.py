@@ -258,6 +258,72 @@ async def test_a_late_decoy_use_of_average_does_not_trigger_avg() -> None:
 
 
 # ---------------------------------------------------------------------------
+# (a2c) Real gap found live (e-commerce eval): no mechanism anywhere in this
+# pipeline ever emitted ORDER BY/LIMIT -- a "top 10 customers by spend"
+# question always returned the full, unsorted result set.
+# ---------------------------------------------------------------------------
+
+
+async def test_top_n_question_orders_by_the_sole_measure_descending() -> None:
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(question="What are the top 10 markets by units traded?")
+    )
+
+    statement = output.result.statements[0]
+    assert statement.sql == (
+        "SELECT STAGING_TRANSACTIONS.MARKETID, SUM(STAGING_TRANSACTIONS.UNITS) AS UNITS_TOTAL\n"
+        "FROM STAGING.STAGING_TRANSACTIONS\n"
+        "GROUP BY STAGING_TRANSACTIONS.MARKETID\n"
+        "ORDER BY UNITS_TOTAL DESC\n"
+        "LIMIT 10"
+    )
+
+
+async def test_bottom_n_question_orders_ascending() -> None:
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(question="What are the bottom 5 markets by units traded?")
+    )
+
+    statement = output.result.statements[0]
+    assert "ORDER BY UNITS_TOTAL ASC" in statement.sql
+    assert "LIMIT 5" in statement.sql
+
+
+async def test_top_n_question_with_no_ranking_phrase_gets_no_limit() -> None:
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(_make_input())
+
+    statement = output.result.statements[0]
+    assert "ORDER BY" not in statement.sql
+    assert "LIMIT" not in statement.sql
+
+
+async def test_top_n_question_for_a_count_orders_by_record_count() -> None:
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question="What are the top 3 customers by number of transactions?",
+            columns=_TRANSACTION_COUNT_COLUMNS,
+        )
+    )
+
+    statement = output.result.statements[0]
+    assert "COUNT(*) AS RECORD_COUNT" in statement.sql
+    assert "ORDER BY RECORD_COUNT DESC" in statement.sql
+    assert "LIMIT 3" in statement.sql
+
+
+# ---------------------------------------------------------------------------
 # (a3) Real bug found live (LIMITATIONS.md item 80): a question shaped
 # nothing like "how many X" (so `_is_count_question` never fires) can still
 # resolve an identifier column (e.g. TRANSACTIONID) as a `role="measure"`
