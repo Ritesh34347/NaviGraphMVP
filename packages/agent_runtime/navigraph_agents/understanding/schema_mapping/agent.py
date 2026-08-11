@@ -90,20 +90,60 @@ def _has_temporal_trigger(question: str) -> bool:
     return any(phrase in lowered for phrase in _TEMPORAL_TRIGGER_PHRASES)
 
 
-def _assign_role(data_type: str, intent: str) -> Literal["measure", "dimension", "filter"]:
+# REAL BUG, found live (e-commerce eval): a calendar-part column like
+# DIM_DATE.YEAR/QUARTER/MONTH_NUM/DAY_OF_WEEK is genuinely `NUMBER`-typed
+# in Snowflake, so under a measure-implying intent this looked exactly
+# like a real additive measure to `_assign_role`'s numeric-type check --
+# producing nonsense SQL like `SUM(DIM_DATE.YEAR) AS YEAR_TOTAL` for any
+# question mentioning "this year"/"last quarter" where the year/quarter
+# column got resolved as a term. Confirmed live: this single
+# misclassification accounted for 8 of 20 WRONG answers in one 50-question
+# eval round -- the single highest-impact remaining correctness bug found.
+# A calendar-part value is a label/grouping key, never a quantity to add
+# up, regardless of its numeric storage type -- same category of fix as
+# `sql_generation.agent._is_identifier_column` forcing COUNT over an
+# ID-shaped column regardless of its own numeric type.
+_CALENDAR_PART_COLUMN_NAMES = {
+    "YEAR",
+    "QUARTER",
+    "MONTH",
+    "MONTH_NUM",
+    "MONTH_NUMBER",
+    "DAY",
+    "DAY_OF_WEEK",
+    "DAY_OF_MONTH",
+    "DAY_OF_YEAR",
+    "WEEK",
+    "WEEK_OF_YEAR",
+}
+
+
+def _is_calendar_part_column(column_name: str) -> bool:
+    return column_name.upper() in _CALENDAR_PART_COLUMN_NAMES
+
+
+def _assign_role(
+    column_name: str, data_type: str, intent: str
+) -> Literal["measure", "dimension", "filter"]:
     """Assign a resolved column's query role.
 
     v1 rule: a numeric-looking `data_type` (case-insensitive match against
     `_NUMERIC_DATA_TYPES`) combined with an intent that actually asks for a
-    quantity (`_MEASURE_INTENTS`) makes it a `"measure"`; everything else
-    is a `"dimension"`. There is no `"filter"` assignment logic in this
-    phase -- the `Literal["measure", "dimension", "filter"]` on
-    `ResolvedColumnRef.role` includes it for future use (e.g. once this
-    agent understands WHERE-clause terms specifically), but nothing
-    produces it yet.
+    quantity (`_MEASURE_INTENTS`) makes it a `"measure"` -- UNLESS the
+    column is a calendar-part column (`_is_calendar_part_column`), which is
+    never a valid `SUM`/`AVG` target regardless of intent or numeric
+    storage type. Everything else is a `"dimension"`. There is no
+    `"filter"` assignment logic in this phase from HERE -- the
+    `Literal["measure", "dimension", "filter"]` on `ResolvedColumnRef.role`
+    also gets `"filter"` values from `_inject_temporal_filter_column`
+    separately.
     """
 
-    if data_type.upper() in _NUMERIC_DATA_TYPES and intent in _MEASURE_INTENTS:
+    if (
+        not _is_calendar_part_column(column_name)
+        and data_type.upper() in _NUMERIC_DATA_TYPES
+        and intent in _MEASURE_INTENTS
+    ):
         return "measure"
     return "dimension"
 
@@ -245,7 +285,7 @@ class SchemaMappingAgent:
                     schema_name=entry.schema_name,
                     column_name=entry.column_name,
                     data_type=entry.data_type,
-                    role=_assign_role(entry.data_type, intent),
+                    role=_assign_role(entry.column_name, entry.data_type, intent),
                 )
             )
 

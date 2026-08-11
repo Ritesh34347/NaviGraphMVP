@@ -1385,3 +1385,97 @@ class TestTemporalFilterColumnInjection:
         date_columns = [c for c in output.result.columns if c.table_name == "DIM_DATE"]
         assert len(date_columns) == 1
         assert date_columns[0].role == "dimension"
+
+
+class TestCalendarPartColumnNeverBecomesAMeasure:
+    """REAL BUG, found live (e-commerce eval): DIM_DATE.YEAR/QUARTER are
+    genuinely NUMBER-typed in Snowflake, so under a measure-implying intent
+    they looked exactly like a real additive measure to `_assign_role`,
+    producing nonsense SQL like `SUM(DIM_DATE.YEAR) AS YEAR_TOTAL`.
+    Confirmed live: this single misclassification accounted for 8 of 20
+    WRONG answers in one 50-question eval round."""
+
+    async def test_year_column_stays_a_dimension_under_a_measure_intent(self) -> None:
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            original_question="Which product categories generated the most revenue this year?",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="this year",
+                    resolved=True,
+                    catalog_column_id="col-year",
+                    column_name="YEAR",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-year", "DIM_DATE", "YEAR", "NUMBER"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.columns[0].role == "dimension"
+
+    async def test_quarter_column_stays_a_dimension_under_a_measure_intent(self) -> None:
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="comparison",
+            original_question="Units sold by product for the last quarter?",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="last quarter",
+                    resolved=True,
+                    catalog_column_id="col-quarter",
+                    column_name="QUARTER",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-quarter", "DIM_DATE", "QUARTER", "NUMBER"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.columns[0].role == "dimension"
+
+    async def test_a_real_numeric_measure_is_unaffected(self) -> None:
+        """The fix must not over-correct -- a genuine additive measure
+        (not a calendar-part column) still becomes a measure exactly as
+        before."""
+
+        agent = SchemaMappingAgent()
+
+        payload = SchemaMappingPayload(
+            intent="metric_lookup",
+            original_question="What is the total revenue?",
+            concept_resolutions=[
+                ConceptResolution(
+                    term="revenue",
+                    resolved=True,
+                    catalog_column_id="col-1",
+                    column_name="TOTAL_AMOUNT",
+                    preferred=True,
+                ),
+            ],
+            relationship_resolutions=[],
+            semantic_matches=[],
+            catalog_inventory=[
+                _catalog_entry("col-1", "FACT_ORDERS", "TOTAL_AMOUNT", "NUMBER"),
+            ],
+        )
+        input_ = SchemaMappingInput(request_context=_request_context(), payload=payload)
+
+        output = await agent.run(input_)
+
+        assert output.result.columns[0].role == "measure"
