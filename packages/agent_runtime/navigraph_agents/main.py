@@ -472,6 +472,7 @@ async def lifespan(app: FastAPI):
     data_federation_agent = DataFederationAgent(
         catalog_session_factory=catalog_session_factory,
         trino_client=trino_client,
+        secrets=secrets_provider,
         tracer=tracer,
     )
     register(DATA_FEDERATION_AGENT_NAME, data_federation_agent.run)

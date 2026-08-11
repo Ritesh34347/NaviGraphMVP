@@ -350,6 +350,7 @@ class RequestOrchestratorAgent:
         self._data_federation_agent = DataFederationAgent(
             catalog_session_factory=catalog_session_factory,
             trino_client=trino_client,
+            secrets=secrets,
             tracer=tracer,
         )
 
