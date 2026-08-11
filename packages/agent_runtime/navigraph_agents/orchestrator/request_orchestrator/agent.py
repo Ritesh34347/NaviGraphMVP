@@ -220,7 +220,10 @@ from navigraph_agents.query.execution_planning.contracts import (
 from navigraph_agents.query.execution_planning.contracts import (
     OptimizedSql as PlanningOptimizedSql,
 )
-from navigraph_agents.query.sql_generation.agent import SqlGenerationAgent
+from navigraph_agents.query.sql_generation.agent import (
+    SqlGenerationAgent,
+    _is_average_question,
+)
 from navigraph_agents.query.sql_generation.contracts import (
     JoinSpec as GenerationJoinSpec,
 )
@@ -295,17 +298,23 @@ AGENT_NAME = "orchestrator.request_orchestrator"
 logger = configure_logging("navigraph-agent-runtime")
 
 
-def _alias_for(column: Any) -> str:
+def _alias_for(column: Any, question: str) -> str:
     """Replicate SQL Generation's own real aggregation-alias rule (ported
     verbatim from `eval/pipeline_chain.py`'s identical helper -- see
     `sql_generation.agent._aggregation_function`/`_generate_statements`):
     a `role="measure"` column becomes `{column_name}_TOTAL` in the real
-    SELECT list; a `role="dimension"`/`"filter"` column keeps its bare
-    name. See LIMITATIONS.md item 28 for the structural gap this manual
-    replication documents -- now centralized here, the one real caller,
-    instead of duplicated per test/harness."""
+    SELECT list (or `{column_name}_AVG` when `question` triggers
+    `_is_average_question` -- see that function's own docstring for the
+    real AVG-vs-SUM bug this mirrors the fix for); a
+    `role="dimension"`/`"filter"` column keeps its bare name. See
+    LIMITATIONS.md item 28 for the structural gap this manual replication
+    documents -- now centralized here, the one real caller, instead of
+    duplicated per test/harness."""
 
-    return f"{column.column_name}_TOTAL" if column.role == "measure" else column.column_name
+    if column.role != "measure":
+        return column.column_name
+    suffix = "AVG" if _is_average_question(question) else "TOTAL"
+    return f"{column.column_name}_{suffix}"
 
 
 class RequestOrchestratorAgent:
@@ -1007,7 +1016,7 @@ class RequestOrchestratorAgent:
                     column_name=c.column_name,
                     data_type=c.data_type,
                     role=c.role,
-                    result_alias=_alias_for(c),
+                    result_alias=_alias_for(c, resolved_question),
                 )
                 for c in schema_mapping_result.columns
             ]

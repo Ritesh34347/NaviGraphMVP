@@ -207,6 +207,57 @@ async def test_how_many_question_ignores_a_spuriously_resolved_measure_column() 
 
 
 # ---------------------------------------------------------------------------
+# (a2b) Real bug found live (e-commerce eval): "average X" questions always
+# produced SUM, since IntentLabel has no "the user wants an average"
+# vocabulary entry at all and `_aggregation_function` never had an AVG
+# branch. Fixed via `_is_average_question`'s deliberately narrow, near-the-
+# start-of-the-question phrase trigger (mirroring `_is_count_question`'s
+# existing style).
+# ---------------------------------------------------------------------------
+
+
+async def test_average_question_produces_avg_not_sum() -> None:
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(question="What is the average units traded by market?")
+    )
+
+    assert output.errors == []
+    statement = output.result.statements[0]
+    assert statement.sql == (
+        "SELECT STAGING_TRANSACTIONS.MARKETID, AVG(STAGING_TRANSACTIONS.UNITS) AS UNITS_AVG\n"
+        "FROM STAGING.STAGING_TRANSACTIONS\n"
+        "GROUP BY STAGING_TRANSACTIONS.MARKETID"
+    )
+
+
+async def test_a_late_decoy_use_of_average_does_not_trigger_avg() -> None:
+    """A question that mentions "average" only as part of a comparison
+    baseline deep in a longer question ("...compare to the prior month
+    average") is not actually asking for the resolved measure to be
+    averaged -- the real, live-reproduced item 80 scenario. Only a
+    trigger word near the START of the question should count."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question=(
+                "How does the transaction volume by market compare to "
+                "prior weeks or the prior month average?"
+            )
+        )
+    )
+
+    statement = output.result.statements[0]
+    assert "SUM(STAGING_TRANSACTIONS.UNITS) AS UNITS_TOTAL" in statement.sql
+    assert "AVG" not in statement.sql
+
+
+# ---------------------------------------------------------------------------
 # (a3) Real bug found live (LIMITATIONS.md item 80): a question shaped
 # nothing like "how many X" (so `_is_count_question` never fires) can still
 # resolve an identifier column (e.g. TRANSACTIONID) as a `role="measure"`
@@ -265,6 +316,26 @@ async def test_identifier_shaped_measure_column_is_counted_not_summed() -> None:
     assert "SUM(STAGING_TRANSACTIONS.TRANSACTIONID)" not in statement.sql
     assert "COUNT(STAGING_TRANSACTIONS.TRANSACTIONID) AS TRANSACTIONID_TOTAL" in statement.sql
     assert "SUM(STAGING_TRANSACTIONS.TOTALVALUE) AS TOTALVALUE_TOTAL" in statement.sql
+
+
+async def test_identifier_shaped_measure_column_is_never_averaged() -> None:
+    """Even for an "average X" question, an identifier-shaped measure
+    column must still be COUNTed, never averaged -- same invariant as the
+    existing SUM case, now also covering AVG."""
+
+    fake_llm = FakeLLMClient(response="should never be read")
+    agent = SqlGenerationAgent(llm_client=fake_llm)
+
+    output = await agent.run(
+        _make_input(
+            question="What is the average transaction count and value on 2018-01-02?",
+            columns=_ID_AND_VALUE_MEASURE_COLUMNS,
+        )
+    )
+
+    statement = output.result.statements[0]
+    assert "COUNT(STAGING_TRANSACTIONS.TRANSACTIONID) AS TRANSACTIONID_TOTAL" in statement.sql
+    assert "AVG(STAGING_TRANSACTIONS.TOTALVALUE) AS TOTALVALUE_AVG" in statement.sql
 
 
 # ---------------------------------------------------------------------------
@@ -796,8 +867,12 @@ async def test_two_hop_bridge_join_qualifies_bridge_table_schema_from_join_spec(
     # qualified via the join spec's own `left_schema`/`right_schema` --
     # never left bare (which would depend on the connection's default
     # schema and could silently resolve to the wrong registration).
+    # "What is the average closing price..." -- AVG, not SUM (see
+    # _is_average_question; this question was written before that fix
+    # existed and its expected SQL originally asserted the bug's own
+    # behavior).
     assert statement.sql == (
-        "SELECT MARKETS.NAME, SUM(CLOSE_PRICES.CLOSEPRICE) AS CLOSEPRICE_TOTAL\n"
+        "SELECT MARKETS.NAME, AVG(CLOSE_PRICES.CLOSEPRICE) AS CLOSEPRICE_AVG\n"
         "FROM STAGING.STAGING_ASSET_INFORMATION\n"
         "JOIN FAR_TRANS.CLOSE_PRICES ON CLOSE_PRICES.ISIN = STAGING_ASSET_INFORMATION.ISIN\n"
         "JOIN FAR_TRANS.MARKETS ON MARKETS.MARKETID = STAGING_ASSET_INFORMATION.MARKETID\n"

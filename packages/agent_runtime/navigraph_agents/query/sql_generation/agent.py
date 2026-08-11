@@ -136,6 +136,55 @@ def _is_count_question(question: str) -> bool:
     return any(phrase in lowered for phrase in _COUNT_QUESTION_TRIGGER_PHRASES)
 
 
+# REAL BUG, found live (a real e-commerce eval): `IntentLabel` has no
+# vocabulary entry for "the user wants an average" at all -- Intent
+# Understanding classifies "What is the average order value by channel?"
+# as plain `metric_lookup`, indistinguishable from "What is the total
+# order value by channel?". `_aggregation_function` then always chose SUM
+# for any numeric measure column under a `_MEASURE_INTENTS` intent,
+# silently returning a SUM (or the model's own narrative admitting the
+# mismatch) instead of the requested average. Fixing this at the intent-
+# classification layer would mean adding a new field to
+# `IntentUnderstandingResult` and threading it through Schema Mapping's
+# output too -- a much larger contract change. This mirrors
+# `_is_count_question`'s existing, deliberately narrow phrase-trigger
+# heuristic instead, applied directly against `original_question`, which
+# this agent already receives.
+_AVERAGE_QUESTION_TRIGGER_PHRASES = (
+    "average",
+    "avg",
+    "mean ",
+    "per order",
+    "per customer",
+    "per transaction",
+)
+
+
+_AVERAGE_TRIGGER_WORD_WINDOW = 8
+
+
+def _is_average_question(question: str) -> bool:
+    """An "average X" / "avg X" / "mean X" / "X per Y" question is asking
+    for AVG over the resolved measure column, never a SUM -- see this
+    constant's own docstring.
+
+    Only checks the first `_AVERAGE_TRIGGER_WORD_WINDOW` words -- a real
+    average request almost always leads with it ("What is the average
+    order value...", "average discount percentage..."), whereas a decoy
+    use of the same word deep in a longer question describes something
+    else entirely: "How does the transaction count and value on
+    2018-01-02 compare to prior weeks or the prior month average?" is
+    genuinely asking for a comparison against a historical baseline
+    ITSELF called "the ... average", not for TOTALVALUE to be averaged.
+    A bare substring check over the whole question would wrongly fire
+    AVG there -- confirmed live via this exact regression test
+    (`test_identifier_shaped_measure_column_is_counted_not_summed`).
+    """
+
+    lowered = " ".join(question.lower().split()[:_AVERAGE_TRIGGER_WORD_WINDOW])
+    return any(phrase in lowered for phrase in _AVERAGE_QUESTION_TRIGGER_PHRASES)
+
+
 def _load_system_prompt() -> str:
     return _PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -291,28 +340,32 @@ def _is_identifier_column(column: ResolvedColumnRef) -> bool:
     return column.column_name.upper().endswith("ID")
 
 
-def _aggregation_function(column: ResolvedColumnRef, intent: IntentLabel) -> str:
+def _aggregation_function(
+    column: ResolvedColumnRef, intent: IntentLabel, *, is_average_question: bool = False
+) -> str:
     """Choose the SQL aggregate function for a `role="measure"` column.
 
     v1 rule (deliberately narrow, mirrors `schema_mapping.agent._assign_role`'s
     documented narrowness): an identifier column (`_is_identifier_column`)
-    is never summed, regardless of intent -- `COUNT` is always the correct,
-    meaningful aggregate over a key column. Otherwise, a numeric `data_type`
-    combined with an intent that actually asks for an aggregated quantity
-    (`_MEASURE_INTENTS`) uses `SUM` -- correct for the additive metrics this
-    system's worked examples actually exercise (transaction volume, unit
-    counts, revenue). A column that upstream nonetheless labeled
-    `role="measure"` without a numeric `data_type` (which, per
-    schema_mapping's own role-assignment invariant, should never happen --
-    but this agent does not blindly trust that invariant since it receives
-    schema_mapping's output as plain data, not a guarantee) falls back to
-    `COUNT`, since `SUM` over non-numeric data is invalid SQL.
+    is never summed or averaged, regardless of intent -- `COUNT` is always
+    the correct, meaningful aggregate over a key column. Otherwise, a
+    numeric `data_type` combined with an intent that actually asks for an
+    aggregated quantity (`_MEASURE_INTENTS`) uses `AVG` when
+    `is_average_question` (see `_is_average_question`) or `SUM` otherwise
+    -- correct for the additive metrics this system's worked examples
+    actually exercise (transaction volume, unit counts, revenue). A column
+    that upstream nonetheless labeled `role="measure"` without a numeric
+    `data_type` (which, per schema_mapping's own role-assignment invariant,
+    should never happen -- but this agent does not blindly trust that
+    invariant since it receives schema_mapping's output as plain data, not
+    a guarantee) falls back to `COUNT`, since `SUM`/`AVG` over non-numeric
+    data is invalid SQL.
     """
 
     if _is_identifier_column(column):
         return "COUNT"
     if column.data_type.upper() in _NUMERIC_DATA_TYPES and intent in _MEASURE_INTENTS:
-        return "SUM"
+        return "AVG" if is_average_question else "SUM"
     return "COUNT"
 
 
@@ -716,6 +769,7 @@ class SqlGenerationAgent:
 
         select_parts = [_qualified_col(c) for c in dimension_columns]
         is_count_question = _is_count_question(payload.original_question)
+        is_average_question = _is_average_question(payload.original_question)
         if is_count_question:
             # A "how many"/"number of"/"count of" question always means
             # COUNT(*) -- never a SUM over whatever measure column upstream
@@ -724,8 +778,11 @@ class SqlGenerationAgent:
             select_parts.append("COUNT(*) AS RECORD_COUNT")
         else:
             for measure in measure_columns:
-                agg = _aggregation_function(measure, payload.intent)
-                select_parts.append(f"{agg}({_qualified_col(measure)}) AS {measure.column_name}_TOTAL")
+                agg = _aggregation_function(measure, payload.intent, is_average_question=is_average_question)
+                alias_suffix = "AVG" if agg == "AVG" else "TOTAL"
+                select_parts.append(
+                    f"{agg}({_qualified_col(measure)}) AS {measure.column_name}_{alias_suffix}"
+                )
 
         columns_by_name = {c.column_name: c for c in columns}
         where_clause, params = _build_where_clause(predicate_resolutions, columns_by_name)
