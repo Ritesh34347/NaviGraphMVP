@@ -3,10 +3,13 @@
 Fully deterministic: no LLM call, no `prompts/` directory. Resolves each
 entity extracted by Intent Understanding to a `BusinessConcept` -> `Column`
 mapping via `navigraph_kg.api.resolve_business_term`, and separately scans
-the hand-curated `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` seed list for
-any relationship whose subject/object labels are both present among the
-input entities, resolving each match via
-`navigraph_kg.api.get_relationship_concept`.
+every `RelationshipConcept` synced for the tenant (via
+`navigraph_kg.api.list_relationship_concepts` -- a tenant's activated
+Semantic Model if it has one, or the hand-curated
+`navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` seed list otherwise, per
+`navigraph_kg.ingestion.pipeline._load_relationship_concepts`) for any
+relationship whose subject/object labels are both present among the input
+entities.
 
 Follows the same structural pattern as
 `navigraph_agents.understanding.intent_understanding.agent`: open an OTel
@@ -20,8 +23,8 @@ import time
 
 from navigraph_kg.api import (
     entity_matches_reference_node,
-    get_relationship_concept,
     list_business_concepts,
+    list_relationship_concepts,
     resolve_business_term,
 )
 from navigraph_kg.client import Neo4jClient
@@ -35,7 +38,6 @@ from navigraph_kg.ontology import (
     NODE_MARKET,
     NODE_RISK_LEVEL,
     NODE_SECTOR,
-    RELATIONSHIP_CONCEPTS,
 )
 
 # Labels that correspond to real, crawled Tier-1 reference-data node types
@@ -470,10 +472,40 @@ class OntologyAgent:
 
         relationship_resolutions: list[RelationshipResolution] = []
 
-        for concept in RELATIONSHIP_CONCEPTS:
-            subject_label = concept["subject_label"]
-            object_label = concept["object_label"]
-            realizing_table_implied = _core_name(concept["realizing_table"]) in implied_tables
+        # Queries the graph directly for every RelationshipConcept synced
+        # for this tenant, rather than iterating the hardcoded
+        # `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS` Python list and
+        # querying once per entry -- see `list_relationship_concepts`'s
+        # own docstring for the real bug this replacement closes (a
+        # tenant's activated Semantic Model can name a real join with
+        # different subject/predicate/object labels than the static
+        # list's fixed triples, which then never matched at query time
+        # even though ingestion had synced the relationship correctly).
+        for concept in list_relationship_concepts(self._client, tenant_id=tenant_id):
+            subject_label = concept.get("subject_label")
+            predicate = concept.get("predicate")
+            object_label = concept.get("object_label")
+            realizing_table = concept.get("realizing_table")
+            subject_key_column = concept.get("subject_key_column")
+            object_key_column = concept.get("object_key_column")
+
+            # A RelationshipConcept node could in principle be missing any
+            # of these (e.g. curated but not yet fully wired up in the
+            # graph). Treat that defensively as "no usable match" rather
+            # than constructing an invalid `RelationshipResolution` (whose
+            # fields are all required `str`) and letting a
+            # `ValidationError` bubble up.
+            if (
+                subject_label is None
+                or predicate is None
+                or object_label is None
+                or realizing_table is None
+                or subject_key_column is None
+                or object_key_column is None
+            ):
+                continue
+
+            realizing_table_implied = _core_name(realizing_table) in implied_tables
 
             if not realizing_table_implied:
                 if not self._label_or_instance_matches(
@@ -485,35 +517,10 @@ class OntologyAgent:
                 ):
                     continue
 
-            record = get_relationship_concept(
-                self._client,
-                tenant_id=tenant_id,
-                subject_label=subject_label,
-                predicate=concept["predicate"],
-                object_label=object_label,
-            )
-
-            if record is None:
-                continue
-
-            # `get_relationship_concept`'s Cypher uses OPTIONAL MATCH for the
-            # realizing table and key columns, so a matched
-            # `RelationshipConcept` node could in principle come back with
-            # some of these still None (e.g. curated but not yet fully
-            # wired up in the graph). Treat that defensively as "no usable
-            # match" rather than constructing an invalid
-            # `RelationshipResolution` (whose fields are all required
-            # `str`) and letting a `ValidationError` bubble up.
-            realizing_table = record.get("realizing_table")
-            subject_key_column = record.get("subject_key_column")
-            object_key_column = record.get("object_key_column")
-            if realizing_table is None or subject_key_column is None or object_key_column is None:
-                continue
-
             relationship_resolutions.append(
                 RelationshipResolution(
                     subject_label=subject_label,
-                    predicate=concept["predicate"],
+                    predicate=predicate,
                     object_label=object_label,
                     realizing_table=realizing_table,
                     subject_key_column=subject_key_column,

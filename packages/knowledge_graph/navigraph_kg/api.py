@@ -232,6 +232,48 @@ def get_relationship_concept(
     return records[0] if records else None
 
 
+def list_relationship_concepts(client: Neo4jClient, *, tenant_id: str) -> list[dict[str, Any]]:
+    """Return every real `RelationshipConcept` synced for a tenant,
+    unconditionally (no subject/predicate/object filter) -- the same shape
+    `get_relationship_concept` returns per exact match, just without the
+    `WHERE` clause, mirroring `list_business_concepts`'s identical
+    "unfiltered sibling of the point-lookup" convention.
+
+    REAL BUG this closes: `OntologyAgent._resolve_relationships` used to
+    iterate the hardcoded `navigraph_kg.ontology.RELATIONSHIP_CONCEPTS`
+    Python list and query the graph once per entry by its exact
+    subject_label/predicate/object_label -- but a tenant's activated
+    Semantic Model (see `ingestion.pipeline._load_relationship_concepts`)
+    can name genuinely different predicates/directions for the same real
+    join (e.g. "Order occurs on Date"/OCCURS_ON vs the hardcoded seed's
+    "Order happens on Date"/HAPPENS_ON), which the static list's exact
+    triples never match -- confirmed live: every relationship in a fresh
+    e-commerce Semantic Model except two coincidentally-identical entries
+    was invisible to query-time resolution even though ingestion had
+    synced it correctly. Querying the graph directly for a tenant's whole
+    relationship-concept set (which `_load_relationship_concepts` already
+    keeps as the real source of truth, hardcoded-list fallback included)
+    removes the static list as a second, driftable source entirely.
+    """
+
+    return client.run(
+        f"""
+        MATCH (rc:{NODE_RELATIONSHIP_CONCEPT} {{tenant_id: $tenant_id}})
+        OPTIONAL MATCH (t:{NODE_TABLE})-[:{REL_REALIZES}]->(rc)
+        OPTIONAL MATCH (rc)-[:{REL_SUBJECT_KEY}]->(sc:{NODE_COLUMN})
+        OPTIONAL MATCH (rc)-[:{REL_OBJECT_KEY}]->(oc:{NODE_COLUMN})
+        RETURN rc.name AS name,
+               rc.subject_label AS subject_label,
+               rc.predicate AS predicate,
+               rc.object_label AS object_label,
+               t.name AS realizing_table,
+               sc.name AS subject_key_column,
+               oc.name AS object_key_column
+        """,
+        tenant_id=tenant_id,
+    )
+
+
 def list_assets_by_sector(
     client: Neo4jClient, *, tenant_id: str, sector_name: str
 ) -> list[dict[str, Any]]:

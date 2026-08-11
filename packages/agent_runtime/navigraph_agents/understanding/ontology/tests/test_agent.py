@@ -55,8 +55,8 @@ class TestConceptResolution:
                 side_effect=fake_resolve,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["revenue", "quarter"]))
@@ -95,8 +95,8 @@ class TestConceptResolution:
                 side_effect=fake_resolve,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["revenue", "gibberish_term"]))
@@ -118,8 +118,8 @@ class TestConceptResolution:
                 return_value=[],
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["nonsense_a", "nonsense_b"]))
@@ -156,8 +156,8 @@ class TestConceptResolution:
                 return_value=records,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["revenue"]))
@@ -193,8 +193,8 @@ class TestConceptResolution:
                 return_value=records,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["ambiguous"]))
@@ -250,8 +250,8 @@ class TestFuzzyConceptResolutionFallback:
                 return_value=self._glossary,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["total units traded"]))
@@ -290,8 +290,8 @@ class TestFuzzyConceptResolutionFallback:
                 "navigraph_agents.understanding.ontology.agent.list_business_concepts",
             ) as mock_list_concepts,
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["revenue"]))
@@ -320,8 +320,8 @@ class TestFuzzyConceptResolutionFallback:
                 return_value=self._glossary,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["real estate report"]))
@@ -371,8 +371,8 @@ class TestFuzzyConceptResolutionFallback:
                 return_value=ambiguous_glossary,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             output = await agent.run(_make_input(["total units traded value today"]))
@@ -399,8 +399,8 @@ class TestFuzzyConceptResolutionFallback:
                 return_value=self._glossary,
             ) as mock_list_concepts,
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[],
             ),
         ):
             await agent.run(_make_input(["total units traded", "some other region"]))
@@ -415,6 +415,9 @@ class TestRelationshipResolution:
 
         relationship_record = {
             "name": "Customer has RiskLevel",
+            "subject_label": "Customer",
+            "predicate": "HAS",
+            "object_label": "RiskLevel",
             "realizing_table": "CUSTOMER_INFORMATION",
             "subject_key_column": "CUSTOMERID",
             "object_key_column": "RISKLEVEL",
@@ -430,9 +433,9 @@ class TestRelationshipResolution:
                 return_value=False,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=relationship_record,
-            ) as mock_get_rel,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[relationship_record],
+            ) as mock_list_rel,
         ):
             output = await agent.run(_make_input(["Customer", "RiskLevel"]))
 
@@ -443,9 +446,9 @@ class TestRelationshipResolution:
         assert relationship.realizing_table == "CUSTOMER_INFORMATION"
         assert relationship.subject_key_column == "CUSTOMERID"
         assert relationship.object_key_column == "RISKLEVEL"
-        # Only the one seed concept whose labels both matched should ever
-        # reach get_relationship_concept.
-        assert mock_get_rel.call_count == 1
+        # The whole tenant's relationship-concept set is fetched once per
+        # run, then filtered in Python -- not once per candidate.
+        assert mock_list_rel.call_count == 1
 
     async def test_relationship_fires_for_a_real_two_word_entity_phrasing(self) -> None:
         """REAL BUG, live-reproduced: golden questions gq_005/gq_009 both
@@ -460,6 +463,9 @@ class TestRelationshipResolution:
 
         relationship_record = {
             "name": "Customer has RiskLevel",
+            "subject_label": "Customer",
+            "predicate": "HAS",
+            "object_label": "RiskLevel",
             "realizing_table": "CUSTOMER_INFORMATION",
             "subject_key_column": "CUSTOMERID",
             "object_key_column": "RISKLEVEL",
@@ -475,8 +481,8 @@ class TestRelationshipResolution:
                 return_value=False,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=relationship_record,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[relationship_record],
             ),
         ):
             output = await agent.run(_make_input(["customer", "risk level"]))
@@ -501,6 +507,9 @@ class TestRelationshipResolution:
 
         relationship_record = {
             "name": "Transaction happens in Market",
+            "subject_label": "Transaction",
+            "predicate": "HAPPENS_IN",
+            "object_label": "Market",
             "realizing_table": "TRANSACTIONS",
             "subject_key_column": "MARKETID",
             "object_key_column": "MARKETID",
@@ -519,8 +528,8 @@ class TestRelationshipResolution:
                 side_effect=fake_instance_match,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=relationship_record,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[relationship_record],
             ),
         ):
             output = await agent.run(
@@ -568,12 +577,39 @@ class TestRelationshipResolution:
                 ]
             return []
 
-        relationship_record = {
-            "name": "Order uses Channel",
-            "realizing_table": "FACT_ORDERS",
-            "subject_key_column": "CHANNEL_ID",
-            "object_key_column": "CHANNEL_ID",
-        }
+        # All 3 FACT_ORDERS-realized concepts a real tenant might have --
+        # since the realizing table is implied by the resolved "revenue"
+        # concept, all 3 should fire unconditionally (not just "Order uses
+        # Channel"), matching this test's original intent.
+        candidate_concepts = [
+            {
+                "name": "Order involves Customer",
+                "subject_label": "Order",
+                "predicate": "INVOLVES",
+                "object_label": "Customer",
+                "realizing_table": "FACT_ORDERS",
+                "subject_key_column": "CUSTOMER_ID",
+                "object_key_column": "CUSTOMER_ID",
+            },
+            {
+                "name": "Order happens on Date",
+                "subject_label": "Order",
+                "predicate": "HAPPENS_ON",
+                "object_label": "Date",
+                "realizing_table": "FACT_ORDERS",
+                "subject_key_column": "DATE_ID",
+                "object_key_column": "DATE_ID",
+            },
+            {
+                "name": "Order uses Channel",
+                "subject_label": "Order",
+                "predicate": "USES",
+                "object_label": "Channel",
+                "realizing_table": "FACT_ORDERS",
+                "subject_key_column": "CHANNEL_ID",
+                "object_key_column": "CHANNEL_ID",
+            },
+        ]
 
         with (
             patch(
@@ -585,9 +621,9 @@ class TestRelationshipResolution:
                 return_value=False,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=relationship_record,
-            ) as mock_get_rel,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=candidate_concepts,
+            ) as mock_list_rel,
         ):
             output = await agent.run(_make_input(["revenue", "channel"]))
 
@@ -600,7 +636,8 @@ class TestRelationshipResolution:
         relationship = by_object["Channel"]
         assert relationship.subject_label == "Order"
         assert relationship.realizing_table == "FACT_ORDERS"
-        assert mock_get_rel.call_count == 3
+        assert len(output.result.relationship_resolutions) == 3
+        mock_list_rel.assert_called_once()
 
     async def test_relationship_fires_when_the_object_side_table_is_implied_not_the_subject(
         self,
@@ -634,6 +671,9 @@ class TestRelationshipResolution:
 
         relationship_record = {
             "name": "OrderItem involves Product",
+            "subject_label": "OrderItem",
+            "predicate": "INVOLVES",
+            "object_label": "Product",
             "realizing_table": "FACT_ORDER_ITEMS",
             "subject_key_column": "PRODUCT_ID",
             "object_key_column": "PRODUCT_ID",
@@ -649,8 +689,8 @@ class TestRelationshipResolution:
                 return_value=False,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=relationship_record,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[relationship_record],
             ),
         ):
             output = await agent.run(_make_input(["revenue", "categories"]))
@@ -663,6 +703,16 @@ class TestRelationshipResolution:
         client = MagicMock()
         agent = OntologyAgent(client=client)
 
+        relationship_record = {
+            "name": "Customer has RiskLevel",
+            "subject_label": "Customer",
+            "predicate": "HAS",
+            "object_label": "RiskLevel",
+            "realizing_table": "CUSTOMER_INFORMATION",
+            "subject_key_column": "CUSTOMERID",
+            "object_key_column": "RISKLEVEL",
+        }
+
         with (
             patch(
                 "navigraph_agents.understanding.ontology.agent.resolve_business_term",
@@ -673,17 +723,32 @@ class TestRelationshipResolution:
                 return_value=False,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-            ) as mock_get_rel,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[relationship_record],
+            ),
         ):
             output = await agent.run(_make_input(["Customer", "revenue"]))
 
         assert output.result.relationship_resolutions == []
-        mock_get_rel.assert_not_called()
 
-    async def test_relationship_concept_lookup_returning_none_is_skipped(self) -> None:
+    async def test_relationship_concept_missing_a_required_field_is_skipped(self) -> None:
+        """A `RelationshipConcept` node with an unresolved `OPTIONAL MATCH`
+        (e.g. curated but not yet fully wired up in the graph -- missing
+        its realizing table or a key column) must be skipped defensively,
+        never turned into an invalid `RelationshipResolution`."""
+
         client = MagicMock()
         agent = OntologyAgent(client=client)
+
+        incomplete_record = {
+            "name": "Customer has RiskLevel",
+            "subject_label": "Customer",
+            "predicate": "HAS",
+            "object_label": "RiskLevel",
+            "realizing_table": None,
+            "subject_key_column": "CUSTOMERID",
+            "object_key_column": "RISKLEVEL",
+        }
 
         with (
             patch(
@@ -695,8 +760,8 @@ class TestRelationshipResolution:
                 return_value=False,
             ),
             patch(
-                "navigraph_agents.understanding.ontology.agent.get_relationship_concept",
-                return_value=None,
+                "navigraph_agents.understanding.ontology.agent.list_relationship_concepts",
+                return_value=[incomplete_record],
             ),
         ):
             output = await agent.run(_make_input(["Customer", "RiskLevel"]))
